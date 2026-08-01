@@ -1,0 +1,19 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "5.7",
+	"Category": "",
+	"Description": "Overboard game client -- renders the board pose the controls host computes; computes no physics itself (ADR-0009).",
+	"Modules": [
+		{
+			"Name": "OverboardGame",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "EnhancedInput",
+			"Enabled": true
+		}
+	]
+}

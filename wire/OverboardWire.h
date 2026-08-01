@@ -1,0 +1,120 @@
+// OverboardWire.h
+//
+// The v1 wire contract between the controls host (`overboard`) and this game client, fixed by
+// the COO for GitHub issue #162 and ratified as ADR-0010. Binding on both sides; do not drift
+// from it unilaterally -- report a suspected field error instead of quietly changing it.
+//
+// This header is intentionally UE-free so it can be compiled and unit-tested standalone before
+// the Unreal project exists (see wire/README.md).
+//
+// All multi-byte fields are little-endian and packed with no padding, field order exactly as
+// specified. Decoding never trusts struct layout/alignment for the wire representation -- every
+// field is read/written at an explicit byte offset (see OverboardWire.cpp) so this is portable
+// regardless of compiler packing behaviour.
+//
+// State in  : host -> game. Host SENDS to 127.0.0.1:9601, so the game BINDS/LISTENS on 9601.
+// Input out : game -> host. Host LISTENS on 127.0.0.1:9602, so the game SENDS to 9602.
+#pragma once
+
+#include <cstdint>
+#include <cstddef>
+#include <string>
+
+namespace OverboardWire
+{
+	// ---- Constants -----------------------------------------------------------------------
+
+	constexpr uint32_t kStateMagic = 0x4F425731; // "OBW1"
+	constexpr uint32_t kInputMagic = 0x4F424931; // "OBI1"
+	constexpr uint16_t kSchemaVersion = 1;
+
+	constexpr size_t kStatePacketWireSize = 72; // see field table below
+	constexpr size_t kInputPacketWireSize = 28;
+
+	// State packet flags (bit0 armed, bit1 valid, bit2 fallen)
+	namespace EStateFlags
+	{
+		constexpr uint16_t Armed = 1u << 0;
+		constexpr uint16_t Valid = 1u << 1;
+		constexpr uint16_t Fallen = 1u << 2;
+	}
+
+	// Input packet flags (bit0 arm, bit1 reset)
+	namespace EInputFlags
+	{
+		constexpr uint16_t Arm = 1u << 0;
+		constexpr uint16_t Reset = 1u << 1;
+	}
+
+	// ---- State packet (host -> game) ------------------------------------------------------
+	//
+	// field            type      offset  size
+	// magic            u32       0       4
+	// schema_version   u16       4       2
+	// flags            u16       6       2
+	// seq              u64       8       8
+	// sim_time_s       f64       16      8
+	// pos              float[3]  24      12   raw MuJoCo frame: metres, Z-up, right-handed
+	// quat             float[4]  36      16   w,x,y,z order, raw MuJoCo
+	// wheel_angle_rad  f32       52      4
+	// wheel_rate_rad_s f32       56      4
+	// pitch_rad        f32       60      4    nose-up positive
+	// yaw_rad          f32       64      4    NON-PHYSICAL game steering channel
+	// motor_current_a  f32       68      4
+	//                                    72 total
+	struct FBoardState
+	{
+		uint32_t Magic = kStateMagic;
+		uint16_t SchemaVersion = kSchemaVersion;
+		uint16_t Flags = 0;
+		uint64_t Seq = 0;
+		double SimTimeS = 0.0;
+		float Pos[3] = {0.f, 0.f, 0.f};
+		float Quat[4] = {1.f, 0.f, 0.f, 0.f}; // w, x, y, z
+		float WheelAngleRad = 0.f;
+		float WheelRateRadS = 0.f;
+		float PitchRad = 0.f;
+		float YawRad = 0.f;
+		float MotorCurrentA = 0.f;
+	};
+
+	// Decodes a raw OBW1 packet. Returns false and fills OutError on any failure: short buffer,
+	// bad magic, or a schema_version we don't understand. Never partially trusts a mismatched
+	// packet -- on failure OutState is left at default values and must not be used. This is the
+	// "fail loudly, never misparse a float" gate from the wire spec: callers must log OutError
+	// and drop the packet rather than proceed.
+	bool DecodeBoardState(const uint8_t* Buffer, size_t Len, FBoardState& OutState, std::string& OutError);
+
+	// Encodes into Buffer, which must be at least kStatePacketWireSize bytes. Exists mainly so
+	// tests and the fake sender tool can produce real OBW1 bytes without duplicating the layout.
+	void EncodeBoardState(const FBoardState& State, uint8_t* Buffer);
+
+	// ---- Input packet (game -> host) -------------------------------------------------------
+	//
+	// field                     type   offset  size
+	// magic                     u32    0       4
+	// schema_version            u16    4       2
+	// flags                     u16    6       2
+	// seq                       u64    8       8
+	// weight_shift_fore_aft     f32    16      4   [-1,1]
+	// weight_shift_lateral      f32    20      4   [-1,1]
+	// steer                     f32    24      4   [-1,1] NON-PHYSICAL
+	//                                          28 total
+	struct FInputPacket
+	{
+		uint32_t Magic = kInputMagic;
+		uint16_t SchemaVersion = kSchemaVersion;
+		uint16_t Flags = 0;
+		uint64_t Seq = 0;
+		float WeightShiftForeAft = 0.f;
+		float WeightShiftLateral = 0.f;
+		float Steer = 0.f;
+	};
+
+	// Encodes into Buffer, which must be at least kInputPacketWireSize bytes.
+	void EncodeInputPacket(const FInputPacket& Packet, uint8_t* Buffer);
+
+	// Decodes a raw OBI1 packet. Provided for symmetry/testing (the real host is the only
+	// consumer of this direction on the wire; this repo doesn't need it at runtime).
+	bool DecodeInputPacket(const uint8_t* Buffer, size_t Len, FInputPacket& OutPacket, std::string& OutError);
+}
