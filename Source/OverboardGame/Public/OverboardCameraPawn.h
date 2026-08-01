@@ -11,9 +11,10 @@
 // motion sickness, not "feel"). AutoPossessPlayer handles single-player possession without any
 // GameMode/PlayerStart ceremony; AOverboardGameMode spawns one instance alongside the board.
 //
-// HONESTY NOTE: framing (arm length, pitch angle, follow speeds) is a first guess, not a tuned
-// value -- there was no display available to look through it and adjust. See the PR for what
-// "verified running" does and does not cover here.
+// HONESTY NOTE: first human verification (Mike's PIE session, overboard#162) confirmed the
+// follow logic works and the board stays in view -- feedback was "a little too far out (minor)",
+// which pulled ArmLengthCm in modestly. Pitch angle and follow speeds are still first-guess,
+// unverified. See the PR for exactly what "verified running" does and does not cover here.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -44,10 +45,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, Category = "Camera")
 	TObjectPtr<UCameraComponent> Camera;
 
-	// First-guess framing/follow tunables -- unverified against an actual running board, see
-	// class comment. All named so they're the obvious thing to retune once someone can see it.
+	// Framing/follow tunables. First human verification (overboard#162, Mike's first PIE
+	// session): follow logic works, board stays in view the whole time, framing is "a little too
+	// far out (minor)". ArmLengthCm tightened modestly off that feedback (650 -> 480) --
+	// deliberately not a close chase cam, since the board covers real ground under lean and
+	// losing it off-frame is worse than it reading slightly small. The rest are still unverified
+	// first guesses. All named so they're the obvious thing to retune further.
 	UPROPERTY(EditAnywhere, Category = "Board|Camera")
-	float ArmLengthCm = 650.f;
+	float ArmLengthCm = 480.f;
 
 	UPROPERTY(EditAnywhere, Category = "Board|Camera")
 	float ArmPitchDeg = -18.f;

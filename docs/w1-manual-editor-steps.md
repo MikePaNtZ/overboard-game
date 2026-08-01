@@ -1,7 +1,10 @@
 # W1/W2 — manual editor steps
 
-Nobody has looked at a rendered frame of this project yet. This doc is written for that first
-look: what you should expect to see, and how to tell within a minute whether it's right or wrong.
+Mike's first PIE session (overboard#162) already confirmed the big two: the coordinate transform
+is not mirrored (all four rotation phases checked out), and the real host drives the board
+forward/coast/reverse correctly end-to-end. This doc is no longer "nobody has looked yet" — it's
+now "here's what's already confirmed, here's the two known-fixed-but-unverified follow-ups, and
+here's how a first-time reader tells right from wrong."
 
 ## Read this before you press Play
 
@@ -16,11 +19,12 @@ station-keep — there's no term pulling it back to rest. **Fore/aft is a lean c
 speed command:** push the stick forward to lean and accelerate, pull back to decelerate and then
 reverse. Centre stick means "coast at whatever speed the board already has," not "stop." If you
 centre the stick and the board keeps drifting at a constant speed, that's expected, not a bug —
-there's nothing braking it.
+there's nothing braking it. Mike already confirmed this feels right end-to-end.
 
 **What genuinely would be a bug, worth flagging:** a crash, a black/blank viewport, a wall of
 errors in the Output Log about the `OverboardGame` module, the board never appearing at all with
-`fake_sender` running, or (see step 7) a rotation that comes out mirrored.
+`fake_sender` running, or a rotation that comes out mirrored (see step 5 — already checked once
+and passed, but worth re-confirming after any transform-adjacent change).
 
 ---
 
@@ -29,19 +33,17 @@ errors in the Output Log about the `OverboardGame` module, the board never appea
    "/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/Mac/UnrealEditor" \
      "/Users/mike/projects/overboard-game/OverboardGame.uproject"
    ```
-   Already built on this machine (see the PRs for the exact `Build.sh` runs) — first launch
-   should not need to recompile anything. It should open into a blank/untitled level
-   automatically, since no `.umap` exists in the project yet.
+   Already built on this machine — first launch should not need to recompile anything.
+   **`Content/Maps/OB_Main` is a committed level asset, and `Config/DefaultEngine.ini` already
+   sets it as both Editor Startup Map and Game Default Map.** It should just open — no "new
+   level, delete the template Floor, save as, set as default" ritual. If it opens into a blank
+   untitled level instead, something's wrong with the map settings, not a step you're missing.
 
-2. **Save a level** (so there's a real default map instead of an untitled one): File > Save
-   Current Level As... > `Content/Maps/OB_Main`. Then Edit > Project Settings > Maps & Modes:
-   set **Editor Startup Map** and **Game Default Map** to `OB_Main`.
-
-3. **Confirm the Output Log is clean** on load — no errors about the `OverboardGame` module, no
+2. **Confirm the Output Log is clean** on load — no errors about the `OverboardGame` module, no
    `EnhancedInputComponent` cast failures (see `AOverboardPlayerController::SetupInputComponent`
    log warning if that binding path fails).
 
-4. **Press Play (PIE).** `AOverboardGameMode::BeginPlay` spawns, all in C++ (nothing hand-placed
+3. **Press Play (PIE).** `AOverboardGameMode::BeginPlay` spawns, all in C++ (nothing hand-placed
    in the level yet): a 100x100m flat ground plane, the placeholder board actor (a low flat box,
    not the real model — collision and gravity are off on it; its position comes entirely from
    the wire, never from Unreal physics), and `AOverboardCameraPawn`, a chase camera that
@@ -51,12 +53,23 @@ errors in the Output Log about the `OverboardGame` module, the board never appea
    origin.** If the board is moving with nothing connected, that's a real bug (nothing should be
    able to move it without a wire packet telling it to).
 
-   **The camera's framing (distance, angle, follow speed) is a first guess, never looked
-   through before now.** If the board isn't in view at all, or the framing is unusable, that's
-   expected to need adjustment, not a sign something is broken — the tunables are on
-   `AOverboardCameraPawn` under `Board|Camera`.
+   **Two known, fixed-but-not-yet-re-verified issues from the first session, both yours to watch
+   for:**
+   - **Shadow acne on the ground plane** (dense black stipple in rectangular blocks) — near-
+     certain cause was the ground's 100x-stretched-unit-plane UVs/normals confusing Virtual
+     Shadow Maps. Fixed by turning off the ground's own shadow-casting
+     (`AOverboardGameMode::BeginPlay`, `SetCastShadow(false)` on the ground's mesh component) --
+     it's flat, has nothing worth casting, and still receives the board's shadow. **Unverified
+     visually** (no display in the environment that made this fix) — confirm the stipple is
+     actually gone, not just theoretically addressed.
+   - **Camera slightly too far out** — Mike's read was "can see the board the whole time, minor,
+     maybe zoom in a bit." `ArmLengthCm` pulled in from 650 to 480 (modest, deliberately not a
+     close chase cam — the board covers real ground under lean and losing it off-frame is worse
+     than reading a bit small). **Unverified visually** — confirm 480 actually reads better, not
+     just numerically smaller. Tunable is `AOverboardCameraPawn` → `Board|Camera` →
+     `ArmLengthCm` if it still wants adjusting.
 
-5. **Prove the receive path visually** (no real host needed — this is a stand-in):
+4. **Prove the receive path visually** (no real host needed — this is a stand-in):
    ```
    cd /Users/mike/projects/overboard-game/wire
    make fake_sender
@@ -64,8 +77,9 @@ errors in the Output Log about the `OverboardGame` module, the board never appea
    ```
    The board should visibly slide sideways in Unreal while this runs, then stop when it finishes.
 
-6. **Check the handedness** — the single most important visual check, and the one most likely to
-   silently look "fine" while actually being wrong (see the warning at the end of this step):
+5. **Check the handedness.** Already confirmed correct once (Mike, first PIE session, all four
+   phases). Re-run it after any change anywhere near the transform, the board actor, or the
+   camera, since it's cheap and it's the failure mode most likely to silently look "fine":
    ```
    ./fake_sender --rotate
    ```
@@ -90,7 +104,7 @@ errors in the Output Log about the `OverboardGame` module, the board never appea
    `FQuat` constructor's `(X,Y,Z,W)` argument order against `QuatWXYZ`), not in `fake_sender` —
    it emits exactly the quaternions `wire/tests/test_wire.cpp` already asserts on in CI.
 
-7. **Check the stick mapping and feel.** Plug in a gamepad:
+6. **Check the stick mapping and feel.** Plug in a gamepad:
 
    | Stick | Wire channel(s) | What it does |
    |---|---|---|
@@ -101,19 +115,14 @@ errors in the Output Log about the `OverboardGame` module, the board never appea
 
    Deadzone (`StickDeadzone`, default 0.12) and a response curve (`ResponseCurveExponent`,
    default 2.0) are applied before every send — see `AOverboardPlayerController::ShapeAxis`.
-   **Both are first-guess defaults, not tuned** — nobody has felt this yet. If it feels twitchy
-   or numb, those two named tunables (`Board|Input` category) are where to change it.
+   Mike drove the real host with this mapping end-to-end (forward/coast/reverse all worked); if
+   it still feels twitchy or numb, those two named tunables (`Board|Input` category) are where
+   to change it.
 
-   There's no listener on 9602 to check this against unless a real host is running, so with no
-   host: no errors in the Output Log is the available check, and optionally `nc -ul 9602` in a
-   terminal to confirm UDP datagrams land while you move the stick (binary noise in `nc` is
-   expected — it's not a text protocol).
-
-8. **The actual point of W2: does it feel drivable?** That's a judgement call nobody has been
-   able to make yet (no display in the environment that built this). If you get this far with a
-   host attached and a controller in hand — that's the first real answer to "does someone who
-   isn't us pick this up and not put it down."
+   With no host running: no errors in the Output Log is the available check, and optionally
+   `nc -ul 9602` in a terminal to confirm UDP datagrams land while you move the stick (binary
+   noise in `nc` is expected — it's not a text protocol).
 
 None of the above changes the wire contract or the transform math — it's "look at the running
-editor and confirm what the standalone tests already proved numerically," plus the one thing
-tests can't check: how it feels.
+editor and confirm what the standalone tests already proved numerically," plus the two visual
+fixes above that only a running session can actually confirm.
