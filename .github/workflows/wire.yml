@@ -1,0 +1,16 @@
+name: wire
+
+# Gates the ADR-0010 wire contract: OBW1/OBI1 decode/encode + the MuJoCo -> Unreal transform.
+# Deliberately does NOT build the UE project -- wire/ is plain, engine-free C++17 by design
+# (see wire/README.md), which is exactly what makes it cheap to gate on every push/PR.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: make test
+        run: cd wire && make test
