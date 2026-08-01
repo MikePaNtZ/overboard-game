@@ -122,9 +122,11 @@ namespace OverboardWire
 		OutState.Flags = GetU16(Buffer, 6);
 		OutState.Seq = GetU64(Buffer, 8);
 		OutState.SimTimeS = GetF64(Buffer, 16);
-		OutState.Pos[0] = GetF32(Buffer, 24);
-		OutState.Pos[1] = GetF32(Buffer, 28);
-		OutState.Pos[2] = GetF32(Buffer, 32);
+		// DELIBERATELY BROKEN for one CI run to prove the wire.yml workflow actually goes red
+		// (COO ask, overboard#162). pos should start at byte offset 24 per ADR-0010, not 26.
+		OutState.Pos[0] = GetF32(Buffer, 26);
+		OutState.Pos[1] = GetF32(Buffer, 30);
+		OutState.Pos[2] = GetF32(Buffer, 34);
 		OutState.Quat[0] = GetF32(Buffer, 36); // w
 		OutState.Quat[1] = GetF32(Buffer, 40); // x
 		OutState.Quat[2] = GetF32(Buffer, 44); // y
