@@ -1,0 +1,70 @@
+// OverboardCameraPawn.h
+//
+// W2 (overboard#162): "someone who isn't us picks up a controller and doesn't immediately put
+// it down" needs something to look through. There was no pawn/camera at all in W1
+// (AOverboardGameMode::DefaultPawnClass was nullptr -- the board's pose came entirely from the
+// wire, not a pawn, and that's still true; this class doesn't change how the board is driven).
+//
+// A minimal chase camera: a spring arm behind and above whatever ABoardActor it's following,
+// smoothly chasing the board's LOCATION and YAW only -- it deliberately does not inherit the
+// board's pitch/roll (leaning while balancing would otherwise tip the camera too, which reads as
+// motion sickness, not "feel"). AutoPossessPlayer handles single-player possession without any
+// GameMode/PlayerStart ceremony; AOverboardGameMode spawns one instance alongside the board.
+//
+// HONESTY NOTE: framing (arm length, pitch angle, follow speeds) is a first guess, not a tuned
+// value -- there was no display available to look through it and adjust. See the PR for what
+// "verified running" does and does not cover here.
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/Pawn.h"
+#include "OverboardCameraPawn.generated.h"
+
+class USpringArmComponent;
+class UCameraComponent;
+class ABoardActor;
+
+UCLASS()
+class OVERBOARDGAME_API AOverboardCameraPawn : public APawn
+{
+	GENERATED_BODY()
+
+public:
+	AOverboardCameraPawn();
+
+	virtual void Tick(float DeltaSeconds) override;
+
+protected:
+	UPROPERTY(VisibleAnywhere, Category = "Camera")
+	TObjectPtr<USceneComponent> Root;
+
+	UPROPERTY(VisibleAnywhere, Category = "Camera")
+	TObjectPtr<USpringArmComponent> SpringArm;
+
+	UPROPERTY(VisibleAnywhere, Category = "Camera")
+	TObjectPtr<UCameraComponent> Camera;
+
+	// First-guess framing/follow tunables -- unverified against an actual running board, see
+	// class comment. All named so they're the obvious thing to retune once someone can see it.
+	UPROPERTY(EditAnywhere, Category = "Board|Camera")
+	float ArmLengthCm = 650.f;
+
+	UPROPERTY(EditAnywhere, Category = "Board|Camera")
+	float ArmPitchDeg = -18.f;
+
+	UPROPERTY(EditAnywhere, Category = "Board|Camera")
+	float FollowHeightOffsetCm = 60.f;
+
+	UPROPERTY(EditAnywhere, Category = "Board|Camera")
+	float FollowLocationSpeed = 4.f; // FInterpTo speed, position
+
+	UPROPERTY(EditAnywhere, Category = "Board|Camera")
+	float FollowYawSpeed = 2.f; // FInterpTo speed, yaw only -- slower than position so the camera settles in behind rather than snapping
+
+private:
+	TWeakObjectPtr<ABoardActor> FollowTarget;
+
+	// Finds the board actor lazily rather than requiring GameMode to wire it up, so spawn order
+	// between the camera pawn and the board actor doesn't matter.
+	void TryAcquireFollowTarget();
+};

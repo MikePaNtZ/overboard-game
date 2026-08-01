@@ -1,8 +1,10 @@
-# W1 — manual editor steps still needed
+# W1/W2 — manual editor steps still needed
 
 Everything up to "open the editor and press Play" is done and verified from the command line
-(see the PR description for exact commands/output). What's left needs the editor GUI because
-this pass had no display/interactive session available:
+(see the PR descriptions for exact commands/output). What's left needs the editor GUI because no
+pass so far has had a display/interactive session available — including W2's actual ask, "drive
+it and say how it feels," which is unverified for the same reason. See PR #162 W2 for exactly
+what that means.
 
 1. **Open the project.** Double-click `OverboardGame.uproject`, or run:
    ```
@@ -21,8 +23,13 @@ this pass had no display/interactive session available:
    log warning if that binding path fails).
 
 4. **Plug in a gamepad**, press Play (PIE). `AOverboardGameMode::BeginPlay` spawns a ground
-   plane and the placeholder board actor purely in C++ — you should see a low flat box sitting at
-   the origin even with no host running.
+   plane, the placeholder board actor, and (as of W2) an `AOverboardCameraPawn` — a spring-arm
+   chase camera that auto-possesses Player0 and finds the board actor on its own — purely in
+   C++. You should see a low flat box sitting at the origin, viewed from behind/above, even with
+   no host running. **The camera's framing (arm length, pitch, follow speed) is a first guess,
+   not tuned** — nobody has looked through it yet. If it's unusable (too close/far/fast), that's
+   exactly the kind of feedback W2 asked for; the tunables are on `AOverboardCameraPawn` under
+   `Board|Camera` and are named for exactly this.
 
 5. **Prove the receive path visually.** In a terminal:
    ```
@@ -34,12 +41,28 @@ this pass had no display/interactive session available:
    Controls-side host doesn't exist yet, so this is the only available proof of the live receive
    path tonight.
 
-6. **Prove the send path.** With PIE running and a gamepad connected, move the left stick /
-   right stick / face buttons. There's no listener on 9602 to observe this against yet (that's
-   the Controls session's host), so "proof" for tonight is: no errors in the Output Log, and
-   optionally run `nc -ul 9602` in a terminal to confirm UDP datagrams are landing while you move
-   the stick (payload will look like binary noise in `nc`, which is expected and fine — it's not
-   a text protocol).
+6. **Prove the send path, and check the mapping/feel.** As of W2, the mapping is (see
+   `AOverboardPlayerController.h` for the reasoning, especially why right-stick-X drives two
+   channels):
+
+   | Stick | Wire channel(s) |
+   |---|---|
+   | Left stick, Y axis (fore/aft) | `weight_shift_fore_aft` — a ground-speed command now that the outer velocity loop is on; centre stick means "hold position," not "no input" |
+   | Right stick, X axis (left/right) | `weight_shift_lateral` **and** `steer` simultaneously (lean-to-steer: one physical axis, two wire channels) |
+   | Face button (bottom, e.g. A/Cross) | `arm` |
+   | Face button (right, e.g. B/Circle) | `reset` |
+
+   Both axes have a deadzone (`StickDeadzone`, default 0.12) and a response curve
+   (`ResponseCurveExponent`, default 2.0 — finer control near centre) applied before the packet
+   is sent — see `AOverboardPlayerController::ShapeAxis`. **These are untuned first guesses**,
+   same caveat as the camera: centre the stick and confirm it reads as a clean, unwavering zero
+   (no creep), then check that small deflections feel controllable rather than twitchy. If it
+   feels wrong, the two named tunables are the place to change it, not the mapping.
+
+   There's no listener on 9602 to observe this against yet (that's the Controls session's host),
+   so "proof" for tonight is: no errors in the Output Log, and optionally run `nc -ul 9602` in a
+   terminal to confirm UDP datagrams are landing while you move the stick (payload will look like
+   binary noise in `nc`, which is expected and fine — it's not a text protocol).
 
 7. **The handedness sanity check the transform code asks for.** `wire/tests/test_wire.cpp`
    proves the *numbers* `MuJoCoToUnreal()` produces are what the ADR-0010 mirror formula demands

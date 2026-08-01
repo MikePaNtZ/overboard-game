@@ -59,9 +59,9 @@ void AOverboardPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
 
-	// Built at runtime rather than as .uasset data assets -- this is a code-only project for W1
-	// (no editor session available to author Input Mapping Context assets). Revisit once the
-	// editor is in the loop; full mapping tuning is W2 regardless.
+	// Built at runtime rather than as .uasset data assets -- still no editor session available
+	// to author Input Mapping Context assets as of W2 either. See class header for the W2
+	// mapping and why right-stick-X legitimately drives two wire channels at once.
 	MappingContext = NewObject<UInputMappingContext>(this, TEXT("OverboardMappingContext"));
 
 	IA_WeightShiftForeAft = NewObject<UInputAction>(this, TEXT("IA_WeightShiftForeAft"));
@@ -70,9 +70,11 @@ void AOverboardPlayerController::SetupInputComponent()
 
 	IA_WeightShiftLateral = NewObject<UInputAction>(this, TEXT("IA_WeightShiftLateral"));
 	IA_WeightShiftLateral->ValueType = EInputActionValueType::Axis1D;
-	MappingContext->MapKey(IA_WeightShiftLateral, EKeys::Gamepad_LeftX);
+	MappingContext->MapKey(IA_WeightShiftLateral, EKeys::Gamepad_RightX);
 
-	// NON-PHYSICAL game steering channel -- see class comment.
+	// NON-PHYSICAL game steering channel -- see class comment. Deliberately the same physical
+	// axis as weight_shift_lateral above (lean-to-steer): two UInputActions bound to one key,
+	// each producing its own (here, identical) raw value that gets shaped/sent independently.
 	IA_Steer = NewObject<UInputAction>(this, TEXT("IA_Steer"));
 	IA_Steer->ValueType = EInputActionValueType::Axis1D;
 	MappingContext->MapKey(IA_Steer, EKeys::Gamepad_RightX);
@@ -122,13 +124,24 @@ void AOverboardPlayerController::PlayerTick(float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
 
-	TimeSinceLastSend += DeltaTime;
-	const float SendIntervalSeconds = SendRateHz > 0.f ? 1.f / SendRateHz : 0.f;
-	if (TimeSinceLastSend >= SendIntervalSeconds)
+	// Send at frame rate (#162 W2 dispatch) -- no accumulator/throttle. The wire has no framing
+	// beyond seq, so sending every Tick is both the simplest thing and what was asked for; if
+	// this ever needs decoupling from render rate, that's a deliberate follow-up, not a default.
+	SendInputPacket();
+}
+
+float AOverboardPlayerController::ShapeAxis(float Raw) const
+{
+	const float Abs = FMath::Abs(Raw);
+	if (Abs < StickDeadzone)
 	{
-		TimeSinceLastSend = 0.f;
-		SendInputPacket();
+		return 0.f;
 	}
+	// Rescale [Deadzone, 1] -> [0, 1] so the curve starts at 0 right past the deadzone edge
+	// instead of jumping straight to a nonzero command the instant the stick leaves centre.
+	const float Rescaled = (Abs - StickDeadzone) / (1.f - StickDeadzone);
+	const float Curved = FMath::Pow(Rescaled, ResponseCurveExponent);
+	return FMath::Sign(Raw) * Curved;
 }
 
 void AOverboardPlayerController::SendInputPacket()
@@ -139,11 +152,13 @@ void AOverboardPlayerController::SendInputPacket()
 	}
 
 	OverboardWire::FInputPacket Packet;
-	Packet.Seq = SendSeq++;
+	Packet.Seq = SendSeq++; // monotonic for the life of the socket, regardless of arm/reset state
 	Packet.Flags = (bArmHeld ? OverboardWire::EInputFlags::Arm : 0) | (bResetHeld ? OverboardWire::EInputFlags::Reset : 0);
-	Packet.WeightShiftForeAft = FMath::Clamp(CurrentForeAft, -1.f, 1.f);
-	Packet.WeightShiftLateral = FMath::Clamp(CurrentLateral, -1.f, 1.f);
-	Packet.Steer = FMath::Clamp(CurrentSteer, -1.f, 1.f); // NON-PHYSICAL
+	// Deadzone + curve shape the raw stick, then clamp is the final, unconditional step before
+	// the wire -- do not rely on the host to sanitise, even though it does (#162 W2 dispatch).
+	Packet.WeightShiftForeAft = FMath::Clamp(ShapeAxis(CurrentForeAft), -1.f, 1.f);
+	Packet.WeightShiftLateral = FMath::Clamp(ShapeAxis(CurrentLateral), -1.f, 1.f);
+	Packet.Steer = FMath::Clamp(ShapeAxis(CurrentSteer), -1.f, 1.f); // NON-PHYSICAL
 
 	uint8 Buf[OverboardWire::kInputPacketWireSize];
 	OverboardWire::EncodeInputPacket(Packet, Buf);
