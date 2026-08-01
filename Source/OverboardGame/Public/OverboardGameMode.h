@@ -23,6 +23,10 @@ public:
 
 	virtual void BeginPlay() override;
 
+	// For AOverboardPlayerController's reset-on-fall (overboard#162 W3) -- lets it find the
+	// board without a separate hand-authored reference. May be null before BeginPlay has run.
+	ABoardActor* GetSpawnedBoard() const { return SpawnedBoard; }
+
 private:
 	UPROPERTY(Transient)
 	TObjectPtr<ABoardActor> SpawnedBoard;

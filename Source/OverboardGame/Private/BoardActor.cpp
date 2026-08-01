@@ -1,9 +1,15 @@
 #include "BoardActor.h"
 
 #include "Components/StaticMeshComponent.h"
+#include "ProceduralMeshComponent.h"
 #include "UObject/ConstructorHelpers.h"
 #include "CoordinateTransform.h"
+#include "StlLoader.h"
 #include "HAL/PlatformTime.h"
+#include "Misc/Paths.h"
+#include "Logging/LogMacros.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogOverboardMesh, Log, All);
 
 ABoardActor::ABoardActor()
 {
@@ -12,7 +18,8 @@ ABoardActor::ABoardActor()
 	BoxMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("BoxMesh"));
 	RootComponent = BoxMesh;
 
-	// Placeholder for the real board model -- explicitly fine for W1 (see issue #162).
+	// Placeholder for the real board model. As of W3 the real geometry (below) is the primary
+	// visual; this stays as the fallback if it fails to load at runtime -- see class header.
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeFinder(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	if (CubeFinder.Succeeded())
 	{
@@ -28,11 +35,46 @@ ABoardActor::ABoardActor()
 	BoxMesh->SetSimulatePhysics(false);
 	BoxMesh->SetEnableGravity(false);
 	BoxMesh->SetMobility(EComponentMobility::Movable);
+
+	// --- W3 real mesh: built at runtime from STL, see mesh/README.md ------------------------
+	MeshAssemblyRoot = CreateDefaultSubobject<USceneComponent>(TEXT("MeshAssemblyRoot"));
+	MeshAssemblyRoot->SetupAttachment(RootComponent);
+	MeshAssemblyRoot->SetVisibility(false, true); // hidden until TryBuildRealMesh succeeds
+
+	auto MakePart = [this](const TCHAR* Name) -> UProceduralMeshComponent*
+	{
+		UProceduralMeshComponent* Part = CreateDefaultSubobject<UProceduralMeshComponent>(Name);
+		Part->SetupAttachment(MeshAssemblyRoot);
+		return Part;
+	};
+	FrontEnclosureMesh = MakePart(TEXT("FrontEnclosureMesh"));
+	RearEnclosureMesh = MakePart(TEXT("RearEnclosureMesh"));
+	FrontBumperMesh = MakePart(TEXT("FrontBumperMesh"));
+	RearBumperMesh = MakePart(TEXT("RearBumperMesh"));
+	FrontFootpadMesh = MakePart(TEXT("FrontFootpadMesh"));
+	RearFootpadMesh = MakePart(TEXT("RearFootpadMesh"));
+	ElectronicsPlatformMesh = MakePart(TEXT("ElectronicsPlatformMesh"));
+
+	WheelMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("WheelMesh"));
+	WheelMesh->SetupAttachment(MeshAssemblyRoot);
 }
 
 void ABoardActor::BeginPlay()
 {
 	Super::BeginPlay();
+
+	bRealMeshLoaded = TryBuildRealMesh();
+	if (bRealMeshLoaded)
+	{
+		BoxMesh->SetVisibility(false, true);
+		MeshAssemblyRoot->SetVisibility(true, true);
+		UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: real board mesh loaded, placeholder box hidden."));
+	}
+	else
+	{
+		// Fallback stays visible -- an invisible board is worse than an ugly one (see class header).
+		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor: real board mesh failed to load (see prior errors); falling back to the placeholder box."));
+	}
 
 	StateClient = MakeUnique<FBoardStateClient>();
 	if (!StateClient->StartListening())
@@ -75,6 +117,9 @@ void ABoardActor::UpdatePoseFromHistory()
 	{
 		return; // nothing received yet -- hold current pose, do not guess
 	}
+
+	// Newest raw sample, not the interpolated render pose -- see IsFallen()'s comment on why.
+	bLatestSampleFallen = (History.Last().State.Flags & OverboardWire::EStateFlags::Fallen) != 0;
 
 	const double RenderTime = FPlatformTime::Seconds() - static_cast<double>(RenderDelaySeconds);
 
@@ -120,4 +165,179 @@ void ABoardActor::UpdatePoseFromHistory()
 	TransformToApply = OverboardWire::MuJoCoToUnreal(Clamp.State.Pos, Clamp.State.Quat);
 	SetActorLocation(FVector(TransformToApply.PosCm[0], TransformToApply.PosCm[1], TransformToApply.PosCm[2]));
 	SetActorRotation(FQuat(TransformToApply.QuatWXYZ[1], TransformToApply.QuatWXYZ[2], TransformToApply.QuatWXYZ[3], TransformToApply.QuatWXYZ[0]));
+}
+
+bool ABoardActor::TryBuildRealMesh()
+{
+	struct FPartSpec
+	{
+		UProceduralMeshComponent* Component;
+		const TCHAR* StlBaseName;
+		float ExtraYawDeg;
+	};
+	const FPartSpec Parts[] = {
+		{ FrontEnclosureMesh, TEXT("front_enclosure"), 0.f },
+		{ RearEnclosureMesh, TEXT("rear_enclosure"), 0.f },
+		{ FrontBumperMesh, TEXT("front_bumper"), 0.f },
+		{ RearBumperMesh, TEXT("rear_bumper"), 0.f },
+		// Ships authored sitting at the REAR footpad location (confirmed by the loader's own
+		// bounding-box output against mesh/tests/test_stl_loader.cpp, not just the XML comment)
+		// -- needs the same extra 180 degree yaw the MJCF applies to move it to the front.
+		{ FrontFootpadMesh, TEXT("front_footpad"), 180.f },
+		{ RearFootpadMesh, TEXT("rear_footpad"), 0.f },
+		{ ElectronicsPlatformMesh, TEXT("electronics_platform"), 0.f },
+	};
+
+	bool bAllOk = true;
+	for (const FPartSpec& Part : Parts)
+	{
+		if (!BuildPartFromStl(Part.Component, Part.StlBaseName, Part.ExtraYawDeg))
+		{
+			bAllOk = false;
+		}
+	}
+
+	// Wheel: not an STL, a primitive cylinder. Radius 145.4mm / width 150mm (mesh/README.md,
+	// straight from overboard_onewheel.xml's wheel_geom: size="0.1454 0.075" = radius, half-width).
+	UStaticMesh* CylinderMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+	if (CylinderMesh && WheelMesh)
+	{
+		WheelMesh->SetStaticMesh(CylinderMesh);
+
+		// ASSUMPTION, unverified against this specific engine build (no display to check it):
+		// /Engine/BasicShapes/Cylinder.Cylinder is the standard UE default bounds, radius 50uu,
+		// height 100uu. If the board comes out ~2x or ~0.5x wrong on the wheel specifically
+		// (everything else right), this assumption is the first thing to check -- see the log
+		// line below, which prints the actual computed bounds for exactly that comparison.
+		constexpr float kAssumedEngineCylinderRadiusUu = 50.f;
+		constexpr float kAssumedEngineCylinderHeightUu = 100.f;
+		constexpr float kTireRadiusCm = 14.54f; // 145.4mm
+		constexpr float kTireWidthCm = 15.f;    // 150mm (2 x 75mm half-width)
+		const float RadiusScale = kTireRadiusCm / kAssumedEngineCylinderRadiusUu;
+		const float HeightScale = kTireWidthCm / kAssumedEngineCylinderHeightUu;
+		WheelMesh->SetRelativeScale3D(FVector(RadiusScale, RadiusScale, HeightScale));
+
+		// MuJoCo's cylinder default axis is Z; euler="90 0 0" in the MJCF tips it onto Y
+		// (lateral) -- same operation here, a 90 degree Roll (UE FRotator rotates about X on
+		// Roll), frame-labelling-agnostic since the tire is rotationally symmetric about its own
+		// axis (see mesh/README.md).
+		WheelMesh->SetRelativeRotation(FRotator(0.f, 0.f, 90.f)); // FRotator(Pitch, Yaw, Roll)
+
+		WheelMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		WheelMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+		WheelMesh->SetSimulatePhysics(false);
+		WheelMesh->SetEnableGravity(false);
+		WheelMesh->SetMobility(EComponentMobility::Movable);
+
+		const FBoxSphereBounds Bounds = WheelMesh->CalcBounds(WheelMesh->GetComponentTransform());
+		UE_LOG(LogOverboardMesh, Log,
+			TEXT("ABoardActor: wheel mesh world bounds extent = (%.2f, %.2f, %.2f) cm -- expect radius ~14.54cm, ")
+			TEXT("width ~15cm if the assumed engine cylinder native bounds (radius 50uu, height 100uu) are correct. ")
+			TEXT("VERIFY VISUALLY, not assumed correct."),
+			Bounds.BoxExtent.X, Bounds.BoxExtent.Y, Bounds.BoxExtent.Z);
+	}
+	else
+	{
+		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor: failed to load wheel cylinder mesh (/Engine/BasicShapes/Cylinder.Cylinder)"));
+		bAllOk = false;
+	}
+
+	return bAllOk;
+}
+
+bool ABoardActor::BuildPartFromStl(UProceduralMeshComponent* Component, const FString& StlBaseName, float ExtraYawDeg)
+{
+	if (!Component)
+	{
+		return false;
+	}
+
+	const FString StlPath = FPaths::ProjectDir() / TEXT("Meshes/openwheel") / (StlBaseName + TEXT(".stl"));
+
+	OverboardMesh::FStlMesh StlMesh;
+	std::string Err;
+	if (!OverboardMesh::LoadBinaryStl(TCHAR_TO_UTF8(*StlPath), StlMesh, Err))
+	{
+		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor: failed to load %s: %s"), *StlBaseName, *FString(Err.c_str()));
+		return false;
+	}
+
+	constexpr float kMmToCm = 0.1f; // mesh/README.md: mm -> cm is x0.1 (MuJoCo's 0.001 x UE's 100)
+	const float YawRad = FMath::DegreesToRadians(ExtraYawDeg);
+	const float CosYaw = FMath::Cos(YawRad);
+	const float SinYaw = FMath::Sin(YawRad);
+
+	// mm -> cm, then the same Y-mirror wire/CoordinateTransform.cpp applies to world positions --
+	// see mesh/README.md: the actor's local mesh space is "world space at identity rotation", so
+	// the same right-to-left-handed mirror applies to local vertices too. Front_footpad's extra
+	// yaw (matching the MJCF's euler="0 0 180" on that one geom) is applied after the mirror, in
+	// UE-local space, as a plain 2D rotation about Z.
+	auto ToUeLocal = [kMmToCm, CosYaw, SinYaw](const OverboardMesh::FVec3& V) -> FVector
+	{
+		FVector P(V.X * kMmToCm, -V.Y * kMmToCm, V.Z * kMmToCm);
+		const float X = P.X;
+		const float Y = P.Y;
+		P.X = X * CosYaw - Y * SinYaw;
+		P.Y = X * SinYaw + Y * CosYaw;
+		return P;
+	};
+
+	const int32 TriCount = static_cast<int32>(StlMesh.Triangles.size());
+	TArray<FVector> Vertices;
+	TArray<int32> Triangles;
+	TArray<FVector> Normals;
+	TArray<FVector2D> UVs;
+	TArray<FColor> VertexColors;
+	TArray<FProcMeshTangent> Tangents;
+	Vertices.Reserve(TriCount * 3);
+	Triangles.Reserve(TriCount * 3);
+	Normals.Reserve(TriCount * 3);
+	UVs.Reserve(TriCount * 3);
+	VertexColors.Reserve(TriCount * 3);
+
+	int32 Index = 0;
+	for (const OverboardMesh::FStlTriangle& Tri : StlMesh.Triangles)
+	{
+		const FVector V0 = ToUeLocal(Tri.V0);
+		const FVector V1 = ToUeLocal(Tri.V1);
+		const FVector V2 = ToUeLocal(Tri.V2);
+
+		// Negating Y reverses winding -- add in (V0, V2, V1) order, not (V0, V1, V2), to keep
+		// faces front-facing. The normal below is computed from this same (already-swapped)
+		// order so it stays consistent with the winding, rather than trusting the STL's own
+		// facet normal (see StlLoader.h: deliberately ignored on load).
+		Vertices.Add(V0);
+		Vertices.Add(V2);
+		Vertices.Add(V1);
+
+		const FVector FaceNormal = FVector::CrossProduct(V2 - V0, V1 - V0).GetSafeNormal();
+		Normals.Add(FaceNormal);
+		Normals.Add(FaceNormal);
+		Normals.Add(FaceNormal);
+
+		Triangles.Add(Index);
+		Triangles.Add(Index + 1);
+		Triangles.Add(Index + 2);
+		Index += 3;
+
+		UVs.Add(FVector2D(0.f, 0.f));
+		UVs.Add(FVector2D(0.f, 0.f));
+		UVs.Add(FVector2D(0.f, 0.f));
+
+		// Not currently consumed by any material (see mesh/README.md -- per-part brand-palette
+		// colour is a deliberately deferred follow-up, not attempted blind). Included anyway so
+		// a future material can read it without another geometry pass.
+		VertexColors.Add(FColor::White);
+		VertexColors.Add(FColor::White);
+		VertexColors.Add(FColor::White);
+	}
+
+	Component->CreateMeshSection(0, Vertices, Triangles, Normals, UVs, VertexColors, Tangents, /*bCreateCollision=*/false);
+	Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Component->SetCollisionResponseToAllChannels(ECR_Ignore);
+	Component->SetSimulatePhysics(false);
+	Component->SetEnableGravity(false);
+	Component->SetMobility(EComponentMobility::Movable);
+
+	return true;
 }

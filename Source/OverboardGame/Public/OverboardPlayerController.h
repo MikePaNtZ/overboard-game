@@ -99,6 +99,14 @@ private:
 	TSharedPtr<FInternetAddr> HostAddr;
 	uint64 SendSeq = 0; // monotonic; never reset while the socket is open, so the host can detect loss
 
+	// Reset-on-fall (overboard#162 W3): with the outer velocity loop off, a fallen board coasts
+	// on whatever velocity it had rather than stopping, so it will leave the play area if nobody
+	// reacts. Rising-edge on ABoardActor::IsFallen() -- fires Flags::Reset for exactly one
+	// packet, not held, so a manual Reset button press afterwards isn't fighting a stuck flag.
+	bool bWasFallenLastTick = false;
+	bool bAutoResetPending = false;
+	void CheckForAutoResetOnFall();
+
 	void OnWeightShiftForeAft(const FInputActionValue& Value);
 	void OnWeightShiftLateral(const FInputActionValue& Value);
 	void OnSteer(const FInputActionValue& Value);

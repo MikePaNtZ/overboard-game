@@ -9,6 +9,8 @@
 #include "SocketSubsystem.h"
 #include "IPAddress.h"
 #include "OverboardWire.h"
+#include "OverboardGameMode.h"
+#include "BoardActor.h"
 #include "Logging/LogMacros.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogOverboardInput, Log, All);
@@ -124,10 +126,31 @@ void AOverboardPlayerController::PlayerTick(float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
 
+	CheckForAutoResetOnFall();
+
 	// Send at frame rate (#162 W2 dispatch) -- no accumulator/throttle. The wire has no framing
 	// beyond seq, so sending every Tick is both the simplest thing and what was asked for; if
 	// this ever needs decoupling from render rate, that's a deliberate follow-up, not a default.
 	SendInputPacket();
+}
+
+void AOverboardPlayerController::CheckForAutoResetOnFall()
+{
+	const AOverboardGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AOverboardGameMode>() : nullptr;
+	const ABoardActor* Board = GameMode ? GameMode->GetSpawnedBoard() : nullptr;
+	if (!Board)
+	{
+		return; // board not spawned yet -- nothing to check
+	}
+
+	const bool bIsFallenNow = Board->IsFallen();
+	if (bIsFallenNow && !bWasFallenLastTick)
+	{
+		// Rising edge only -- fires once per fall, not held for as long as Fallen stays set.
+		bAutoResetPending = true;
+		UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController: board fell, sending one Reset."));
+	}
+	bWasFallenLastTick = bIsFallenNow;
 }
 
 float AOverboardPlayerController::ShapeAxis(float Raw) const
@@ -153,7 +176,9 @@ void AOverboardPlayerController::SendInputPacket()
 
 	OverboardWire::FInputPacket Packet;
 	Packet.Seq = SendSeq++; // monotonic for the life of the socket, regardless of arm/reset state
-	Packet.Flags = (bArmHeld ? OverboardWire::EInputFlags::Arm : 0) | (bResetHeld ? OverboardWire::EInputFlags::Reset : 0);
+	const bool bSendReset = bResetHeld || bAutoResetPending;
+	bAutoResetPending = false; // one-shot: consumed the instant it's sent, never held
+	Packet.Flags = (bArmHeld ? OverboardWire::EInputFlags::Arm : 0) | (bSendReset ? OverboardWire::EInputFlags::Reset : 0);
 	// Deadzone + curve shape the raw stick, then clamp is the final, unconditional step before
 	// the wire -- do not rely on the host to sanitise, even though it does (#162 W2 dispatch).
 	Packet.WeightShiftForeAft = FMath::Clamp(ShapeAxis(CurrentForeAft), -1.f, 1.f);

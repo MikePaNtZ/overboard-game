@@ -19,5 +19,9 @@ wire/fake_sender
 wire/test_receiver
 wire/*.dSYM
 
+# Standalone mesh loader build output (mesh/Makefile builds these locally).
+mesh/test_stl_loader
+mesh/*.dSYM
+
 # macOS Finder noise.
 .DS_Store
