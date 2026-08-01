@@ -1,0 +1,20 @@
+# Unreal-generated, never checked in.
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+.vs/
+.vscode/
+*.xcworkspace
+*.xcodeproj
+*.VC.db
+*.opensdf
+*.sdf
+*.sln
+*.suo
+
+# Standalone wire harness build output (wire/Makefile builds these locally).
+wire/test_wire
+wire/fake_sender
+wire/test_receiver
+wire/*.dSYM
