@@ -1,19 +1,23 @@
 // OverboardPlayerController.h
 //
 // W2 (overboard#162): the real stick-to-channel mapping, deadzone/curve shaping, and a
-// per-frame send, now that the CEO has ruled on control mode.
+// per-frame send.
 //
-// THE CONTROL MODE MATTERS FOR HOW THIS READS: the outer velocity loop is ON (Senior Controls is
-// closing it now) -- the board station-keeps. Centre stick means "hold position," not "no
-// input"; the host actively parks the board when the stick is centred. That makes the deadzone
-// load-bearing in a way it wouldn't be for a "shove and coast" control mode: a small
-// uncorrected drift on a centred stick becomes a permanent slow creep rather than something
-// friction eventually eats, because the host is actively trying to null out whatever ground-speed
-// command it's given. This class's only job is to hand the host a clean, deadzoned, clamped
-// [-1,1] command every frame; it does no station-keeping itself.
+// THE CONTROL MODE MATTERS FOR HOW THIS READS, and the CEO's ruling on it reversed mid-W2: the
+// outer velocity loop is OFF. The board does NOT station-keep -- there is no term pulling it back
+// to rest. Centre stick means "coast at whatever velocity the board already has," not "hold
+// position." Fore/aft is a LEAN command, not a ground-speed command: push forward -> lean ->
+// accelerate; pull back -> decelerate, then reverse. That's real onewheel behaviour, deliberate,
+// not a placeholder. Because there's no active loop fighting a centred stick, a small uncorrected
+// centre-stick value is far less consequential than it would be under station-keeping (no
+// permanent creep-to-drift mechanism -- it just adds a little unwanted lean, not an unbounded
+// position error) -- still worth a sensible deadzone, but not something to over-engineer here.
+// This class's only job is to hand the host a clean, deadzoned, clamped [-1,1] command every
+// frame; it does no station-keeping (or any other physics) itself, regardless of control mode.
 //
 // Mapping (per #162's W2 dispatch):
-//   left stick fore/aft (Gamepad_LeftY)  -> weight_shift_fore_aft (ground-speed command)
+//   left stick fore/aft (Gamepad_LeftY)  -> weight_shift_fore_aft (a LEAN command -- accelerates/
+//                                            decelerates; centre stick coasts, it does not brake)
 //   right stick lateral (Gamepad_RightX) -> weight_shift_lateral AND steer, both from the same
 //                                            physical axis (lean-to-steer: leaning is how you
 //                                            steer, so one stick axis legitimately drives both
@@ -50,19 +54,20 @@ public:
 protected:
 	// Below this magnitude (post-normalization, [0,1] range) a raw stick reads as zero. Sized
 	// comfortably above typical Xbox/PS5 stick centre noise (a couple of percent) so a centred
-	// stick genuinely commands zero rather than a slow creep once the host is actively
-	// station-keeping against whatever it's told. Named/tunable rather than a magic number so
-	// this can be retuned once someone actually drives it.
+	// stick doesn't add unwanted lean. Deliberately not over-engineered: with the outer velocity
+	// loop off, a centred-stick miss just means a little unrequested lean, not a runaway
+	// position error, so this is a sensible-default deadzone, not a load-bearing one. Tune by
+	// feel once someone can actually drive it.
 	UPROPERTY(EditAnywhere, Category = "Board|Input", meta = (ClampMin = "0.0", ClampMax = "0.9"))
 	float StickDeadzone = 0.12f;
 
 	// Response curve applied past the deadzone: output = sign(x) * rescaled(x) ^ ResponseCurveExponent,
 	// where rescaled(x) remaps [Deadzone, 1] back to [0, 1] so the curve starts at 0 right past the
 	// deadzone edge instead of jumping. 1.0 = linear. >1.0 gives finer control near centre (small
-	// stick deflection -> even smaller command) while still reaching +-1 at full deflection --
-	// chosen because centre-stick is now "hold position", so small corrections near centre matter
-	// more than they would under a "shove and coast" control mode. 2.0 is a starting point, not a
-	// measured value; retune once someone has actually driven it (see PR).
+	// stick deflection -> even smaller command) while still reaching +-1 at full deflection. This
+	// now shapes a LEAN command (which maps to acceleration), not a ground-speed command -- it
+	// will feel different from a station-keeping curve. 2.0 is a starting point, not a measured
+	// value; tune by feel once someone has actually driven it (see PR).
 	UPROPERTY(EditAnywhere, Category = "Board|Input", meta = (ClampMin = "1.0", ClampMax = "4.0"))
 	float ResponseCurveExponent = 2.0f;
 
