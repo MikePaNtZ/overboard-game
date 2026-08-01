@@ -1,0 +1,35 @@
+# CODEOWNERS — path ownership map for overboard-game
+#
+# Roles are defined in docs/decisions/ROLES.md in the `overboard` repo, which is
+# the single home for the role list. The `# role:` tag above each rule is the
+# authoritative assignment.
+#
+# GitHub CODEOWNERS can only name real accounts and this org has one human, so
+# @MikePaNtZ is the reviewer on every rule. Enforcement lives in the policy
+# check in `overboard`. Do not remove the tags.
+#
+# OWNERSHIP GOVERNS WRITE, NOT READ.
+#
+# Last matching pattern wins, so specific rules go BELOW general ones.
+# See ADR-0002 (path ownership map) and ADR-0009 (this repo's existence).
+
+# --------------------------------------------------------------------------
+# Default. This repo is the Game Engineer's surface end to end.
+# --------------------------------------------------------------------------
+# role: Game Engineer
+*                               @MikePaNtZ
+
+# --------------------------------------------------------------------------
+# The front door and the boundary rule are a one-way door, like every other
+# repo's README in this estate. The rule that the renderer never computes
+# physics is not the Game Engineer's to relax.
+# --------------------------------------------------------------------------
+# role: CEO
+/README.md                      @MikePaNtZ
+
+# --------------------------------------------------------------------------
+# The decision record and role registry live in `overboard`. Governance files
+# here mirror them and are the COO's.
+# --------------------------------------------------------------------------
+# role: COO
+/.github/CODEOWNERS             @MikePaNtZ
