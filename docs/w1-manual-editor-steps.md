@@ -160,3 +160,58 @@ and passed, but worth re-confirming after any transform-adjacent change).
 None of the above changes the wire contract or the transform math — it's "look at the running
 editor and confirm what the standalone tests already proved numerically," plus the two visual
 fixes above that only a running session can actually confirm.
+
+## Bringing in a real environment (e.g. a Fab download)
+
+Written for someone who has never done this in this project. `OB_Main` (the flat checkered
+plane) is the fallback — ship it ugly rather than ship nothing — so nothing below risks that.
+
+1. **Import the asset.** From the Fab library / the downloaded package, add it to
+   `OverboardGame` the normal way (Epic Games Launcher "Add to Project", or drag the content
+   folder into the Content Browser). This puts a new folder under `Content/` (e.g.
+   `Content/DestroyedWarehouseKaarina/...`) alongside `Content/Maps/OB_Main.umap` — nothing here
+   touches or replaces `OB_Main`.
+
+2. **Open the environment's own demo/sample map** (most Fab environments ship one, usually named
+   something like `Demo_Map` or `Showcase` inside the asset's own folder) so you're looking at it
+   already lit and dressed, rather than an empty level with the assets floating in a content
+   browser.
+
+3. **Save it as a new map under `Content/Maps/`** — File > Save Current Level As... >
+   `Content/Maps/<something>` (e.g. `OB_Warehouse`). Don't overwrite `OB_Main` and don't leave it
+   living only inside the downloaded asset's own folder — keep every playable map in
+   `Content/Maps/` so they're easy to find later.
+
+4. **Set the GameMode override so the placeholder ground doesn't spawn.** Window > World Settings
+   (if the panel isn't already open) > **GameMode Override** > pick **OverboardGameMode_NoGround**
+   from the dropdown. This is a plain C++ class already built into the project — nothing to
+   create, no Blueprint to author, just a selection in that one dropdown. (Leaving GameMode
+   Override unset, or picking plain `OverboardGameMode`, spawns the 100x100m placeholder plane,
+   which will slice through the warehouse's floor/walls/props — that's the bug this step avoids.)
+   The board, camera, and everything else spawn exactly the same either way; only the ground
+   plane is affected.
+
+5. **Check the floor height is Z = 0.** MuJoCo's own ground plane is at Z = 0 in world space, and
+   the board's wire-driven position assumes that same ground height — it does not know anything
+   about this level's geometry (see the constraint below). If the warehouse's floor sits at some
+   other Z in the level, the board will appear to float above it or sink into it, and **that will
+   look exactly like a physics bug, not a level-placement issue** — it's the first thing to check
+   if the board doesn't sit on the visible floor. Select the floor/foundation piece(s) and read
+   their Z location in the Details panel; move the whole environment (or just double-check its
+   import origin) so the walkable floor is at Z = 0.
+
+6. **Press Play.** Stage the board in a clear area of floor for anything you're capturing. This
+   is a *destroyed* warehouse — expect rubble and debris on the floor. **That's cosmetically
+   fine.** The board will pass straight through props and rubble: collision stays off on every
+   board mesh component (see the constraint below), and the environment is scenery only, so
+   nothing here is a physics interaction to report as broken. If the board is sliding around on
+   its own with no host connected, that's still the same "not a bug" note from the top of this
+   doc (real host's unconditional startup impulse) — it applies here too, the environment doesn't
+   change it.
+
+**Constraint that doesn't move:** the environment is scenery only. It must never become collision
+the board interacts with — MuJoCo runs on a plain ground plane and knows nothing about the
+warehouse, so the moment Unreal geometry starts affecting the board's motion, the boundary rule
+(this repo computes no physics) has failed. If anything about the environment ever needs to
+affect the board, that has to happen by changing what MuJoCo simulates, not by wiring UE collision
+into `ABoardActor`.
