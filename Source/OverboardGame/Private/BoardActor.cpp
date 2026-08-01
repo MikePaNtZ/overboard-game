@@ -64,8 +64,13 @@ void ABoardActor::UpdatePoseFromHistory()
 		return;
 	}
 
+	// Ask for the client's whole retained window (see FBoardStateClient::kHistoryRetentionSeconds,
+	// currently 0.25s -- comfortably more than RenderDelaySeconds below, including margin for the
+	// real host's bursty ~500Hz cadence rather than a smooth one). Requesting only a handful of
+	// samples here would silently reintroduce the same "history shorter than the render delay"
+	// gap that GetHistorySnapshot's own default already guards against.
 	TArray<FTimestampedBoardState> History;
-	StateClient->GetHistorySnapshot(History, 8);
+	StateClient->GetHistorySnapshot(History);
 	if (History.Num() == 0)
 	{
 		return; // nothing received yet -- hold current pose, do not guess

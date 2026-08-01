@@ -41,12 +41,40 @@ this pass had no display/interactive session available:
    the stick (payload will look like binary noise in `nc`, which is expected and fine — it's not
    a text protocol).
 
-7. **The handedness sanity check the transform code asks for** (see
-   `wire/CoordinateTransform.h` comment and `wire/README.md` "what is NOT proven here"): command
-   a known pure pitch and a known pure yaw through the state feed (`fake_sender` currently only
-   sweeps position — extending it to sweep a rotation is a small follow-up) and confirm the board
-   turns the way you expect. Do this before trusting the transform for anything beyond "the
-   formula ADR-0010 described is what got implemented."
+7. **The handedness sanity check the transform code asks for.** `wire/tests/test_wire.cpp`
+   proves the *numbers* `MuJoCoToUnreal()` produces are what the ADR-0010 mirror formula demands
+   (see the derivation comments in `Test_TransformPureNoseUpPitch` / `Test_TransformPureYawTowardLeft`
+   / `Test_TransformPureRollRight`). It cannot prove those numbers *look* right on screen — that
+   needs this step, with PIE running and the board visible:
+
+   ```
+   cd /Users/mike/projects/overboard-game/wire
+   make fake_sender
+   ./fake_sender --rotate
+   ```
+
+   This runs a ~20s scripted sequence, printing a label to the terminal for each phase as it
+   starts. Watch the board in the viewport and confirm each phase matches:
+
+   | Phase (printed label) | Expected on screen |
+   |---|---|
+   | `level (baseline)` | Board sits flat, no tilt. |
+   | `NOSE UP (+25 deg)` | The end of the board pointing along +X (world forward, the direction the camera/pawn faces at spawn) **lifts**; the board tips backward like a skateboard nose-lifting. |
+   | `NOSE DOWN (-25 deg)` | The same end **drops** toward the ground — the opposite of the phase above. |
+   | `YAW LEFT (+25 deg)` | The nose swings toward **screen-left** (toward -Y in the viewport, since UE's +Y is world-right — see `wire/tests/test_wire.cpp` comment on `Test_TransformPureYawTowardLeft`). |
+   | `ROLL RIGHT (+25 deg)` | The **right-hand edge** of the board (as seen facing the same way the nose points) dips toward the ground; the left edge lifts. |
+   | `slow continuous pitch sweep` | The board rocks nose-up/nose-down smoothly and periodically, roughly one full cycle every 3s, with no snapping, jittering, or sudden reversal. |
+
+   **What a mirrored (handedness-bug) failure looks like, so you know it when you see it:** any
+   phase where the board moves the *opposite* way from the table above — nose dropping during
+   `NOSE UP`, the board turning right during `YAW LEFT`, the left edge dipping during
+   `ROLL RIGHT`. That "looks like correct motion, just backwards" is exactly the failure mode
+   this check exists to catch; it will not look broken at a glance, only wrong once you check it
+   against a specific commanded phase. If any phase comes out mirrored, the bug is in
+   `wire/CoordinateTransform.cpp` (`MuJoCoToUnreal`) or in how `ABoardActor` applies the result
+   (`Source/OverboardGame/Private/BoardActor.cpp`, `UpdatePoseFromHistory` — check the `FQuat`
+   component order passed to its constructor, `(X,Y,Z,W)`, against `QuatWXYZ`), not in
+   `fake_sender` — it emits exactly the quaternions `test_wire.cpp` already asserts on.
 
 None of this changes the wire contract or the transform math — it's purely "look at the running
 editor and confirm what the standalone tests already proved numerically."
