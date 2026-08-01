@@ -2,6 +2,7 @@
 
 #include "BoardActor.h"
 #include "OverboardPlayerController.h"
+#include "OverboardCameraPawn.h"
 #include "Engine/StaticMeshActor.h"
 #include "Components/StaticMeshComponent.h"
 #include "UObject/ConstructorHelpers.h"
@@ -9,7 +10,11 @@
 AOverboardGameMode::AOverboardGameMode()
 {
 	PlayerControllerClass = AOverboardPlayerController::StaticClass();
-	DefaultPawnClass = nullptr; // no avatar for W1 -- board pose comes from the wire, not a pawn
+	// Still nullptr: the camera pawn (spawned in BeginPlay below) possesses itself via
+	// AutoPossessPlayer rather than going through GameMode's default-pawn/PlayerStart flow --
+	// simpler for a single-player prototype with no PlayerStart authored yet. The BOARD remains
+	// wire-driven, not a pawn -- that has not changed since W1.
+	DefaultPawnClass = nullptr;
 }
 
 void AOverboardGameMode::BeginPlay()
@@ -33,4 +38,10 @@ void AOverboardGameMode::BeginPlay()
 	}
 
 	SpawnedBoard = World->SpawnActor<ABoardActor>(FVector(0.f, 0.f, 50.f), FRotator::ZeroRotator);
+
+	// W2: something to look through. See AOverboardCameraPawn -- possesses itself, finds the
+	// board lazily, so spawn order relative to SpawnedBoard above doesn't matter. Starting
+	// transform here is just "somewhere behind the board"; the pawn's own Tick takes over
+	// immediately once it acquires a follow target.
+	World->SpawnActor<AOverboardCameraPawn>(FVector(-800.f, 0.f, 200.f), FRotator::ZeroRotator);
 }
