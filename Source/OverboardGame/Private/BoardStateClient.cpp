@@ -121,7 +121,23 @@ uint32 FBoardStateClient::Run()
 
 		FScopeLock Lock(&HistoryLock);
 		History.Add(Sample);
-		while (History.Num() > kMaxHistory)
+
+		// Drain fully, keep the newest: this loop only ever appends here, one RecvFrom() per
+		// iteration, but the outer while(!bRequestStop) loop re-checks Socket->Wait() immediately
+		// after -- which returns instantly while the OS receive buffer still has queued
+		// datagrams. So a burst of back-to-back packets drains in a tight loop on this thread,
+		// decoupled from the game thread's Tick() rate; nothing here waits for a game frame
+		// before consuming the next queued packet, so a burst cannot make this fall behind.
+		//
+		// Trim by age, not count (see kHistoryRetentionSeconds comment in the header) -- plus a
+		// hard cap purely as a safety net against unbounded growth if something pathological
+		// happens upstream.
+		while (History.Num() > kHistoryHardCap)
+		{
+			History.RemoveAt(0);
+		}
+		const double NewestArrival = History.Last().ArrivalTimeSeconds;
+		while (History.Num() > 1 && (NewestArrival - History[0].ArrivalTimeSeconds) > kHistoryRetentionSeconds)
 		{
 			History.RemoveAt(0);
 		}

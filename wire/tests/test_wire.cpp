@@ -165,51 +165,109 @@ namespace
 		Check(NearlyEqual(Out.PosCm[2], -50.0), "Z: metres -> cm, no sign flip");
 	}
 
-	// A pure pitch about MuJoCo's Y axis (lateral) by angle Theta.
-	void Test_TransformPurePitch()
+	// ---- Rotation derivations ---------------------------------------------------------------
+	//
+	// Both frames put X = forward, Z = up. MuJoCo is right-handed, so its Y = LEFT (the only
+	// basis that makes X-forward, Z-up right-handed: X x Y = Z requires Y = left). UE is
+	// left-handed with Y = RIGHT. That is the entire physical content of "mirror Y".
+	//
+	// General rule for reflecting a rotation through a single mirrored axis (proved by
+	// conjugating the rotation matrix R by the reflection M = diag(1,-1,1): M R M represents the
+	// same physical rotation re-expressed in the mirrored frame, and equals a rotation by -theta
+	// about the axis-with-Y-negated): components along the mirrored axis (y) and the scalar (w)
+	// are unchanged; components along the two non-mirrored axes (x, z) negate. That is exactly
+	// (w,x,y,z) -> (w,-x,y,-z), and it is a physical-consistency requirement, not an arbitrary
+	// sign choice: mirroring the coordinate LABELS must not mirror the EVENT being rendered.
+	// A rider leaning left must still render as leaning left; nose-up must still render as
+	// nose-up. Each test below picks a physically-named MuJoCo attitude, derives what it must
+	// look like once re-expressed in UE's own left-handed convention (independently, via the
+	// standard axis-angle rotation matrices for each frame), and asserts MuJoCoToUnreal produces
+	// exactly that quaternion. A handedness bug -- e.g. dropping a sign, or negating the wrong
+	// pair of components -- passes "it compiles" but fails these because the physical direction
+	// comes out mirrored (nose-up renders as nose-down, roll-right renders as roll-left, etc.),
+	// which is precisely the failure mode that survives eyeballing a symmetric placeholder box.
+
+	// pitch_rad is spec'd "nose-up positive" (see OverboardWire.h). Using the standard
+	// right-handed rotation matrix about +Y, R_y(theta)*X = (cos theta, 0, -sin theta): a
+	// *positive* theta about MuJoCo's raw +Y axis tips the forward vector toward -Z (nose DOWN).
+	// So "nose up by Phi" is theta = -Phi about +Y, i.e. quat (cos(Phi/2), 0, -sin(Phi/2), 0).
+	void Test_TransformPureNoseUpPitch()
 	{
-		std::printf("Test_TransformPurePitch\n");
-		const double Theta = 0.3; // radians
+		std::printf("Test_TransformPureNoseUpPitch\n");
+		const double Phi = 0.3; // radians, nose-up magnitude
 		float Pos[3] = {0.f, 0.f, 0.f};
-		float Quat[4] = {
-			static_cast<float>(std::cos(Theta / 2.0)),
+		float MuJoCoNoseUp[4] = {
+			static_cast<float>(std::cos(Phi / 2.0)),
 			0.f,
-			static_cast<float>(std::sin(Theta / 2.0)),
+			static_cast<float>(-std::sin(Phi / 2.0)),
 			0.f,
 		};
-		FUeTransform Out = MuJoCoToUnreal(Pos, Quat);
-		// x=z=0 going in, so the mirror leaves all four components numerically unchanged for a
-		// pure-Y rotation. NOTE: unverified in-editor -- confirm this actually reads as
-		// "nose up" the right way round on a commanded pure pitch before trusting it further.
-		Check(NearlyEqual(Out.QuatWXYZ[0], Quat[0]), "pure pitch: w unchanged");
-		Check(NearlyEqual(Out.QuatWXYZ[1], 0.0), "pure pitch: x stays 0");
-		Check(NearlyEqual(Out.QuatWXYZ[2], Quat[2]), "pure pitch: y (rotation axis) unchanged");
-		Check(NearlyEqual(Out.QuatWXYZ[3], 0.0), "pure pitch: z stays 0");
+		FUeTransform Out = MuJoCoToUnreal(Pos, MuJoCoNoseUp);
+		// y is the mirrored axis's own component -> unchanged; x, z stay 0 -> unchanged. The
+		// result is numerically identical to the input, and by the same R_y(theta)*X argument
+		// applied in UE's frame, (w, 0, -sin(Phi/2), 0) is ALSO nose-up there (rotation about
+		// +Y by -Phi tips UE's forward vector toward +Z). Pitch does not touch Y itself, so this
+		// axis is the one case where "unchanged" is the physically-correct answer, not a
+		// red flag.
+		Check(NearlyEqual(Out.QuatWXYZ[0], MuJoCoNoseUp[0]), "nose-up pitch: w unchanged");
+		Check(NearlyEqual(Out.QuatWXYZ[1], 0.0), "nose-up pitch: x stays 0");
+		Check(NearlyEqual(Out.QuatWXYZ[2], MuJoCoNoseUp[2]), "nose-up pitch: y (mirrored axis, unaffected by pitch) unchanged");
+		Check(NearlyEqual(Out.QuatWXYZ[3], 0.0), "nose-up pitch: z stays 0");
 	}
 
-	// A pure yaw about MuJoCo's Z axis (vertical, the non-physical steering channel's axis) by
-	// angle Theta.
-	void Test_TransformPureYaw()
+	// Yaw sign is not spec'd (yaw_rad is a non-physical game channel with no fixed convention),
+	// so this picks one and names it: MuJoCo's raw +Z rotation swings the forward vector toward
+	// +Y, i.e. toward MuJoCo-LEFT (from R_z(theta)*X = (cos theta, sin theta, 0)). Quat:
+	// (cos(Phi/2), 0, 0, sin(Phi/2)).
+	void Test_TransformPureYawTowardLeft()
 	{
-		std::printf("Test_TransformPureYaw\n");
-		const double Theta = 0.3; // radians
+		std::printf("Test_TransformPureYawTowardLeft\n");
+		const double Phi = 0.3; // radians
 		float Pos[3] = {0.f, 0.f, 0.f};
-		float Quat[4] = {
-			static_cast<float>(std::cos(Theta / 2.0)),
+		float MuJoCoYawLeft[4] = {
+			static_cast<float>(std::cos(Phi / 2.0)),
 			0.f,
 			0.f,
-			static_cast<float>(std::sin(Theta / 2.0)),
+			static_cast<float>(std::sin(Phi / 2.0)),
 		};
-		FUeTransform Out = MuJoCoToUnreal(Pos, Quat);
-		// z is one of the two mirrored components -> negates. This means a positive MuJoCo yaw
-		// becomes a negative-signed z component in UE's quat, i.e. the sense of rotation flips,
-		// which is the expected outcome of mirroring a single axis (Y) of a right-handed frame.
-		// NOTE: unverified in-editor -- confirm the visible turn direction against a commanded
-		// pure yaw before trusting this for anything beyond "it compiles".
-		Check(NearlyEqual(Out.QuatWXYZ[0], Quat[0]), "pure yaw: w unchanged");
-		Check(NearlyEqual(Out.QuatWXYZ[1], 0.0), "pure yaw: x stays 0");
-		Check(NearlyEqual(Out.QuatWXYZ[2], 0.0), "pure yaw: y stays 0");
-		Check(NearlyEqual(Out.QuatWXYZ[3], -Quat[3]), "pure yaw: z (mirrored axis pair) negates");
+		FUeTransform Out = MuJoCoToUnreal(Pos, MuJoCoYawLeft);
+		// z is one of the two mirrored components -> negates: (w, 0, 0, -sin(Phi/2)). That is
+		// rotation about UE's +Z by -Phi, which by the identical R_z(theta)*X argument swings
+		// UE's forward vector toward -Y. UE's +Y is RIGHT, so -Y is UE-LEFT. MuJoCo-left in ->
+		// UE-left out: the physical direction survives the relabelling, which is the point.
+		// (A handedness bug that failed to negate z, or negated the wrong component, would
+		// instead render this as a turn to the right -- silently mirrored.)
+		Check(NearlyEqual(Out.QuatWXYZ[0], MuJoCoYawLeft[0]), "yaw-left: w unchanged");
+		Check(NearlyEqual(Out.QuatWXYZ[1], 0.0), "yaw-left: x stays 0");
+		Check(NearlyEqual(Out.QuatWXYZ[2], 0.0), "yaw-left: y stays 0");
+		Check(NearlyEqual(Out.QuatWXYZ[3], -MuJoCoYawLeft[3]), "yaw-left: z negates (physical left is preserved -- see comment)");
+	}
+
+	// Roll about MuJoCo's raw +X (forward) axis. This is the axis the widened wheel geom will
+	// exercise most on Sunday (lean side to side while balancing). From R_x(theta)*Z =
+	// (0, -sin theta, cos theta): a positive theta about +X tips the up vector toward -Y, i.e.
+	// toward MuJoCo-RIGHT (since +Y is left) -- the right edge dips. Call that "roll right".
+	// Quat: (cos(Phi/2), sin(Phi/2), 0, 0).
+	void Test_TransformPureRollRight()
+	{
+		std::printf("Test_TransformPureRollRight\n");
+		const double Phi = 0.3; // radians
+		float Pos[3] = {0.f, 0.f, 0.f};
+		float MuJoCoRollRight[4] = {
+			static_cast<float>(std::cos(Phi / 2.0)),
+			static_cast<float>(std::sin(Phi / 2.0)),
+			0.f,
+			0.f,
+		};
+		FUeTransform Out = MuJoCoToUnreal(Pos, MuJoCoRollRight);
+		// x is the other mirrored component -> negates: (w, -sin(Phi/2), 0, 0). That is rotation
+		// about UE's +X by -Phi. By the same R_x(theta)*Z argument, a *negative* theta about +X
+		// tips UE's up vector toward +Y -- and UE's +Y is RIGHT, so the right edge dips there
+		// too. Roll-right in -> roll-right out; physical direction preserved, same as yaw.
+		Check(NearlyEqual(Out.QuatWXYZ[0], MuJoCoRollRight[0]), "roll-right: w unchanged");
+		Check(NearlyEqual(Out.QuatWXYZ[1], -MuJoCoRollRight[1]), "roll-right: x negates (physical right-dip is preserved -- see comment)");
+		Check(NearlyEqual(Out.QuatWXYZ[2], 0.0), "roll-right: y stays 0");
+		Check(NearlyEqual(Out.QuatWXYZ[3], 0.0), "roll-right: z stays 0");
 	}
 }
 
@@ -222,8 +280,9 @@ int main()
 	Test_InputPacketRoundTrip();
 	Test_TransformIdentity();
 	Test_TransformPosition();
-	Test_TransformPurePitch();
-	Test_TransformPureYaw();
+	Test_TransformPureNoseUpPitch();
+	Test_TransformPureYawTowardLeft();
+	Test_TransformPureRollRight();
 
 	if (gFailures == 0)
 	{
