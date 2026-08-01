@@ -18,3 +18,6 @@ wire/test_wire
 wire/fake_sender
 wire/test_receiver
 wire/*.dSYM
+
+# macOS Finder noise.
+.DS_Store
