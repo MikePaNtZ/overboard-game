@@ -1,10 +1,13 @@
-# W1/W2 — manual editor steps
+# W1/W2/W3 — manual editor steps
 
 Mike's first PIE session (overboard#162) already confirmed the big two: the coordinate transform
 is not mirrored (all four rotation phases checked out), and the real host drives the board
-forward/coast/reverse correctly end-to-end. This doc is no longer "nobody has looked yet" — it's
-now "here's what's already confirmed, here's the two known-fixed-but-unverified follow-ups, and
-here's how a first-time reader tells right from wrong."
+forward/coast/reverse correctly end-to-end. Since then (W3): the board actor's mesh is the real
+Openwheel geometry MuJoCo simulates, built at runtime from STL, not the placeholder box — see
+"real board geometry" under step 3. **None of the W3 geometry has been seen on screen yet** —
+same "no display in this environment" constraint as every prior pass. This doc is "here's what's
+already confirmed, here's what's new and unverified, and here's how a first-time reader tells
+right from wrong within a minute."
 
 ## Read this before you press Play
 
@@ -44,14 +47,35 @@ and passed, but worth re-confirming after any transform-adjacent change).
    log warning if that binding path fails).
 
 3. **Press Play (PIE).** `AOverboardGameMode::BeginPlay` spawns, all in C++ (nothing hand-placed
-   in the level yet): a 100x100m flat ground plane, the placeholder board actor (a low flat box,
-   not the real model — collision and gravity are off on it; its position comes entirely from
-   the wire, never from Unreal physics), and `AOverboardCameraPawn`, a chase camera that
-   auto-possesses Player0 and finds the board on its own.
+   in the level yet): a 100x100m flat ground plane, the board actor, and `AOverboardCameraPawn`,
+   a chase camera that auto-possesses Player0 and finds the board on its own. Collision and
+   gravity are off on every board mesh component — the board's position comes entirely from the
+   wire, never from Unreal physics.
 
    **With nothing sending state (no host, no `fake_sender`) the board should sit still at the
    origin.** If the board is moving with nothing connected, that's a real bug (nothing should be
    able to move it without a wire packet telling it to).
+
+   **Real board geometry (new, W3, completely unverified visually).** The board actor should be
+   the real Openwheel STL geometry (`Meshes/openwheel/`), built at runtime — not the low flat
+   placeholder box. Check the Output Log for one of two outcomes:
+   - `ABoardActor: real board mesh loaded, placeholder box hidden.` — the real mesh built. Look
+     at the board: seven distinct shell/bumper/footpad/platform parts plus a wheel cylinder,
+     roughly matching a real onewheel's proportions. **If it looks roughly 10x too big or too
+     small, or any single part is wildly out of place**, that's the first thing to report —
+     `mesh/README.md` and the code comments in `ABoardActor::BuildPartFromStl` /
+     `TryBuildRealMesh` explain the mm→cm scale and placement logic to check against. The wheel
+     specifically depends on an *assumed* (not verified) native size for
+     `/Engine/BasicShapes/Cylinder.Cylinder` — there's a log line printing its actual computed
+     bounds in cm to check against the expected ~14.54cm radius / ~15cm width.
+   - `ABoardActor: real board mesh failed to load ... falling back to the placeholder box.` — you
+     see the low flat box instead. Not silent, not invisible — but means something in the STL
+     load path failed; look a few lines up in the Output Log for which specific part
+     (`ABoardActor: failed to load <name>: <error>`) and why.
+
+   Materials/colour are **not** attempted this pass (default engine grey) — deliberately, to keep
+   risk down; the exact brand-palette RGBA per part is in `overboard`'s
+   `sim/models/overboard_onewheel.xml` `<asset>` block whenever someone wants to add it.
 
    **Two known, fixed-but-not-yet-re-verified issues from the first session, both yours to watch
    for:**
@@ -122,6 +146,16 @@ and passed, but worth re-confirming after any transform-adjacent change).
    With no host running: no errors in the Output Log is the available check, and optionally
    `nc -ul 9602` in a terminal to confirm UDP datagrams land while you move the stick (binary
    noise in `nc` is expected — it's not a text protocol).
+
+7. **Reset-on-fall (new, W3, untested against a real host).** With the outer velocity loop off,
+   a fallen board coasts on whatever velocity it had rather than stopping, so it can leave the
+   play area if nobody reacts. `AOverboardPlayerController` watches `ABoardActor::IsFallen()`
+   (the `Fallen` bit on the newest received state) and fires one `Reset` packet on the
+   rising edge — not held down, exactly one packet per fall. Output Log line to look for:
+   `AOverboardPlayerController: board fell, sending one Reset.` This has never run against a
+   real host (nothing in this repo can trigger a `Fallen` flag standalone) — if the board falls
+   and does *not* visibly reset, check that log line fired at all before assuming the host
+   ignored the Reset flag.
 
 None of the above changes the wire contract or the transform math — it's "look at the running
 editor and confirm what the standalone tests already proved numerically," plus the two visual

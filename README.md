@@ -46,9 +46,21 @@ because this application cannot meet it by construction.
 
 ## Status
 
-Empty scaffold. Nothing is built yet. Phase P1 in the **M3 Implementation Plan** is the first
-increment: render an existing, CI-gated scenario live, with no player input at all, to prove the
-transport, the frame transform and the rate handling before anything else is added.
+Past the empty-scaffold phase: the wire contract (ADR-0010), the coordinate transform, a UE 5.7
+C++ project with a board actor, gamepad input, and a chase camera are landed (see closed work on
+[overboard#162](https://github.com/MikePaNtZ/overboard/issues/162)). The board actor's mesh is
+the real Openwheel geometry MuJoCo simulates (see **Third-party assets** below), not a placeholder
+box, though a box remains the fallback if a mesh fails to load at runtime.
+
+## Third-party assets
+
+`Meshes/openwheel/` carries the STL geometry MuJoCo's plant model (`overboard`'s
+`sim/models/overboard_onewheel.xml`) actually simulates, copied byte-for-byte from
+`overboard`'s `sim/models/meshes/openwheel/`. Source: **Openwheel** by Byte Sized Engineering
+(https://github.com/bytesizedengineering/Openwheel), **MIT licensed**. `Meshes/openwheel/LICENSE`
+and `Meshes/openwheel/NOTICE.md` are verbatim copies of the license text and the attribution
+record (including a real README/LICENSE licensing discrepancy upstream and how this project
+resolved it) — read `NOTICE.md` before touching these files; do not paraphrase it elsewhere.
 
 ## What this repo must not do
 
