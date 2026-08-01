@@ -28,6 +28,10 @@ void AOverboardGameMode::BeginPlay()
 	}
 
 	// Flat ground plane. Placeholder scale of a 100x100m plane (Engine's unit plane is 1x1m).
+	// Conditional on bSpawnPlaceholderGround (overboard#162): a level that supplies its own
+	// floor -- an imported environment -- must be able to opt out, or this unconditionally
+	// spawned plane slices through its geometry with no way to remove it in the editor (it isn't
+	// a level asset). See OverboardGameMode.h and AOverboardGameMode_NoGround below.
 	//
 	// LoadObject, NOT ConstructorHelpers::FObjectFinder. FObjectFinder asserts if it is
 	// constructed outside a UObject constructor -- and BeginPlay is not one, so the previous
@@ -41,20 +45,23 @@ void AOverboardGameMode::BeginPlay()
 	// engine-free wire/ tests and nothing else -- the defect was only ever reachable by
 	// pressing Play, which no automated pass in this repo can do. Keep runtime asset loads on
 	// LoadObject; reserve FObjectFinder for constructors (see ABoardActor, where it is correct).
-	UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
-	AStaticMeshActor* Ground = World->SpawnActor<AStaticMeshActor>(FVector::ZeroVector, FRotator::ZeroRotator);
-	if (Ground && PlaneMesh)
+	if (bSpawnPlaceholderGround)
 	{
-		Ground->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
-		Ground->GetStaticMeshComponent()->SetWorldScale3D(FVector(100.f, 100.f, 1.f));
-		Ground->SetMobility(EComponentMobility::Static);
-		// Shadow acne fix (overboard#162, first PIE session): a 1m unit plane stretched 100x
-		// gives its UVs/normals an extreme scale, a classic Virtual Shadow Map acne source. The
-		// plane is flat and has nothing meaningful to cast a shadow onto itself or anything
-		// below it -- it should only ever RECEIVE the board's shadow, never cast its own.
-		// Deliberately not disabling VSMs/Lumen project-wide: that would trade one local
-		// artifact for a global downgrade in how the launch footage looks.
-		Ground->GetStaticMeshComponent()->SetCastShadow(false);
+		UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+		AStaticMeshActor* Ground = World->SpawnActor<AStaticMeshActor>(FVector::ZeroVector, FRotator::ZeroRotator);
+		if (Ground && PlaneMesh)
+		{
+			Ground->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
+			Ground->GetStaticMeshComponent()->SetWorldScale3D(FVector(100.f, 100.f, 1.f));
+			Ground->SetMobility(EComponentMobility::Static);
+			// Shadow acne fix (overboard#162, first PIE session): a 1m unit plane stretched 100x
+			// gives its UVs/normals an extreme scale, a classic Virtual Shadow Map acne source. The
+			// plane is flat and has nothing meaningful to cast a shadow onto itself or anything
+			// below it -- it should only ever RECEIVE the board's shadow, never cast its own.
+			// Deliberately not disabling VSMs/Lumen project-wide: that would trade one local
+			// artifact for a global downgrade in how the launch footage looks.
+			Ground->GetStaticMeshComponent()->SetCastShadow(false);
+		}
 	}
 
 	SpawnedBoard = World->SpawnActor<ABoardActor>(FVector(0.f, 0.f, 50.f), FRotator::ZeroRotator);
