@@ -17,8 +17,11 @@ board, it does not own contact, and collision and gravity are disabled on the bo
 transform is driven entirely from state the controls repo computed. If this application ever
 computes a board state, the boundary has failed.
 
-This is `overboard-viz`'s rule, deliberately reused. The difference is only that viz replays a
-batched pose track and this replays a live stream — and sends setpoints back.
+The **rule** is `overboard-viz`'s, deliberately inherited. The **mechanism is not**, and the
+difference is not cosmetic: viz reads one file, one direction, offline. This repo holds a live
+two-way contract against a 500 Hz control loop, and the reverse channel — player input reaching a
+real-time controller — has no precedent anywhere in this estate. It is the newest and riskiest
+thing here, so it is versioned like the C ABI and a schema mismatch fails loudly.
 
 Two data contracts cross, and **neither repo imports the other**:
 
@@ -46,3 +49,10 @@ because this application cannot meet it by construction.
 Empty scaffold. Nothing is built yet. Phase P1 in the **M3 Implementation Plan** is the first
 increment: render an existing, CI-gated scenario live, with no player input at all, to prove the
 transport, the frame transform and the rate handling before anything else is added.
+
+## What this repo must not do
+
+Consume the 500 Hz host across the wire contract. **Do not link MuJoCo or `control-core` into the
+Unreal build.** The host — physics plus the real control law — is published as a versioned artifact
+by `overboard`, and keeping it behind one version string is what makes "which control law was this
+session run against?" answerable without reconstructing a build graph. See ADR-0009.
