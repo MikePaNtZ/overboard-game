@@ -32,3 +32,13 @@ jobs:
       # Do the LEVELS pass? A validator nobody points at the assets is not a gate.
       - name: make check
         run: cd terrain && make check
+
+      # The runtime decides whether to tag the screen "TERRAIN UNVERIFIED" from a table
+      # GENERATED out of these declarations. Regenerate it and fail on any diff, so the on-screen
+      # claim and the declarations cannot part company -- a hand-kept second copy of "which
+      # levels are verified" is exactly the drifting prose this directory exists to replace.
+      - name: generated verification table is up to date
+        run: |
+          cd terrain && make terraincheck
+          ./terraincheck --repo-root .. --emit-header ../Source/OverboardGame/Public/TerrainVerification.g.h
+          cd .. && git diff --exit-code -- Source/OverboardGame/Public/TerrainVerification.g.h

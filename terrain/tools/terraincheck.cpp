@@ -7,6 +7,15 @@
 //
 // Usage:  terraincheck [--repo-root <path>] [--strict] [--quiet]
 //
+//   --emit-header <path>
+//              write the per-level verified/unverified table as a plain C++ header and exit.
+//              The runtime reads it to decide whether to tag the screen (AOverboardHUD), which
+//              is the third of the three things closing the `kind external` hole in this gate.
+//              Generated rather than hand-maintained on purpose: a hand-kept copy of "which
+//              levels are verified" is a second source of truth, and this whole directory exists
+//              because a constraint kept in prose stops being true without anybody noticing. CI
+//              regenerates and diffs it, so the two cannot part company.
+//
 //   --strict   also fail on surfaces declared `status unverified`. This is what a public-build
 //              job runs. It is NOT the default, because `OB_City` sits over a Fab pack that is
 //              gitignored and can never be committed, and a permanently-red required check
@@ -24,6 +33,7 @@
 #include <dirent.h>
 #include <string>
 #include <sys/stat.h>
+#include <utility>
 #include <vector>
 
 using namespace OverboardTerrain;
@@ -61,12 +71,14 @@ namespace
 int main(int Argc, char** Argv)
 {
 	std::string RepoRoot = "..";
+	std::string EmitHeaderPath;
 	bool Strict = false;
 	bool Quiet = false;
 
 	for (int i = 1; i < Argc; ++i)
 	{
 		if (std::strcmp(Argv[i], "--repo-root") == 0 && i + 1 < Argc) { RepoRoot = Argv[++i]; }
+		else if (std::strcmp(Argv[i], "--emit-header") == 0 && i + 1 < Argc) { EmitHeaderPath = Argv[++i]; }
 		else if (std::strcmp(Argv[i], "--strict") == 0) { Strict = true; }
 		else if (std::strcmp(Argv[i], "--quiet") == 0) { Quiet = true; }
 		else
@@ -84,6 +96,85 @@ int main(int Argc, char** Argv)
 	{
 		std::fprintf(stderr, "terraincheck: cannot list '%s'\n", MapsDir.c_str());
 		return 2;
+	}
+
+	if (!EmitHeaderPath.empty())
+	{
+		std::vector<std::pair<std::string, bool>> Table;
+		for (const std::string& MapFile : Maps)
+		{
+			const std::string Stem = StemOf(MapFile);
+			FLevelDecl Decl;
+			std::string Err;
+			// A level with no declaration, or one that will not parse, is reported UNVERIFIED
+			// here as well as failing the check below. The two answers must not disagree: a
+			// level nobody declared is not a level that passed.
+			bool Verified = ParseLevelDecl(DeclDir + "/" + Stem + ".terrain", Decl, Err);
+			for (const FSurfaceDecl& S : Decl.Surfaces)
+			{
+				if (S.Status != EVerifyStatus::Verified)
+				{
+					Verified = false;
+				}
+			}
+			Table.emplace_back(Stem, Verified);
+		}
+
+		FILE* F = std::fopen(EmitHeaderPath.c_str(), "w");
+		if (F == nullptr)
+		{
+			std::fprintf(stderr, "terraincheck: cannot write '%s'\n", EmitHeaderPath.c_str());
+			return 2;
+		}
+		std::fprintf(F,
+			"// GENERATED FILE -- do not edit by hand.\n"
+			"//\n"
+			"// Written by `terraincheck --emit-header` from terrain/levels/*.terrain, which are the\n"
+			"// source of truth. CI regenerates this and fails on any diff, so it cannot drift from the\n"
+			"// declarations the way a hand-kept second copy would.\n"
+			"//\n"
+			"// A level is verified only if EVERY declared surface is `status verified`. A level with no\n"
+			"// declaration, or one that will not parse, is unverified -- a level nobody declared is not\n"
+			"// a level that passed.\n"
+			"//\n"
+			"// Consumed by AOverboardHUD to tag the screen on an unverified level (ADR-0011 condition 2,\n"
+			"// terrain/README.md \"the hole in the gate\"). Deliberately plain C++ with no UE types, so\n"
+			"// the generator stays engine-free.\n"
+			"#pragma once\n"
+			"\n"
+			"namespace OverboardTerrainVerification\n"
+			"{\n"
+			"\tstruct FLevelVerification\n"
+			"\t{\n"
+			"\t\tconst char* LevelName;\n"
+			"\t\tbool bVerified;\n"
+			"\t};\n"
+			"\n"
+			"\tinline constexpr FLevelVerification kLevels[] = {\n");
+		for (const auto& KV : Table)
+		{
+			std::fprintf(F, "\t\t{ \"%s\", %s },\n", KV.first.c_str(), KV.second ? "true" : "false");
+		}
+		std::fprintf(F,
+			"\t};\n"
+			"\n"
+			"\t/// Unknown level names return false. An unrecognised level has certainly not been\n"
+			"\t/// measured against the envelope, so \"unverified\" is the only safe default.\n"
+			"\tinline bool IsLevelVerified(const char* Name)\n"
+			"\t{\n"
+			"\t\tfor (const FLevelVerification& L : kLevels)\n"
+			"\t\t{\n"
+			"\t\t\tconst char* A = L.LevelName;\n"
+			"\t\t\tconst char* B = Name;\n"
+			"\t\t\twhile (*A && *A == *B) { ++A; ++B; }\n"
+			"\t\t\tif (*A == 0 && *B == 0) { return L.bVerified; }\n"
+			"\t\t}\n"
+			"\t\treturn false;\n"
+			"\t}\n"
+			"}\n");
+		std::fclose(F);
+		std::printf("terraincheck: wrote %s (%zu level(s))\n", EmitHeaderPath.c_str(), Table.size());
+		return 0;
 	}
 
 	if (!Quiet)

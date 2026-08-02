@@ -112,6 +112,64 @@ namespace
 		Check(NearlyEqual(Out.SimTimeS, In.SimTimeS), "v2 packet: base sim_time_s field still round-trips");
 	}
 
+	// ---- ADR-0011 condition 3: the loss-of-authority warning bit -------------------------
+	//
+	// The bit `sim-host` does not set yet. These tests exist BEFORE the host half so that when
+	// it lands, the receiving side is already known-good and any disagreement is unambiguously
+	// on the sending side.
+	void Test_AuthorityWarningFlagRoundTrips()
+	{
+		std::printf("Test_AuthorityWarningFlagRoundTrips\n");
+
+		// It must be a distinct bit -- a collision with Fallen would make the warning fire
+		// exactly when it is useless, and would be invisible in any test that set only one.
+		Check(EStateFlags::AuthorityWarning == 8, "AuthorityWarning must be bit 3");
+		Check((EStateFlags::AuthorityWarning & EStateFlags::Armed) == 0, "must not collide with Armed");
+		Check((EStateFlags::AuthorityWarning & EStateFlags::Valid) == 0, "must not collide with Valid");
+		Check((EStateFlags::AuthorityWarning & EStateFlags::Fallen) == 0, "must not collide with Fallen");
+
+		FBoardState In;
+		In.Flags = EStateFlags::Armed | EStateFlags::Valid | EStateFlags::AuthorityWarning;
+		uint8_t Buf[kStatePacketWireSizeV2];
+		EncodeBoardState(In, Buf);
+
+		FBoardState Out;
+		std::string Err;
+		Check(DecodeBoardState(Buf, sizeof(Buf), Out, Err), ("warning-flagged packet must decode: " + Err).c_str());
+		Check((Out.Flags & EStateFlags::AuthorityWarning) != 0, "the warning bit must survive the wire");
+		Check((Out.Flags & EStateFlags::Fallen) == 0, "Fallen must NOT be inferred from the warning");
+	}
+
+	void Test_AuthorityWarningAbsentOnAHostThatDoesNotSetIt()
+	{
+		std::printf("Test_AuthorityWarningAbsentOnAHostThatDoesNotSetIt\n");
+
+		// This is today's real case: `sim-host` computes the signal and sends it to stderr and
+		// its trace CSV, never to the wire. A packet from such a host must decode exactly as it
+		// always did, with the bit clear -- backward compatible in both directions, which is why
+		// this needed no schema bump (the same call sim-host made for INPUT_FLAG_KICK).
+		FBoardState In;
+		In.Flags = EStateFlags::Armed | EStateFlags::Valid;
+		uint8_t Buf[kStatePacketWireSizeV2];
+		EncodeBoardState(In, Buf);
+
+		FBoardState Out;
+		std::string Err;
+		Check(DecodeBoardState(Buf, sizeof(Buf), Out, Err), ("unflagged packet must decode: " + Err).c_str());
+		Check((Out.Flags & EStateFlags::AuthorityWarning) == 0,
+			"a host that does not set the bit must read as NOT warning, never as warning");
+
+		// ...and the same on a v1 packet, which is the oldest thing on the wire.
+		FBoardState V1;
+		V1.SchemaVersion = kStateSchemaVersionV1;
+		V1.Flags = EStateFlags::Armed | EStateFlags::Valid;
+		uint8_t V1Buf[kStatePacketWireSizeV1];
+		EncodeBoardState(V1, V1Buf);
+		FBoardState V1Out;
+		Check(DecodeBoardState(V1Buf, sizeof(V1Buf), V1Out, Err), ("v1 packet must still decode: " + Err).c_str());
+		Check((V1Out.Flags & EStateFlags::AuthorityWarning) == 0, "v1 must read as NOT warning");
+	}
+
 	void Test_DecodeRejectsBadMagic()
 	{
 		std::printf("Test_DecodeRejectsBadMagic\n");
@@ -337,6 +395,8 @@ int main()
 {
 	Test_DecodeValidStatePacketV1();
 	Test_DecodeValidStatePacketV2();
+	Test_AuthorityWarningFlagRoundTrips();
+	Test_AuthorityWarningAbsentOnAHostThatDoesNotSetIt();
 	Test_DecodeRejectsBadMagic();
 	Test_DecodeRejectsUnknownSchemaVersion();
 	Test_DecodeRejectsShortBuffer();

@@ -40,6 +40,28 @@ public:
 	// render pose, so it reacts on the tick data actually arrives, not one render-delay later.
 	bool IsFallen() const { return bLatestSampleFallen; }
 
+	// True if the newest received sample had OverboardWire::EStateFlags::AuthorityWarning set --
+	// ADR-0011 exit criterion (c), surfaced by AOverboardHUD (condition 3 of the second
+	// ratification, overboard-game#19).
+	//
+	// Newest RAW sample, deliberately, for the same reason as IsFallen() and one more: the ADR
+	// is relying on 2.868 s of lead against FALLEN, and reading this off the render-delayed
+	// interpolated pose would hand RenderDelaySeconds of that lead back for no benefit. A safety
+	// annunciation has no reason to be smoothed into agreement with the drawn pose. It does mean
+	// the banner leads the board on screen by the render delay, which is the correct direction
+	// for it to be wrong in.
+	//
+	// **Reads false today on every packet from the real host**, which computes this signal every
+	// cycle and sends it to stderr and its trace CSV rather than to the wire -- see
+	// EStateFlags::AuthorityWarning for the gap and what has been requested to close it.
+	bool IsAuthorityWarning() const { return bLatestSampleAuthorityWarning; }
+
+	// FPlatformTime::Seconds() at which the packet that raised the CURRENT warning was received
+	// off the socket. 0 if no warning is active. Exists so AOverboardHUD can measure and log the
+	// receipt-to-draw latency on the frame it actually draws -- issue #19 AC2 asks for the
+	// end-to-end lead as a measured number, not the host-side figure quoted forward.
+	double GetAuthorityWarningArrivalTimeSeconds() const { return AuthorityWarningArrivalTimeSeconds; }
+
 	// Where MuJoCo's world origin lands in UE world space, in centimetres.
 	//
 	// The wire carries an ABSOLUTE position and UpdatePoseFromHistory applies it with
@@ -214,6 +236,12 @@ private:
 	bool BuildPartFromStl(UProceduralMeshComponent* Component, const FString& StlBaseName, float ExtraYawDeg, FBox& InOutLocalBounds);
 
 	bool bLatestSampleFallen = false;
+
+	// See IsAuthorityWarning(). Reset to false (and the timestamp to 0) the moment the signal
+	// clears, so a stale arrival time can never be reported against a later event -- the HUD's
+	// own hold is what keeps the banner up past the signal, not a lingering value here.
+	bool bLatestSampleAuthorityWarning = false;
+	double AuthorityWarningArrivalTimeSeconds = 0.0;
 
 	// Newest raw rider ballast displacement, metres, MuJoCo frame -- same "newest sample, not
 	// the interpolated render pose" reasoning as bLatestSampleFallen. 0 on a v1 packet, which is

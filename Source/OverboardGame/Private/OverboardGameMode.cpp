@@ -3,6 +3,7 @@
 #include "BoardActor.h"
 #include "OverboardPlayerController.h"
 #include "OverboardCameraPawn.h"
+#include "OverboardHUD.h"
 #include "Engine/StaticMeshActor.h"
 #include "Components/StaticMeshComponent.h"
 #include "Materials/Material.h"
@@ -61,6 +62,14 @@ AOverboardGameMode::AOverboardGameMode()
 	// simpler for a single-player prototype with no PlayerStart authored yet. The BOARD remains
 	// wire-driven, not a pawn -- that has not changed since W1.
 	DefaultPawnClass = nullptr;
+
+	// ADR-0011 condition 3 (overboard-game#19): the loss-of-authority warning has to reach a
+	// player, and condition 2's on-screen terrain tag rides on the same banner. Set natively,
+	// like everything else this GameMode spawns -- a safety annunciation that depended on a
+	// hand-authored Blueprint or a World Settings dropdown is the one element that could go
+	// missing without anybody noticing, and this repo has already lost two days to exactly that
+	// class of silent null (#12, #18).
+	HUDClass = AOverboardHUD::StaticClass();
 }
 
 void AOverboardGameMode::BeginPlay()
