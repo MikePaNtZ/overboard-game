@@ -1,7 +1,8 @@
 // OverboardGameMode.h
 //
-// Spawns a flat ground plane, the board actor, and (W2+) a chase camera pawn purely in C++, so
-// the scene exists regardless of what (if anything) is authored in the level itself.
+// Spawns a flat ground plane, motion-reference marker scenery, the board actor, and (W2+) a
+// chase camera pawn purely in C++, so the scene exists regardless of what (if anything) is
+// authored in the level itself.
 //
 // bSpawnPlaceholderGround (overboard#162): a level that supplies its own floor -- a real
 // imported environment, for instance -- must be able to say "don't give me your 100x100m
@@ -43,7 +44,21 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Board|Level")
 	bool bSpawnPlaceholderGround = true;
 
+	// overboard#162: a chase camera following the board's position/yaw over a featureless plane
+	// gives the scene no motion reference -- the board reads as pinned to the centre of frame
+	// with nothing to move relative to (this is what "the turn just looks like sideways drift"
+	// actually was; the carve itself was always correct in the data, see PR). Scatters simple
+	// primitive markers (scenery only, collision off) across roughly the area a run covers.
+	// Same per-level toggle pattern as bSpawnPlaceholderGround, suppressed together with it by
+	// AOverboardGameMode_NoGround -- a real imported environment supplies its own landmarks and
+	// should not also get this placeholder field scattered across it.
+	UPROPERTY(EditDefaultsOnly, Category = "Board|Level")
+	bool bSpawnMotionReferenceMarkers = true;
+
 private:
 	UPROPERTY(Transient)
 	TObjectPtr<ABoardActor> SpawnedBoard;
+
+	// Scatters primitive marker actors on a grid -- see bSpawnMotionReferenceMarkers.
+	void SpawnMotionReferenceMarkers(UWorld* World) const;
 };
