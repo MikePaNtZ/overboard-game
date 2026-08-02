@@ -29,11 +29,12 @@ namespace
 	}
 
 	// ---- State packet decode: golden bytes built by hand from the field table -------------
-	void Test_DecodeValidStatePacket()
+	void Test_DecodeValidStatePacketV1()
 	{
-		std::printf("Test_DecodeValidStatePacket\n");
+		std::printf("Test_DecodeValidStatePacketV1\n");
 
 		FBoardState In;
+		In.SchemaVersion = kStateSchemaVersionV1;
 		In.Flags = EStateFlags::Armed | EStateFlags::Valid;
 		In.Seq = 424242;
 		In.SimTimeS = 12.5;
@@ -44,15 +45,18 @@ namespace
 		In.PitchRad = 0.05f;
 		In.YawRad = -0.4f;
 		In.MotorCurrentA = 8.5f;
+		// Deliberately NOT setting RiderForeAftM/RiderLateralM -- v1 has no rider data at all;
+		// this is the "old host, new game client" side of the compatibility contract.
 
-		uint8_t Buf[kStatePacketWireSize];
+		uint8_t Buf[kStatePacketWireSizeV1];
 		EncodeBoardState(In, Buf);
 
 		FBoardState Out;
 		std::string Err;
 		bool Ok = DecodeBoardState(Buf, sizeof(Buf), Out, Err);
-		Check(Ok, "decode should succeed on a well-formed packet");
+		Check(Ok, "decode should succeed on a well-formed v1 packet");
 		Check(Err.empty(), "no error message on success");
+		Check(Out.SchemaVersion == kStateSchemaVersionV1, "schema_version round-trips as 1");
 		Check(Out.Flags == In.Flags, "flags round-trip");
 		Check(Out.Seq == In.Seq, "seq round-trip");
 		Check(NearlyEqual(Out.SimTimeS, In.SimTimeS), "sim_time_s round-trip");
@@ -65,20 +69,54 @@ namespace
 		Check(NearlyEqual(Out.PitchRad, In.PitchRad), "pitch_rad round-trip");
 		Check(NearlyEqual(Out.YawRad, In.YawRad), "yaw_rad round-trip");
 		Check(NearlyEqual(Out.MotorCurrentA, In.MotorCurrentA), "motor_current_a round-trip");
+		// v1 -> "rider neutral", not garbage and not left uninitialised.
+		Check(NearlyEqual(Out.RiderForeAftM, 0.0), "v1 packet: rider_fore_aft_m defaults to neutral (0)");
+		Check(NearlyEqual(Out.RiderLateralM, 0.0), "v1 packet: rider_lateral_m defaults to neutral (0)");
 
 		// Also nail down exact byte offsets against the field table, not just round-trip via
 		// our own encoder (which could hide a matched pair of bugs).
 		uint32_t MagicAtZero;
 		std::memcpy(&MagicAtZero, Buf, 4);
 		Check(MagicAtZero == kStateMagic, "magic sits at byte offset 0, little-endian");
-		Check(sizeof(Buf) == 72, "state packet wire size is 72 bytes");
+		Check(sizeof(Buf) == 72, "v1 state packet wire size is 72 bytes");
+	}
+
+	// v2 (overboard#162): appends rider_fore_aft_m/rider_lateral_m. This is the "new host, and
+	// this game client" side of the compatibility contract -- the actual rider values must
+	// round-trip, not just default to neutral.
+	void Test_DecodeValidStatePacketV2()
+	{
+		std::printf("Test_DecodeValidStatePacketV2\n");
+
+		FBoardState In; // SchemaVersion defaults to kStateSchemaVersionLatest (2)
+		Check(In.SchemaVersion == kStateSchemaVersionV2, "FBoardState defaults to v2");
+		In.Flags = EStateFlags::Armed | EStateFlags::Valid;
+		In.Seq = 99;
+		In.SimTimeS = 3.0;
+		In.RiderForeAftM = 0.03f;   // ~3cm forward -- realistic ballast displacement, not exaggerated
+		In.RiderLateralM = -0.04f;  // ~4cm lateral, the COO's stated "full lateral" figure
+
+		uint8_t Buf[kStatePacketWireSizeV2];
+		EncodeBoardState(In, Buf);
+		Check(sizeof(Buf) == 80, "v2 state packet wire size is 80 bytes");
+
+		FBoardState Out;
+		std::string Err;
+		bool Ok = DecodeBoardState(Buf, sizeof(Buf), Out, Err);
+		Check(Ok, "decode should succeed on a well-formed v2 packet");
+		Check(Out.SchemaVersion == kStateSchemaVersionV2, "schema_version round-trips as 2");
+		Check(NearlyEqual(Out.RiderForeAftM, In.RiderForeAftM), "rider_fore_aft_m round-trip");
+		Check(NearlyEqual(Out.RiderLateralM, In.RiderLateralM), "rider_lateral_m round-trip");
+		// Base v1 fields must still work unchanged in a v2 packet.
+		Check(Out.Seq == In.Seq, "v2 packet: base seq field still round-trips");
+		Check(NearlyEqual(Out.SimTimeS, In.SimTimeS), "v2 packet: base sim_time_s field still round-trips");
 	}
 
 	void Test_DecodeRejectsBadMagic()
 	{
 		std::printf("Test_DecodeRejectsBadMagic\n");
 		FBoardState In;
-		uint8_t Buf[kStatePacketWireSize];
+		uint8_t Buf[kStatePacketWireSizeV2];
 		EncodeBoardState(In, Buf);
 		Buf[0] = 0x00; // corrupt magic
 
@@ -90,18 +128,18 @@ namespace
 		Check(Err.find("magic") != std::string::npos, "error should mention magic");
 	}
 
-	void Test_DecodeRejectsBadSchemaVersion()
+	void Test_DecodeRejectsUnknownSchemaVersion()
 	{
-		std::printf("Test_DecodeRejectsBadSchemaVersion\n");
+		std::printf("Test_DecodeRejectsUnknownSchemaVersion\n");
 		FBoardState In;
-		In.SchemaVersion = 2; // unknown to us
-		uint8_t Buf[kStatePacketWireSize];
+		In.SchemaVersion = 3; // neither 1 nor 2 -- this build must not guess
+		uint8_t Buf[kStatePacketWireSizeV1]; // Encode only writes v1-shaped bytes for a non-v2 version
 		EncodeBoardState(In, Buf);
 
 		FBoardState Out;
 		std::string Err;
 		bool Ok = DecodeBoardState(Buf, sizeof(Buf), Out, Err);
-		Check(!Ok, "decode must fail on unknown schema_version");
+		Check(!Ok, "decode must fail on schema_version 3 (only 1 and 2 are understood)");
 		Check(Err.find("schema_version") != std::string::npos, "error should mention schema_version");
 	}
 
@@ -114,6 +152,30 @@ namespace
 		bool Ok = DecodeBoardState(Buf, sizeof(Buf), Out, Err);
 		Check(!Ok, "decode must fail on truncated buffer instead of reading past it");
 		Check(!Err.empty(), "error message set on short buffer");
+	}
+
+	void Test_DecodeRejectsShortV2Buffer()
+	{
+		std::printf("Test_DecodeRejectsShortV2Buffer\n");
+		// A v1-sized buffer (72 bytes) claiming to be v2 -- long enough to pass the v1 floor
+		// but short of the 80 bytes v2 actually needs. Must not read 8 bytes past the end.
+		FBoardState In;
+		In.SchemaVersion = kStateSchemaVersionV2;
+		// Encode into a FULL v2-sized buffer. An earlier version of this test encoded into a
+		// v1-sized (72 byte) array, on the assumption that EncodeBoardState "only writes the
+		// v1-shaped bytes" for a truncated buffer. It does not -- it writes according to
+		// SchemaVersion, so a v2 encode wrote 80 bytes into 72 and smashed the stack. The
+		// truncation being tested belongs in the LENGTH passed to the decoder, not in the
+		// size of the buffer handed to the encoder.
+		uint8_t Buf[kStatePacketWireSizeV2];
+		EncodeBoardState(In, Buf);
+
+		FBoardState Out;
+		std::string Err;
+		// Claim only v1 many bytes arrived: a v2 packet truncated on the wire.
+		bool Ok = DecodeBoardState(Buf, kStatePacketWireSizeV1, Out, Err);
+		Check(!Ok, "decode must fail on a v2 packet truncated to v1 length, not read past the buffer");
+		Check(!Err.empty(), "error message set on short v2 buffer");
 	}
 
 	void Test_InputPacketRoundTrip()
@@ -273,10 +335,12 @@ namespace
 
 int main()
 {
-	Test_DecodeValidStatePacket();
+	Test_DecodeValidStatePacketV1();
+	Test_DecodeValidStatePacketV2();
 	Test_DecodeRejectsBadMagic();
-	Test_DecodeRejectsBadSchemaVersion();
+	Test_DecodeRejectsUnknownSchemaVersion();
 	Test_DecodeRejectsShortBuffer();
+	Test_DecodeRejectsShortV2Buffer();
 	Test_InputPacketRoundTrip();
 	Test_TransformIdentity();
 	Test_TransformPosition();

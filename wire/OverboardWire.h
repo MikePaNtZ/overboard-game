@@ -1,8 +1,15 @@
 // OverboardWire.h
 //
-// The v1 wire contract between the controls host (`overboard`) and this game client, fixed by
-// the COO for GitHub issue #162 and ratified as ADR-0010. Binding on both sides; do not drift
-// from it unilaterally -- report a suspected field error instead of quietly changing it.
+// The wire contract between the controls host (`overboard`) and this game client, fixed by the
+// COO for GitHub issue #162 and ratified as ADR-0010. Binding on both sides; do not drift from it
+// unilaterally -- report a suspected field error instead of quietly changing it.
+//
+// State packet is versioned: v1 (72 bytes) is the original contract; v2 (80 bytes) appends two
+// f32 rider-ballast fields, everything before unchanged. BOTH are accepted on decode -- v1 means
+// "no rider data, treat the rider as neutral", not an error, because whichever side (host or
+// game) ships its version bump first must not freeze the other. Only a schema_version that is
+// neither 1 nor 2 fails loudly. InputPacket is unversioned-in-practice: still schema_version 1,
+// unchanged by the v2 bump.
 //
 // This header is intentionally UE-free so it can be compiled and unit-tested standalone before
 // the Unreal project exists (see wire/README.md).
@@ -26,10 +33,28 @@ namespace OverboardWire
 
 	constexpr uint32_t kStateMagic = 0x4F425731; // "OBW1"
 	constexpr uint32_t kInputMagic = 0x4F424931; // "OBI1"
-	constexpr uint16_t kSchemaVersion = 1;
 
-	constexpr size_t kStatePacketWireSize = 72; // see field table below
+	// InputPacket's schema is unchanged by the v2 state bump -- still 1.
+	constexpr uint16_t kInputSchemaVersion = 1;
+
+	// State packet: v1 is the original 72-byte contract; v2 appends rider_fore_aft_m and
+	// rider_lateral_m (8 bytes). Both are accepted on decode -- see header comment above.
+	constexpr uint16_t kStateSchemaVersionV1 = 1;
+	constexpr uint16_t kStateSchemaVersionV2 = 2;
+	constexpr uint16_t kStateSchemaVersionLatest = kStateSchemaVersionV2; // what this repo encodes by default (tests, fake_sender)
+
+	constexpr size_t kStatePacketWireSizeV1 = 72; // see field table below
+	constexpr size_t kStatePacketWireSizeV2 = 80; // v1 + rider_fore_aft_m + rider_lateral_m
 	constexpr size_t kInputPacketWireSize = 28;
+
+	// Returns the exact wire size for a given state schema_version, or 0 if the version isn't
+	// one this repo understands (1 or 2) -- callers should treat 0 as "fail loudly", not "empty".
+	constexpr size_t GetStatePacketWireSize(uint16_t SchemaVersion)
+	{
+		return SchemaVersion == kStateSchemaVersionV1 ? kStatePacketWireSizeV1
+			: SchemaVersion == kStateSchemaVersionV2 ? kStatePacketWireSizeV2
+			: 0;
+	}
 
 	// State packet flags (bit0 armed, bit1 valid, bit2 fallen)
 	namespace EStateFlags
@@ -48,24 +73,27 @@ namespace OverboardWire
 
 	// ---- State packet (host -> game) ------------------------------------------------------
 	//
-	// field            type      offset  size
-	// magic            u32       0       4
-	// schema_version   u16       4       2
-	// flags            u16       6       2
-	// seq              u64       8       8
-	// sim_time_s       f64       16      8
-	// pos              float[3]  24      12   raw MuJoCo frame: metres, Z-up, right-handed
-	// quat             float[4]  36      16   w,x,y,z order, raw MuJoCo
-	// wheel_angle_rad  f32       52      4
-	// wheel_rate_rad_s f32       56      4
-	// pitch_rad        f32       60      4    nose-up positive
-	// yaw_rad          f32       64      4    NON-PHYSICAL game steering channel
-	// motor_current_a  f32       68      4
-	//                                    72 total
+	// field            type      offset  size   since
+	// magic            u32       0       4      v1
+	// schema_version   u16       4       2      v1
+	// flags            u16       6       2      v1
+	// seq              u64       8       8      v1
+	// sim_time_s       f64       16      8      v1
+	// pos              float[3]  24      12     v1   raw MuJoCo frame: metres, Z-up, right-handed
+	// quat             float[4]  36      16     v1   w,x,y,z order, raw MuJoCo
+	// wheel_angle_rad  f32       52      4      v1
+	// wheel_rate_rad_s f32       56      4      v1
+	// pitch_rad        f32       60      4      v1   nose-up positive
+	// yaw_rad          f32       64      4      v1   NON-PHYSICAL game steering channel
+	// motor_current_a  f32       68      4      v1
+	//                                    72 total (v1)
+	// rider_fore_aft_m f32       72      4      v2   actual ballast fore/aft displacement, metres, signed
+	// rider_lateral_m  f32       76      4      v2   actual ballast lateral displacement, metres, signed
+	//                                    80 total (v2)
 	struct FBoardState
 	{
 		uint32_t Magic = kStateMagic;
-		uint16_t SchemaVersion = kSchemaVersion;
+		uint16_t SchemaVersion = kStateSchemaVersionLatest;
 		uint16_t Flags = 0;
 		uint64_t Seq = 0;
 		double SimTimeS = 0.0;
@@ -76,17 +104,26 @@ namespace OverboardWire
 		float PitchRad = 0.f;
 		float YawRad = 0.f;
 		float MotorCurrentA = 0.f;
+		// v2 only. On a v1 packet these stay at 0 -- "rider neutral, no rider data" -- which is a
+		// real, meaningful value here (centred stance), not a sentinel for "missing".
+		float RiderForeAftM = 0.f;
+		float RiderLateralM = 0.f;
 	};
 
 	// Decodes a raw OBW1 packet. Returns false and fills OutError on any failure: short buffer,
-	// bad magic, or a schema_version we don't understand. Never partially trusts a mismatched
+	// bad magic, or a schema_version that is neither 1 nor 2. Never partially trusts a mismatched
 	// packet -- on failure OutState is left at default values and must not be used. This is the
 	// "fail loudly, never misparse a float" gate from the wire spec: callers must log OutError
-	// and drop the packet rather than proceed.
+	// and drop the packet rather than proceed. A v1 packet is NOT a failure -- OutState.Magic/
+	// SchemaVersion will read back as 1 and RiderForeAftM/RiderLateralM stay at their neutral
+	// default; that is the documented v1 behaviour, not a partial decode.
 	bool DecodeBoardState(const uint8_t* Buffer, size_t Len, FBoardState& OutState, std::string& OutError);
 
-	// Encodes into Buffer, which must be at least kStatePacketWireSize bytes. Exists mainly so
-	// tests and the fake sender tool can produce real OBW1 bytes without duplicating the layout.
+	// Encodes into Buffer, which must be at least GetStatePacketWireSize(State.SchemaVersion)
+	// bytes -- 72 for v1, 80 for v2. Exists mainly so tests and the fake sender tool can produce
+	// real OBW1 bytes without duplicating the layout. Encoding an unrecognised SchemaVersion is a
+	// caller bug (there is no "OutError" here to fail loudly into); it writes v1-shaped bytes
+	// with that version number, which will then correctly fail loudly on decode.
 	void EncodeBoardState(const FBoardState& State, uint8_t* Buffer);
 
 	// ---- Input packet (game -> host) -------------------------------------------------------
@@ -103,7 +140,7 @@ namespace OverboardWire
 	struct FInputPacket
 	{
 		uint32_t Magic = kInputMagic;
-		uint16_t SchemaVersion = kSchemaVersion;
+		uint16_t SchemaVersion = kInputSchemaVersion;
 		uint16_t Flags = 0;
 		uint64_t Seq = 0;
 		float WeightShiftForeAft = 0.f;
