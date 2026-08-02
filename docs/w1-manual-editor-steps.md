@@ -95,28 +95,40 @@ and passed, but worth re-confirming after any transform-adjacent change).
    in nearly the same screen position and orientation at *settle* and mid-*turn*, despite ~16m of
    travel and 96° of yaw) — heading and path direction were independently verified to already
    converge correctly in the wire data; nothing about steering/transform logic changed for this.
-   **Fix:** `AOverboardGameMode::SpawnMotionReferenceMarkers` scatters ~36 primitive
+   **Fix, CONFIRMED WORKING by the COO's own headless captures (not eyeballed, not code-reasoning
+   this time):** `AOverboardGameMode::SpawnMotionReferenceMarkers` scatters ~36 primitive
    cube/cylinder/cone markers (collision off, scenery only) on an 8m grid over a ~40m field, so
-   there's something in the scene the board visibly moves past. Toggle:
+   there's something in the scene the board visibly moves past. "The scene now has depth,
+   landmarks and readable shadows, and the board reads as a board at correct scale." Toggle:
    `bSpawnMotionReferenceMarkers` on `AOverboardGameMode` — same per-level pattern as the ground
    plane, also suppressed by `AOverboardGameMode_NoGround` (a real environment brings its own
-   landmarks). **Do not chase turn direction as a separate bug** if either of these two causes is
-   still live — re-check only after confirming MATCH above and that markers are actually spawning.
+   landmarks).
 
-   **Ground shadow acne — now correctly diagnosed and fixed (not shadow, not GI):** the COO
-   headlessly A/B tested this directly with captured frames: `SetCastShadow(false)` alone → no
-   change; disabling Lumen diffuse indirect + its denoiser → no change, pattern pixel-identical.
-   The actual cause is **texture minification aliasing** — `WorldGridMaterial`'s grid lines are
-   fine-grained (centimetre-scale), stretched over a 100m plane and undersampled at distance/
-   grazing angles; the earlier "shadow acne" and "Lumen GI noise" hypotheses were both wrong.
-   Fix: the ground now uses `/Engine/EngineMaterials/DefaultMaterial` — the engine's literal
-   flat/textureless default, zero spatial frequency, structurally incapable of aliasing
-   regardless of scale or angle (not just "a coarser pattern that aliases less"). Also
-   `SetReceivesDecals(false)`, `SetCastShadow(false)` kept (both still correct, just not
-   sufficient alone; this A/B test is what ruled shadow/GI out in the first place). Given the
-   correct diagnosis (aliasing, not lighting), a further hypothesis is unlikely to be needed, but
-   if stipple is somehow still present: rebuild the ground from a scaled `Cube` instead of a
-   stretched `Plane` (a different mesh's UVs, not a lighting setting).
+   **Ground shadow acne — root cause found, four passes in.** History, because each ruled-out
+   hypothesis is worth knowing so nobody re-tries it:
+   1. `SetCastShadow(false)` alone — no change.
+   2. Swap to `WorldGridMaterial` — no change (this is where it turned out the *real* bug was
+      hiding, but wasn't noticed yet — see point 4).
+   3. Disabling Lumen diffuse indirect + its denoiser, disabling Virtual Shadow Maps, `viewmode
+      unlit` (control test), `r.ScreenPercentage 200` (rules out ordinary mip aliasing) — **all
+      pixel-identical, speckle still present.** `viewmode unlit` still showing it is decisive:
+      that strips lighting, shadow and GI entirely, so this was never a lighting artifact.
+   4. **The actual bug:** `LoadObject<UMaterialInterface>("/Engine/EngineMaterials/
+      DefaultMaterial.DefaultMaterial")` was silently returning null, at **both** the ground and
+      the motion-reference-marker call sites, and both silently skipped `SetMaterial` when it
+      did. Caught because the COO noticed markers visibly checkerboarded in captures despite
+      "using" the same flat material as the ground — two independent call sites failing
+      identically pointed at one shared cause. Neither call site logged the failure, so two
+      passes were spent chasing lighting settings that were never the problem.
+
+   **Fix:** `MakeFlatMaterial()` (shared by both call sites now, not duplicated) uses
+   `UMaterial::GetDefaultMaterial(MD_Surface)` — documented to always return a valid material, no
+   string asset path to get wrong — wrapped in a `UMaterialInstanceDynamic` with a best-effort
+   colour tint (ground and markers get slightly different tones; harmless no-op if the engine
+   default material doesn't expose that parameter). Both call sites now log loudly if this ever
+   fails. `SetReceivesDecals(false)` and `SetCastShadow(false)` both stay (still individually
+   correct, just never the actual cause). Still never touched `r.Lumen.DiffuseIndirect.Allow` or
+   any project-wide VSM/Lumen setting.
 
    **Camera framing: Mike confirmed good, left alone.** No change this pass.
 

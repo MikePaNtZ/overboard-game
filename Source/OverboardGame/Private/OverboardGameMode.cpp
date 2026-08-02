@@ -5,8 +5,51 @@
 #include "OverboardCameraPawn.h"
 #include "Engine/StaticMeshActor.h"
 #include "Components/StaticMeshComponent.h"
+#include "Materials/Material.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Logging/LogMacros.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogOverboardLevel, Log, All);
+
+namespace
+{
+	// Guaranteed-non-null flat material (overboard#162, fourth pass on the ground acne). The
+	// previous fix, LoadObject<UMaterialInterface>("/Engine/EngineMaterials/DefaultMaterial.
+	// DefaultMaterial"), was silently returning null at BOTH call sites that used it (ground and
+	// markers), and both silently skipped SetMaterial on null -- confirmed by the COO: markers
+	// were visibly still checkerboarded in captures despite "using" this same flat material, and
+	// two passes were spent chasing lighting settings (SetCastShadow, Lumen diffuse indirect,
+	// VSM) before that silent failure was noticed. UMaterial::GetDefaultMaterial is documented to
+	// always return a valid material -- no string asset path to get wrong, no null to silently
+	// swallow. Logs loudly on the (should-be-impossible) case where it still fails, per the same
+	// "every asset load in this file says so when it fails" rule the FObjectFinder crash and the
+	// mesh-bounds MATCH/MISMATCH log already established.
+	UMaterialInterface* MakeFlatMaterial(UObject* Outer, const FLinearColor& Color, const TCHAR* DebugName)
+	{
+		UMaterial* BaseMaterial = UMaterial::GetDefaultMaterial(MD_Surface);
+		if (!BaseMaterial)
+		{
+			UE_LOG(LogOverboardLevel, Error, TEXT("MakeFlatMaterial(%s): UMaterial::GetDefaultMaterial(MD_Surface) returned null -- should not be possible."), DebugName);
+			return nullptr;
+		}
+
+		UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(BaseMaterial, Outer);
+		if (!MID)
+		{
+			UE_LOG(LogOverboardLevel, Error, TEXT("MakeFlatMaterial(%s): UMaterialInstanceDynamic::Create failed, falling back to the base material with no tint."), DebugName);
+			return BaseMaterial;
+		}
+
+		// Best-effort tint so the ground and markers can read as different tones -- silently a
+		// no-op if the engine default material doesn't expose a "Color" parameter (it may not).
+		// Not load-bearing: the aliasing fix is "flat, zero spatial frequency", which
+		// GetDefaultMaterial guarantees regardless of whether this tint takes.
+		MID->SetVectorParameterValue(TEXT("Color"), Color);
+		return MID;
+	}
+}
 
 AOverboardGameMode::AOverboardGameMode()
 {
@@ -55,21 +98,20 @@ void AOverboardGameMode::BeginPlay()
 			Ground->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
 			Ground->GetStaticMeshComponent()->SetWorldScale3D(FVector(100.f, 100.f, 1.f));
 			Ground->SetMobility(EComponentMobility::Static);
-			// Third attempt, and the actual diagnosis (overboard#162): the COO A/B tested with
-			// real headless captures. SetCastShadow(false) -> no change. Disabling Lumen diffuse
-			// indirect + its denoiser -> no change, pattern pixel-identical. So it was never
-			// shadowing or GI noise -- it's texture MINIFICATION ALIASING: WorldGridMaterial's
-			// grid lines are fine-grained (centimetre-scale), stretched over a 100m plane and
-			// undersampled at distance/grazing angles. The fix is spatial frequency, not
-			// lighting: DefaultMaterial is the engine's literal flat/textureless default --
-			// zero spatial frequency, so it is structurally incapable of aliasing regardless of
-			// scale or viewing angle, not just "large squares that alias less".
-			// Deliberately NOT disabling VSM or Lumen project-wide (still true) -- that trades one
-			// local artifact for a global downgrade in the launch footage.
-			UMaterialInterface* FlatMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineMaterials/DefaultMaterial.DefaultMaterial"));
+			// Root cause (overboard#162, confirmed by the COO's headless A/B captures, including
+			// `viewmode unlit` still showing the speckle -- decisive that this was never a
+			// lighting/shadow/GI artifact, and r.ScreenPercentage 200 not fixing it ruling out
+			// ordinary texture mip aliasing too: it's WorldGridMaterial's procedural, per-pixel,
+			// world-space pattern, evaluated at native resolution with no mipmaps to fall back
+			// to). Fix: MakeFlatMaterial above -- zero spatial frequency, cannot alias.
+			UMaterialInterface* FlatMaterial = MakeFlatMaterial(Ground, FLinearColor(0.55f, 0.56f, 0.60f), TEXT("Ground"));
 			if (FlatMaterial)
 			{
 				Ground->GetStaticMeshComponent()->SetMaterial(0, FlatMaterial);
+			}
+			else
+			{
+				UE_LOG(LogOverboardLevel, Error, TEXT("AOverboardGameMode: ground has no flat material to apply; it will show whatever /Engine/BasicShapes/Plane.Plane's own default material is."));
 			}
 			// Cheap, COO-suggested try alongside the material swap -- decal projection is an
 			// unlikely but free-to-rule-out contributor to badly-sampled ground shading.
@@ -100,7 +142,6 @@ void AOverboardGameMode::SpawnMotionReferenceMarkers(UWorld* World) const
 	UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 	UStaticMesh* CylinderMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
 	UStaticMesh* ConeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cone.Cone"));
-	UMaterialInterface* FlatMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineMaterials/DefaultMaterial.DefaultMaterial"));
 	UStaticMesh* Shapes[] = { CubeMesh, CylinderMesh, ConeMesh };
 
 	// A run covers roughly 15-20m; this spans ~40m so markers are visible well before and after
@@ -143,9 +184,18 @@ void AOverboardGameMode::SpawnMotionReferenceMarkers(UWorld* World) const
 			MeshComp->SetStaticMesh(Mesh);
 			// Engine primitives default to ~100uu (1m) native size -- scale to the target footprint/height.
 			MeshComp->SetWorldScale3D(FVector(kBaseSizeCm / 100.f, kBaseSizeCm / 100.f, HeightCm / 100.f));
+			// Per-marker MID (Outer = this specific Marker actor) -- same guaranteed-non-null
+			// source as the ground, see MakeFlatMaterial. This is the fix for the markers the COO
+			// caught visibly checkerboarded in captures: they were never actually getting a flat
+			// material either, for the same silent-null reason as the ground.
+			UMaterialInterface* FlatMaterial = MakeFlatMaterial(Marker, FLinearColor(0.35f, 0.40f, 0.45f), TEXT("Marker"));
 			if (FlatMaterial)
 			{
 				MeshComp->SetMaterial(0, FlatMaterial);
+			}
+			else
+			{
+				UE_LOG(LogOverboardLevel, Error, TEXT("AOverboardGameMode: motion-reference marker at (%.0f, %.0f) has no flat material to apply."), X, Y);
 			}
 			Marker->SetMobility(EComponentMobility::Static);
 
