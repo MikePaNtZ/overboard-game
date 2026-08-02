@@ -5,6 +5,7 @@
 #include "OverboardCameraPawn.h"
 #include "Engine/StaticMeshActor.h"
 #include "Components/StaticMeshComponent.h"
+#include "Materials/MaterialInterface.h"
 #include "UObject/ConstructorHelpers.h"
 
 AOverboardGameMode::AOverboardGameMode()
@@ -54,13 +55,25 @@ void AOverboardGameMode::BeginPlay()
 			Ground->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
 			Ground->GetStaticMeshComponent()->SetWorldScale3D(FVector(100.f, 100.f, 1.f));
 			Ground->SetMobility(EComponentMobility::Static);
-			// Shadow acne fix (overboard#162, first PIE session): a 1m unit plane stretched 100x
-			// gives its UVs/normals an extreme scale, a classic Virtual Shadow Map acne source. The
-			// plane is flat and has nothing meaningful to cast a shadow onto itself or anything
-			// below it -- it should only ever RECEIVE the board's shadow, never cast its own.
-			// Deliberately not disabling VSMs/Lumen project-wide: that would trade one local
-			// artifact for a global downgrade in how the launch footage looks.
-			Ground->GetStaticMeshComponent()->SetCastShadow(false);
+			// SetCastShadow(false) (first PIE session fix) did NOT resolve the shadow acne --
+			// Mike's second session still showed heavy black stipple on a clean OB_Main with no
+			// landscape, so the ground casting its own shadow was not the (whole) cause. Trying
+			// the COO's preferred next hypothesis: give the ground its OWN simple material rather
+			// than the engine default (whatever /Engine/BasicShapes/Plane.Plane's default material
+			// is), which sidesteps the 100x-stretched-unit-plane UV concern entirely rather than
+			// working around it -- WorldGridMaterial is procedural/world-position-driven, not
+			// UV-sampled, so plane UV stretching cannot be a factor in what it renders.
+			// Deliberately NOT disabling VSM or Lumen project-wide (still true) -- that trades one
+			// local artifact for a global downgrade in the launch footage.
+			UMaterialInterface* GridMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial"));
+			if (GridMaterial)
+			{
+				Ground->GetStaticMeshComponent()->SetMaterial(0, GridMaterial);
+			}
+			// Cheap, COO-suggested try alongside the material swap -- decal projection is an
+			// unlikely but free-to-rule-out contributor to badly-sampled ground shading.
+			Ground->GetStaticMeshComponent()->SetReceivesDecals(false);
+			Ground->GetStaticMeshComponent()->SetCastShadow(false); // kept: still correct even if not sufficient alone
 		}
 	}
 

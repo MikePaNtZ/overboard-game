@@ -56,42 +56,57 @@ and passed, but worth re-confirming after any transform-adjacent change).
    origin.** If the board is moving with nothing connected, that's a real bug (nothing should be
    able to move it without a wire packet telling it to).
 
-   **Real board geometry (new, W3, completely unverified visually).** The board actor should be
-   the real Openwheel STL geometry (`Meshes/openwheel/`), built at runtime — not the low flat
-   placeholder box. Check the Output Log for one of two outcomes:
+   **Real board geometry.** The board actor should be the real Openwheel STL geometry
+   (`Meshes/openwheel/`), built at runtime — not the low flat placeholder box. Check the Output
+   Log for one of two outcomes:
    - `ABoardActor: real board mesh loaded, placeholder box hidden.` — the real mesh built. Look
      at the board: seven distinct shell/bumper/footpad/platform parts plus a wheel cylinder,
-     roughly matching a real onewheel's proportions. **If it looks roughly 10x too big or too
-     small, or any single part is wildly out of place**, that's the first thing to report —
-     `mesh/README.md` and the code comments in `ABoardActor::BuildPartFromStl` /
-     `TryBuildRealMesh` explain the mm→cm scale and placement logic to check against. The wheel
-     specifically depends on an *assumed* (not verified) native size for
-     `/Engine/BasicShapes/Cylinder.Cylinder` — there's a log line printing its actual computed
-     bounds in cm to check against the expected ~14.54cm radius / ~15cm width.
+     roughly matching a real onewheel's proportions.
    - `ABoardActor: real board mesh failed to load ... falling back to the placeholder box.` — you
      see the low flat box instead. Not silent, not invisible — but means something in the STL
      load path failed; look a few lines up in the Output Log for which specific part
      (`ABoardActor: failed to load <name>: <error>`) and why.
 
+   **Scale is now arithmetic, not eyeballed — check these two log lines, not the screen:**
+   ```
+   ABoardActor: body (7 STL parts) local bounds half-extent = (X, Y, Z) cm, full size = (..) cm
+     -- expected half-extent ~(46.9, 11.6, 4.2) cm / full ~(93.8, 23.2, 8.3) cm. MATCH.
+   ABoardActor: wheel mesh world bounds extent = (X, Y, Z) cm -- expect radius ~14.54cm, width ~15cm ...
+   ```
+   The first line must say **MATCH**, not **MISMATCH**. (Mike's second session caught a real bug
+   here: the real mesh was parented under the placeholder box, so it silently inherited the
+   box's own `(0.7, 0.25, 0.08)` shaping scale on top of its own correct conversion — exact
+   numeric match to the measured on-screen sliver. Fixed by giving the real mesh and the
+   placeholder box separate, identity-scale parents; see `SceneRoot` in `BoardActor.h`. If MATCH
+   ever regresses back to MISMATCH, this exact bug is the first thing to check.) The wheel line
+   still depends on an *assumed* (not verified) native size for
+   `/Engine/BasicShapes/Cylinder.Cylinder` — compare its printed bounds against ~14.54cm radius.
+
    Materials/colour are **not** attempted this pass (default engine grey) — deliberately, to keep
    risk down; the exact brand-palette RGBA per part is in `overboard`'s
    `sim/models/overboard_onewheel.xml` `<asset>` block whenever someone wants to add it.
 
-   **Two known, fixed-but-not-yet-re-verified issues from the first session, both yours to watch
-   for:**
-   - **Shadow acne on the ground plane** (dense black stipple in rectangular blocks) — near-
-     certain cause was the ground's 100x-stretched-unit-plane UVs/normals confusing Virtual
-     Shadow Maps. Fixed by turning off the ground's own shadow-casting
-     (`AOverboardGameMode::BeginPlay`, `SetCastShadow(false)` on the ground's mesh component) --
-     it's flat, has nothing worth casting, and still receives the board's shadow. **Unverified
-     visually** (no display in the environment that made this fix) — confirm the stipple is
-     actually gone, not just theoretically addressed.
-   - **Camera slightly too far out** — Mike's read was "can see the board the whole time, minor,
-     maybe zoom in a bit." `ArmLengthCm` pulled in from 650 to 480 (modest, deliberately not a
-     close chase cam — the board covers real ground under lean and losing it off-frame is worse
-     than reading a bit small). **Unverified visually** — confirm 480 actually reads better, not
-     just numerically smaller. Tunable is `AOverboardCameraPawn` → `Board|Camera` →
-     `ArmLengthCm` if it still wants adjusting.
+   **Turn direction, if it still looks wrong after the scale fix:** Mike's second session also
+   reported a turn reading as "just moves straight left, unrealistic." Diagnosis: not a bug in
+   the turn data (heading and path direction were verified to converge correctly) — a board
+   rendered as a 6cm-wide, 7mm-tall sliver has no visible heading, so a real carve reads as
+   sideways drift. **Re-check this only after confirming MATCH above; do not chase it separately
+   if the scale bug is what's still live.**
+
+   **One known, fixed-but-not-yet-re-verified issue, yours to watch for:**
+   - **Shadow acne on the ground plane** (dense black stipple in rectangular blocks) — the first
+     attempted fix (`SetCastShadow(false)` on the ground alone) did **not** resolve it; Mike's
+     second session still showed heavy stipple on a clean `OB_Main`. Second attempt: the ground
+     now uses `/Engine/EngineMaterials/WorldGridMaterial` instead of the engine default, plus
+     `SetReceivesDecals(false)` — a procedural, world-position-driven material sidesteps the
+     100x-stretched-unit-plane UV concern entirely rather than working around it.
+     **Unverified visually.** If stipple is *still* present after this, next hypotheses in order
+     (see the PR): test `r.Lumen.DiffuseIndirect.Allow 0` via the in-editor console (`~`) as a
+     diagnostic only — do **not** bake this into project config, it would disable Lumen GI
+     project-wide, which is explicitly out of bounds — or rebuild the ground from a scaled `Cube`
+     instead of a stretched `Plane`.
+
+   **Camera framing: Mike confirmed good, left alone.** No change this pass.
 
 4. **Prove the receive path visually** (no real host needed — this is a stand-in):
    ```
