@@ -55,26 +55,32 @@ void AOverboardGameMode::BeginPlay()
 			Ground->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
 			Ground->GetStaticMeshComponent()->SetWorldScale3D(FVector(100.f, 100.f, 1.f));
 			Ground->SetMobility(EComponentMobility::Static);
-			// SetCastShadow(false) (first PIE session fix) did NOT resolve the shadow acne --
-			// Mike's second session still showed heavy black stipple on a clean OB_Main with no
-			// landscape, so the ground casting its own shadow was not the (whole) cause. Trying
-			// the COO's preferred next hypothesis: give the ground its OWN simple material rather
-			// than the engine default (whatever /Engine/BasicShapes/Plane.Plane's default material
-			// is), which sidesteps the 100x-stretched-unit-plane UV concern entirely rather than
-			// working around it -- WorldGridMaterial is procedural/world-position-driven, not
-			// UV-sampled, so plane UV stretching cannot be a factor in what it renders.
+			// Third attempt, and the actual diagnosis (overboard#162): the COO A/B tested with
+			// real headless captures. SetCastShadow(false) -> no change. Disabling Lumen diffuse
+			// indirect + its denoiser -> no change, pattern pixel-identical. So it was never
+			// shadowing or GI noise -- it's texture MINIFICATION ALIASING: WorldGridMaterial's
+			// grid lines are fine-grained (centimetre-scale), stretched over a 100m plane and
+			// undersampled at distance/grazing angles. The fix is spatial frequency, not
+			// lighting: DefaultMaterial is the engine's literal flat/textureless default --
+			// zero spatial frequency, so it is structurally incapable of aliasing regardless of
+			// scale or viewing angle, not just "large squares that alias less".
 			// Deliberately NOT disabling VSM or Lumen project-wide (still true) -- that trades one
 			// local artifact for a global downgrade in the launch footage.
-			UMaterialInterface* GridMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial"));
-			if (GridMaterial)
+			UMaterialInterface* FlatMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineMaterials/DefaultMaterial.DefaultMaterial"));
+			if (FlatMaterial)
 			{
-				Ground->GetStaticMeshComponent()->SetMaterial(0, GridMaterial);
+				Ground->GetStaticMeshComponent()->SetMaterial(0, FlatMaterial);
 			}
 			// Cheap, COO-suggested try alongside the material swap -- decal projection is an
 			// unlikely but free-to-rule-out contributor to badly-sampled ground shading.
 			Ground->GetStaticMeshComponent()->SetReceivesDecals(false);
 			Ground->GetStaticMeshComponent()->SetCastShadow(false); // kept: still correct even if not sufficient alone
 		}
+	}
+
+	if (bSpawnMotionReferenceMarkers)
+	{
+		SpawnMotionReferenceMarkers(World);
 	}
 
 	SpawnedBoard = World->SpawnActor<ABoardActor>(FVector(0.f, 0.f, 50.f), FRotator::ZeroRotator);
@@ -84,4 +90,72 @@ void AOverboardGameMode::BeginPlay()
 	// transform here is just "somewhere behind the board"; the pawn's own Tick takes over
 	// immediately once it acquires a follow target.
 	World->SpawnActor<AOverboardCameraPawn>(FVector(-800.f, 0.f, 200.f), FRotator::ZeroRotator);
+}
+
+void AOverboardGameMode::SpawnMotionReferenceMarkers(UWorld* World) const
+{
+	// overboard#162: a chase camera following position+yaw over a featureless plane pins the
+	// board to the centre of frame with nothing else in the scene to show it's moving 15-20m
+	// over a run. These are plain scenery landmarks, nothing more -- see the class header.
+	UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	UStaticMesh* CylinderMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+	UStaticMesh* ConeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cone.Cone"));
+	UMaterialInterface* FlatMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineMaterials/DefaultMaterial.DefaultMaterial"));
+	UStaticMesh* Shapes[] = { CubeMesh, CylinderMesh, ConeMesh };
+
+	// A run covers roughly 15-20m; this spans ~40m so markers are visible well before and after
+	// a run passes through. Grid, not random, so a capture is reproducible run to run.
+	constexpr float kSpacingCm = 800.f;        // 8m between markers
+	constexpr float kHalfExtentCm = 2000.f;    // +-20m => ~40m field
+	constexpr float kClearRadiusCm = 300.f;    // 3m clear zone at spawn -- nothing sits on the board at t=0
+	constexpr float kBaseSizeCm = 100.f;       // footprint before per-marker height variation
+	constexpr float kBaseHeightCm = 250.f;
+	constexpr float kHeightVariationCm = 150.f; // "vary height a little so heading is readable"
+
+	int32 ShapeCycle = 0;
+	for (float X = -kHalfExtentCm; X <= kHalfExtentCm; X += kSpacingCm)
+	{
+		for (float Y = -kHalfExtentCm; Y <= kHalfExtentCm; Y += kSpacingCm)
+		{
+			if (FMath::Sqrt(X * X + Y * Y) < kClearRadiusCm)
+			{
+				continue; // clear zone at spawn
+			}
+
+			UStaticMesh* Mesh = Shapes[ShapeCycle % 3];
+			++ShapeCycle;
+			if (!Mesh)
+			{
+				continue;
+			}
+
+			// Deterministic, not random, so re-running the same session looks the same --
+			// matters for comparing captures across a fix, not just for a first look.
+			const float HeightScale = 1.f + 0.5f * FMath::Sin(X * 0.011f + Y * 0.017f);
+			const float HeightCm = kBaseHeightCm + kHeightVariationCm * HeightScale;
+
+			AStaticMeshActor* Marker = World->SpawnActor<AStaticMeshActor>(FVector(X, Y, HeightCm * 0.5f), FRotator::ZeroRotator);
+			if (!Marker)
+			{
+				continue;
+			}
+			UStaticMeshComponent* MeshComp = Marker->GetStaticMeshComponent();
+			MeshComp->SetStaticMesh(Mesh);
+			// Engine primitives default to ~100uu (1m) native size -- scale to the target footprint/height.
+			MeshComp->SetWorldScale3D(FVector(kBaseSizeCm / 100.f, kBaseSizeCm / 100.f, HeightCm / 100.f));
+			if (FlatMaterial)
+			{
+				MeshComp->SetMaterial(0, FlatMaterial);
+			}
+			Marker->SetMobility(EComponentMobility::Static);
+
+			// Scenery only -- THE RULE (overboard#162): if Unreal geometry ever affects the
+			// board's motion, the renderer has started computing physics, which it must never do.
+			// MuJoCo knows about a flat ground plane and nothing else.
+			MeshComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			MeshComp->SetCollisionResponseToAllChannels(ECR_Ignore);
+			MeshComp->SetSimulatePhysics(false);
+			MeshComp->SetEnableGravity(false);
+		}
+	}
 }

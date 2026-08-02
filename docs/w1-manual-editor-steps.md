@@ -86,27 +86,44 @@ and passed, but worth re-confirming after any transform-adjacent change).
    risk down; the exact brand-palette RGBA per part is in `overboard`'s
    `sim/models/overboard_onewheel.xml` `<asset>` block whenever someone wants to add it.
 
-   **Turn direction, if it still looks wrong after the scale fix:** Mike's second session also
-   reported a turn reading as "just moves straight left, unrealistic." Diagnosis: not a bug in
-   the turn data (heading and path direction were verified to converge correctly) — a board
-   rendered as a 6cm-wide, 7mm-tall sliver has no visible heading, so a real carve reads as
-   sideways drift. **Re-check this only after confirming MATCH above; do not chase it separately
-   if the scale bug is what's still live.**
+   **Turn direction / "the board doesn't look like it's moving":** two contributing causes, both
+   now addressed the same pass. (1) The scale bug above — a 6cm-wide, 7mm-tall sliver has no
+   visible heading, so a correct carve read as sideways drift. (2) **The scene had no motion
+   reference at all**: the chase camera follows the board's position and yaw over a completely
+   featureless plane, so the board stays pinned to the centre of frame with nothing else in view
+   to show it travelling 15-20m per run. The COO diagnosed this from real captured frames (board
+   in nearly the same screen position and orientation at *settle* and mid-*turn*, despite ~16m of
+   travel and 96° of yaw) — heading and path direction were independently verified to already
+   converge correctly in the wire data; nothing about steering/transform logic changed for this.
+   **Fix:** `AOverboardGameMode::SpawnMotionReferenceMarkers` scatters ~36 primitive
+   cube/cylinder/cone markers (collision off, scenery only) on an 8m grid over a ~40m field, so
+   there's something in the scene the board visibly moves past. Toggle:
+   `bSpawnMotionReferenceMarkers` on `AOverboardGameMode` — same per-level pattern as the ground
+   plane, also suppressed by `AOverboardGameMode_NoGround` (a real environment brings its own
+   landmarks). **Do not chase turn direction as a separate bug** if either of these two causes is
+   still live — re-check only after confirming MATCH above and that markers are actually spawning.
 
-   **One known, fixed-but-not-yet-re-verified issue, yours to watch for:**
-   - **Shadow acne on the ground plane** (dense black stipple in rectangular blocks) — the first
-     attempted fix (`SetCastShadow(false)` on the ground alone) did **not** resolve it; Mike's
-     second session still showed heavy stipple on a clean `OB_Main`. Second attempt: the ground
-     now uses `/Engine/EngineMaterials/WorldGridMaterial` instead of the engine default, plus
-     `SetReceivesDecals(false)` — a procedural, world-position-driven material sidesteps the
-     100x-stretched-unit-plane UV concern entirely rather than working around it.
-     **Unverified visually.** If stipple is *still* present after this, next hypotheses in order
-     (see the PR): test `r.Lumen.DiffuseIndirect.Allow 0` via the in-editor console (`~`) as a
-     diagnostic only — do **not** bake this into project config, it would disable Lumen GI
-     project-wide, which is explicitly out of bounds — or rebuild the ground from a scaled `Cube`
-     instead of a stretched `Plane`.
+   **Ground shadow acne — now correctly diagnosed and fixed (not shadow, not GI):** the COO
+   headlessly A/B tested this directly with captured frames: `SetCastShadow(false)` alone → no
+   change; disabling Lumen diffuse indirect + its denoiser → no change, pattern pixel-identical.
+   The actual cause is **texture minification aliasing** — `WorldGridMaterial`'s grid lines are
+   fine-grained (centimetre-scale), stretched over a 100m plane and undersampled at distance/
+   grazing angles; the earlier "shadow acne" and "Lumen GI noise" hypotheses were both wrong.
+   Fix: the ground now uses `/Engine/EngineMaterials/DefaultMaterial` — the engine's literal
+   flat/textureless default, zero spatial frequency, structurally incapable of aliasing
+   regardless of scale or angle (not just "a coarser pattern that aliases less"). Also
+   `SetReceivesDecals(false)`, `SetCastShadow(false)` kept (both still correct, just not
+   sufficient alone; this A/B test is what ruled shadow/GI out in the first place). Given the
+   correct diagnosis (aliasing, not lighting), a further hypothesis is unlikely to be needed, but
+   if stipple is somehow still present: rebuild the ground from a scaled `Cube` instead of a
+   stretched `Plane` (a different mesh's UVs, not a lighting setting).
 
    **Camera framing: Mike confirmed good, left alone.** No change this pass.
+
+   **This pass was verified differently:** the COO now has headless UE rendering/screen-capture
+   working directly, independent of Mike, and verified the aliasing diagnosis with real captured
+   frames (A/B testing shadow/GI settings) before this fix was written — see the PR for what was
+   actually checked versus what's still a code-reasoning argument (the motion-reference fix).
 
 4. **Prove the receive path visually** (no real host needed — this is a stand-in):
    ```
