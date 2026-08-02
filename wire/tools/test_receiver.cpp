@@ -77,10 +77,11 @@ int main(int argc, char** argv)
 
 		FUeTransform Ue = MuJoCoToUnreal(State.Pos, State.Quat);
 		std::printf(
-			"seq=%llu t=%.3f pos_m=(%.3f,%.3f,%.3f) -> pos_cm_ue=(%.1f,%.1f,%.1f)\n",
-			static_cast<unsigned long long>(State.Seq), State.SimTimeS,
+			"seq=%llu v%u t=%.3f pos_m=(%.3f,%.3f,%.3f) -> pos_cm_ue=(%.1f,%.1f,%.1f) rider_m=(fore=%.3f,lat=%.3f)\n",
+			static_cast<unsigned long long>(State.Seq), State.SchemaVersion, State.SimTimeS,
 			State.Pos[0], State.Pos[1], State.Pos[2],
-			Ue.PosCm[0], Ue.PosCm[1], Ue.PosCm[2]);
+			Ue.PosCm[0], Ue.PosCm[1], Ue.PosCm[2],
+			State.RiderForeAftM, State.RiderLateralM);
 		++Received;
 	}
 

@@ -18,6 +18,12 @@
 //   fake_sender --count N       override packet count for the default position-sweep mode, or
 //                                burst count for --burst (default 50; ignored by --rotate, which
 //                                is time-boxed instead)
+//   fake_sender --rider         sets rider_fore_aft_m/rider_lateral_m to fixed, realistic
+//                                displacements (3cm fore, 4cm lateral -- the COO's stated "full
+//                                lateral" figure) on every packet in ANY mode, v2 schema. Exists
+//                                to exercise the rider-offset rendering path without a real host
+//                                (which doesn't speak v2 yet either). Combine with other modes,
+//                                e.g. `fake_sender --rider --rotate`.
 //
 // macOS/BSD sockets only, no UE dependency.
 #include "../OverboardWire.h"
@@ -40,6 +46,12 @@ namespace
 {
 	constexpr int kSendIntervalMs = 20; // 50 Hz -- arbitrary, just fast enough to look continuous
 
+	// Set by --rider; applied in BaseState() below. 0 (default) means "no rider offset", which
+	// is indistinguishable from a v1 host as far as the rider fields go.
+	bool gRiderTest = false;
+	constexpr float kRiderTestForeAftM = 0.03f;   // 3cm forward
+	constexpr float kRiderTestLateralM = -0.04f;  // 4cm lateral -- COO's stated "full lateral" figure
+
 	int OpenSocketToHost(sockaddr_in& OutDest)
 	{
 		int Sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -57,7 +69,7 @@ namespace
 
 	void SendState(int Sock, const sockaddr_in& Dest, const FBoardState& State)
 	{
-		uint8_t Buf[kStatePacketWireSize];
+		uint8_t Buf[kStatePacketWireSizeV2]; // BaseState() defaults to v2 (kStateSchemaVersionLatest)
 		EncodeBoardState(State, Buf);
 		ssize_t Sent = sendto(Sock, Buf, sizeof(Buf), 0, reinterpret_cast<const sockaddr*>(&Dest), sizeof(Dest));
 		if (Sent != static_cast<ssize_t>(sizeof(Buf)))
@@ -76,6 +88,11 @@ namespace
 		State.Pos[1] = 0.f;
 		State.Pos[2] = 0.5f;
 		State.Quat[0] = 1.f; State.Quat[1] = 0.f; State.Quat[2] = 0.f; State.Quat[3] = 0.f;
+		if (gRiderTest)
+		{
+			State.RiderForeAftM = kRiderTestForeAftM;
+			State.RiderLateralM = kRiderTestLateralM;
+		}
 		return State;
 	}
 
@@ -144,7 +161,7 @@ namespace
 		if (Sock < 0) { return; }
 
 		FBoardState State = BaseState(0, 0.0);
-		uint8_t Buf[kStatePacketWireSize];
+		uint8_t Buf[kStatePacketWireSizeV2]; // BaseState() defaults to v2 (kStateSchemaVersionLatest)
 		EncodeBoardState(State, Buf);
 		Buf[0] = 0xDE; // corrupt the magic byte
 		std::printf("sending 1 corrupt-magic packet\n");
@@ -246,6 +263,10 @@ int main(int argc, char** argv)
 		else if (Arg == "--count" && i + 1 < argc)
 		{
 			Count = std::atoi(argv[++i]);
+		}
+		else if (Arg == "--rider")
+		{
+			gRiderTest = true;
 		}
 	}
 
