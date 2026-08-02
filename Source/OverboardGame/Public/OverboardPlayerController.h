@@ -64,6 +64,17 @@ public:
 	virtual void SetupInputComponent() override;
 	virtual void PlayerTick(float DeltaTime) override;
 
+	// THE FIX (overboard#162): AddMappingContext used to be called from SetupInputComponent, and
+	// silently did nothing if GetLocalPlayer() was null there -- which it reliably was in -game
+	// standalone (less reliably in PIE, which is why this shipped once already and looked fine).
+	// No mapping context added means no key is ever mapped to any action, every handler stays at
+	// zero, and NOTHING was logged -- a keyboard AND gamepad went dark with no error anywhere.
+	// ReceivedPlayer() is the engine's own purpose-built hook: called right after Player is
+	// assigned, guaranteed non-null for a local player at that point. Action/binding
+	// CONSTRUCTION stays in SetupInputComponent (InputComponent does exist by then); only
+	// registering the mapping context moves.
+	virtual void ReceivedPlayer() override;
+
 protected:
 	// Below this magnitude (post-normalization, [0,1] range) a raw stick reads as zero. Sized
 	// comfortably above typical Xbox/PS5 stick centre noise (a couple of percent) so a centred
@@ -109,6 +120,14 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> IA_Reset;
 
+	// overboard#162: "The window traps input with no way out" -- the CEO had to switch virtual
+	// desktops to force-quit. Not a launch-blocker by itself, but anything handed to him to play
+	// with must be exitable without hunting for how, and this will bite during a capture session
+	// too. Escape only; not on the gamepad (no natural "quit" button to reuse without stealing
+	// one of the four already-mapped face buttons).
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> IA_Quit;
+
 	// Raw, unshaped axis state as last reported by Enhanced Input -- the TARGET the ramp below
 	// chases, not what gets sent. For the gamepad this already moves gradually; for the keyboard
 	// this snaps between 0 and +-1 the instant a key is pressed/released.
@@ -142,6 +161,7 @@ private:
 	void OnSteer(const FInputActionValue& Value);
 	void OnArm(const FInputActionValue& Value);
 	void OnReset(const FInputActionValue& Value);
+	void OnQuit(const FInputActionValue& Value);
 
 	// Deadzone + response curve, applied to a raw stick axis already in [-1,1]. Does not clamp
 	// its own output beyond what the curve already guarantees -- SendInputPacket clamps again
@@ -149,4 +169,16 @@ private:
 	float ShapeAxis(float Raw) const;
 
 	void SendInputPacket();
+
+	// Headless verification for the AddMappingContext fix above (overboard#162): this
+	// environment has no display or real keyboard/gamepad to press a key with. Enabled only by
+	// the -OverboardInputSelfTest command-line switch; otherwise this never runs and costs
+	// nothing. Injects a real "W pressed" event through UPlayerInput::InputKey
+	// (FInputKeyEventArgs::CreateSimulated -- an engine-provided mechanism for exactly this, not
+	// a hack), which exercises the ACTUAL Enhanced Input pipeline end to end: mapping context
+	// lookup, trigger evaluation, the Negate modifier on the paired key, our handler, the ramp,
+	// and the real wire send -- then logs PASS/FAIL on whether the value actually went non-zero.
+	// "Do not report this fixed until a keypress produces a non-zero value on the wire" -- this
+	// is that check, run without a display.
+	void RunInputSelfTest();
 };

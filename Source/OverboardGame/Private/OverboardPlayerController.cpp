@@ -6,6 +6,8 @@
 #include "InputAction.h"
 #include "InputTriggers.h"
 #include "InputModifiers.h"
+#include "InputKeyEventArgs.h"
+#include "EnhancedPlayerInput.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "IPAddress.h"
@@ -13,6 +15,8 @@
 #include "OverboardGameMode.h"
 #include "BoardActor.h"
 #include "Logging/LogMacros.h"
+#include "Misc/CommandLine.h"
+#include "TimerManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogOverboardInput, Log, All);
 
@@ -24,6 +28,18 @@ namespace
 AOverboardPlayerController::AOverboardPlayerController()
 {
 	PrimaryActorTick.bCanEverTick = true;
+
+	// SAME BUG, second instance (overboard#162): APlayerController::InitInputSystem() creates
+	// PlayerInput via UInputSettings::GetDefaultPlayerInputClass(), which has the identical
+	// TSoftClassPtr-falls-back-if-not-already-resolved fragility as GetDefaultInputComponentClass()
+	// (see SetupInputComponent's comment for the one that was actually caught first). If
+	// PlayerInput silently falls back to plain UPlayerInput instead of UEnhancedPlayerInput, none
+	// of Enhanced Input's mapping-context/trigger evaluation can run AT ALL, no matter how correct
+	// the InputComponent/mapping/binding setup is -- that machinery lives in UEnhancedPlayerInput
+	// specifically. OverridePlayerInputClass is the engine's own purpose-built escape hatch for
+	// this ("used instead of the Input Settings' DefaultPlayerInputClass"), set here rather than
+	// relying on the same fragile global resolution a second time.
+	OverridePlayerInputClass = UEnhancedPlayerInput::StaticClass();
 }
 
 void AOverboardPlayerController::BeginPlay()
@@ -60,6 +76,27 @@ void AOverboardPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReaso
 
 void AOverboardPlayerController::SetupInputComponent()
 {
+	// THE ACTUAL ROOT CAUSE (overboard#162), found by running the self-test below and reading
+	// its own log, not by reasoning: Super::SetupInputComponent() creates InputComponent via
+	// UInputSettings::GetDefaultInputComponentClass(), which resolves a TSoftClassPtr and
+	// silently falls back to plain UInputComponent -- not UEnhancedInputComponent -- if that
+	// soft pointer isn't already resolved in memory at this exact point. Confirmed happening in
+	// -game mode despite Config/DefaultEngine.ini's DefaultInputComponentClass being correctly
+	// set (verified separately): the self-test's own log showed "InputComponent is not an
+	// EnhancedInputComponent", which meant every EIC->BindAction call below was silently
+	// skipped, no delegate was ever bound to any action, and OnWeightShiftForeAft etc. could
+	// never fire -- regardless of whether the mapping context was ever added correctly. This is
+	// what actually killed both the keyboard AND the gamepad, not (only) the AddMappingContext
+	// timing below. Pre-creating InputComponent as the correct type here sidesteps the fragile
+	// config resolution entirely instead of chasing why it sometimes doesn't resolve --
+	// Super::SetupInputComponent() only creates it `if (InputComponent == NULL)`, so this wins.
+	if (!InputComponent)
+	{
+		InputComponent = NewObject<UEnhancedInputComponent>(this, TEXT("PC_InputComponent0"));
+		InputComponent->RegisterComponent();
+		UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController: pre-created InputComponent as UEnhancedInputComponent explicitly."));
+	}
+
 	Super::SetupInputComponent();
 
 	// Built at runtime rather than as .uasset data assets -- still no editor session available
@@ -108,13 +145,13 @@ void AOverboardPlayerController::SetupInputComponent()
 	MappingContext->MapKey(IA_Reset, EKeys::Gamepad_FaceButton_Right); // gamepad path unchanged
 	MappingContext->MapKey(IA_Reset, EKeys::R);
 
-	if (ULocalPlayer* LocalPlayer = GetLocalPlayer())
-	{
-		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
-		{
-			Subsystem->AddMappingContext(MappingContext, 0);
-		}
-	}
+	IA_Quit = NewObject<UInputAction>(this, TEXT("IA_Quit"));
+	IA_Quit->ValueType = EInputActionValueType::Boolean;
+	MappingContext->MapKey(IA_Quit, EKeys::Escape);
+
+	// AddMappingContext does NOT happen here -- see ReceivedPlayer() and the header comment on
+	// it. This used to be here and silently did nothing whenever GetLocalPlayer() was null at
+	// this point, which is exactly what killed both the keyboard AND the gamepad.
 
 	if (UEnhancedInputComponent* EIC = Cast<UEnhancedInputComponent>(InputComponent))
 	{
@@ -128,18 +165,73 @@ void AOverboardPlayerController::SetupInputComponent()
 		EIC->BindAction(IA_Arm, ETriggerEvent::Completed, this, &AOverboardPlayerController::OnArm);
 		EIC->BindAction(IA_Reset, ETriggerEvent::Started, this, &AOverboardPlayerController::OnReset);
 		EIC->BindAction(IA_Reset, ETriggerEvent::Completed, this, &AOverboardPlayerController::OnReset);
+		EIC->BindAction(IA_Quit, ETriggerEvent::Started, this, &AOverboardPlayerController::OnQuit);
+		UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController: action bindings registered on the EnhancedInputComponent."));
 	}
 	else
 	{
-		UE_LOG(LogOverboardInput, Error, TEXT("AOverboardPlayerController: InputComponent is not an EnhancedInputComponent -- check project Enhanced Input settings."));
+		UE_LOG(LogOverboardInput, Error, TEXT("AOverboardPlayerController: InputComponent is not an EnhancedInputComponent -- check project Enhanced Input settings (DefaultPlayerInputClass/DefaultInputComponentClass in DefaultEngine.ini). No key will ever do anything."));
 	}
 }
 
-void AOverboardPlayerController::OnWeightShiftForeAft(const FInputActionValue& Value) { CurrentForeAft = Value.Get<float>(); }
-void AOverboardPlayerController::OnWeightShiftLateral(const FInputActionValue& Value) { CurrentLateral = Value.Get<float>(); }
-void AOverboardPlayerController::OnSteer(const FInputActionValue& Value) { CurrentSteer = Value.Get<float>(); }
-void AOverboardPlayerController::OnArm(const FInputActionValue& Value) { bArmHeld = Value.Get<bool>(); }
-void AOverboardPlayerController::OnReset(const FInputActionValue& Value) { bResetHeld = Value.Get<bool>(); }
+void AOverboardPlayerController::ReceivedPlayer()
+{
+	Super::ReceivedPlayer();
+
+	// THE FIX (overboard#162) -- see the header comment on this override for the full story.
+	// Every branch below logs, on success or failure: a silent null here is exactly what cost a
+	// whole cycle last time, and this is the third class of silent-null bug tonight (the
+	// FObjectFinder crash, the flat-material load, now this).
+	ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	if (!LocalPlayer)
+	{
+		UE_LOG(LogOverboardInput, Error, TEXT("AOverboardPlayerController::ReceivedPlayer: GetLocalPlayer() is STILL null -- mapping context cannot be added, every key/stick will read as zero. This should not happen (ReceivedPlayer is called right after Player is assigned) -- if it does, something upstream of Enhanced Input is broken."));
+		return;
+	}
+
+	UEnhancedInputLocalPlayerSubsystem* Subsystem = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
+	if (!Subsystem)
+	{
+		UE_LOG(LogOverboardInput, Error, TEXT("AOverboardPlayerController::ReceivedPlayer: LocalPlayer has no UEnhancedInputLocalPlayerSubsystem -- check DefaultPlayerInputClass/DefaultInputComponentClass in DefaultEngine.ini and that the EnhancedInput plugin is enabled. Mapping context NOT added; every key/stick will read as zero."));
+		return;
+	}
+
+	if (!MappingContext)
+	{
+		UE_LOG(LogOverboardInput, Error, TEXT("AOverboardPlayerController::ReceivedPlayer: MappingContext is null -- SetupInputComponent has not run yet or failed. Mapping context NOT added."));
+		return;
+	}
+
+	Subsystem->AddMappingContext(MappingContext, 0);
+	UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController::ReceivedPlayer: mapping context added successfully. Keyboard and gamepad input should now reach the wire."));
+
+	if (FParse::Param(FCommandLine::Get(), TEXT("OverboardInputSelfTest")))
+	{
+		FTimerHandle SelfTestHandle;
+		GetWorldTimerManager().SetTimer(SelfTestHandle, this, &AOverboardPlayerController::RunInputSelfTest, 1.5f, false);
+	}
+}
+
+// Verbose-level instrumentation on every handler (overboard#162, COO's explicit debugging ask):
+// "log the actual value arriving ... if the handler never fires, it is mapping; if it fires with
+// zero, it is the action/trigger." Verbose is filtered out by default (no spam in a normal
+// session) but is exactly what's needed the next time input goes dark for a reason nobody
+// logged -- raise LogOverboardInput to Verbose (`Log LogOverboardInput Verbose` in the in-game
+// console, or -LogCmds="LogOverboardInput Verbose" on the command line) to see it.
+void AOverboardPlayerController::OnWeightShiftForeAft(const FInputActionValue& Value) { CurrentForeAft = Value.Get<float>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnWeightShiftForeAft: %.3f"), CurrentForeAft); }
+void AOverboardPlayerController::OnWeightShiftLateral(const FInputActionValue& Value) { CurrentLateral = Value.Get<float>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnWeightShiftLateral: %.3f"), CurrentLateral); }
+void AOverboardPlayerController::OnSteer(const FInputActionValue& Value) { CurrentSteer = Value.Get<float>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnSteer: %.3f"), CurrentSteer); }
+void AOverboardPlayerController::OnArm(const FInputActionValue& Value) { bArmHeld = Value.Get<bool>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnArm: %s"), bArmHeld ? TEXT("true") : TEXT("false")); }
+void AOverboardPlayerController::OnReset(const FInputActionValue& Value) { bResetHeld = Value.Get<bool>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnReset: %s"), bResetHeld ? TEXT("true") : TEXT("false")); }
+
+void AOverboardPlayerController::OnQuit(const FInputActionValue& Value)
+{
+	if (Value.Get<bool>())
+	{
+		UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController: Escape pressed, quitting."));
+		ConsoleCommand(TEXT("quit"));
+	}
+}
 
 void AOverboardPlayerController::PlayerTick(float DeltaTime)
 {
@@ -217,4 +309,80 @@ void AOverboardPlayerController::SendInputPacket()
 
 	int32 BytesSent = 0;
 	SendSocket->SendTo(Buf, sizeof(Buf), BytesSent, *HostAddr);
+}
+
+void AOverboardPlayerController::RunInputSelfTest()
+{
+	UE_LOG(LogOverboardInput, Log, TEXT("=== OverboardInputSelfTest: BEGIN ==="));
+
+	if (!PlayerInput)
+	{
+		UE_LOG(LogOverboardInput, Error, TEXT("OverboardInputSelfTest: FAIL -- PlayerInput is null, cannot inject a key event."));
+		return;
+	}
+
+	// Keyboard phase: a real 'W pressed' event through the actual Enhanced Input pipeline --
+	// mapping context lookup, trigger evaluation, the Negate-modified paired key, our handler,
+	// the ramp, the real wire send -- via the engine's own simulated-input mechanism, not a
+	// hand-rolled shortcut that could pass while the real path stays broken.
+	UE_LOG(LogOverboardInput, Log, TEXT("OverboardInputSelfTest: [1/2 keyboard] baseline -- CurrentForeAft=%.3f SmoothedForeAft=%.3f"), CurrentForeAft, SmoothedForeAft);
+	PlayerInput->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::W, IE_Pressed, 1.0f));
+	UE_LOG(LogOverboardInput, Log, TEXT("OverboardInputSelfTest: [1/2 keyboard] injected 'W pressed'. Checking again shortly (processed on a later frame, not synchronously)."));
+
+	FTimerHandle CheckKeyboardHandle;
+	GetWorldTimerManager().SetTimer(CheckKeyboardHandle, [this]()
+	{
+		const bool bHandlerFired = !FMath::IsNearlyZero(CurrentForeAft);
+		const bool bReachedWire = !FMath::IsNearlyZero(SmoothedForeAft);
+		UE_LOG(LogOverboardInput, Log, TEXT("OverboardInputSelfTest: [1/2 keyboard] after settle -- CurrentForeAft=%.3f (handler %s) SmoothedForeAft=%.3f (ramped/wire value %s)"),
+			CurrentForeAft, bHandlerFired ? TEXT("FIRED") : TEXT("NEVER FIRED -- mapping context problem"),
+			SmoothedForeAft, bReachedWire ? TEXT("NON-ZERO -- PASS") : TEXT("still zero -- FAIL"));
+		UE_LOG(LogOverboardInput, Log, TEXT("=== OverboardInputSelfTest KEYBOARD: %s ==="), bReachedWire ? TEXT("PASS") : TEXT("FAIL"));
+
+		if (PlayerInput)
+		{
+			PlayerInput->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::W, IE_Released, 0.0f));
+		}
+
+		// Gamepad phase, per the COO's explicit ask to confirm this fix covers both paths --
+		// same mapping context, same InputComponent/PlayerInput classes, so the same root cause
+		// should have broken both, and the same fix should cover both. Confirmed, not assumed.
+		FTimerHandle GamepadInjectHandle;
+		GetWorldTimerManager().SetTimer(GamepadInjectHandle, [this]()
+		{
+			UE_LOG(LogOverboardInput, Log, TEXT("OverboardInputSelfTest: [2/2 gamepad] baseline -- CurrentForeAft=%.3f SmoothedForeAft=%.3f"), CurrentForeAft, SmoothedForeAft);
+			if (PlayerInput)
+			{
+				PlayerInput->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::Gamepad_LeftY, IE_Axis, 0.6f));
+			}
+			UE_LOG(LogOverboardInput, Log, TEXT("OverboardInputSelfTest: [2/2 gamepad] injected Gamepad_LeftY=0.6. Checking again shortly."));
+
+			FTimerHandle CheckGamepadHandle;
+			GetWorldTimerManager().SetTimer(CheckGamepadHandle, [this]()
+			{
+				const bool bHandlerFired = !FMath::IsNearlyZero(CurrentForeAft);
+				const bool bReachedWire = !FMath::IsNearlyZero(SmoothedForeAft);
+				UE_LOG(LogOverboardInput, Log, TEXT("OverboardInputSelfTest: [2/2 gamepad] after settle -- CurrentForeAft=%.3f (handler %s) SmoothedForeAft=%.3f (ramped/wire value %s)"),
+					CurrentForeAft, bHandlerFired ? TEXT("FIRED") : TEXT("NEVER FIRED"),
+					SmoothedForeAft, bReachedWire ? TEXT("NON-ZERO -- PASS") : TEXT("still zero -- FAIL"));
+				UE_LOG(LogOverboardInput, Log, TEXT("=== OverboardInputSelfTest GAMEPAD: %s ==="), bReachedWire ? TEXT("PASS") : TEXT("FAIL"));
+
+				if (PlayerInput)
+				{
+					PlayerInput->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::Gamepad_LeftY, IE_Axis, 0.0f));
+				}
+
+				// Self-test mode is a one-shot headless check, never a normal play session --
+				// quit afterward rather than leaving an -unattended process running indefinitely
+				// in the background (bit a verification pass once already: four stray instances
+				// kept sending packets for minutes after their self-tests had long finished).
+				FTimerHandle QuitHandle;
+				GetWorldTimerManager().SetTimer(QuitHandle, [this]()
+				{
+					UE_LOG(LogOverboardInput, Log, TEXT("OverboardInputSelfTest: done, quitting."));
+					ConsoleCommand(TEXT("quit"));
+				}, 1.0f, false);
+			}, 0.5f, false);
+		}, 0.5f, false);
+	}, 0.5f, false);
 }
