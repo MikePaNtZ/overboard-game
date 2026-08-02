@@ -162,7 +162,9 @@ void ABoardActor::UpdatePoseFromHistory()
 		const FQuat QuatA(UeA.QuatWXYZ[1], UeA.QuatWXYZ[2], UeA.QuatWXYZ[3], UeA.QuatWXYZ[0]); // UE FQuat ctor is (X,Y,Z,W)
 		const FQuat QuatB(UeB.QuatWXYZ[1], UeB.QuatWXYZ[2], UeB.QuatWXYZ[3], UeB.QuatWXYZ[0]);
 
-		SetActorLocation(FMath::Lerp(PosA, PosB, Alpha));
+		// Offset the POSITION only. Rotation is orientation in MuJoCo's frame and stays untouched
+		// -- offsetting a level's origin must not be able to roll the horizon.
+		SetActorLocation(FMath::Lerp(PosA, PosB, Alpha) + WorldOriginOffsetCm);
 		SetActorRotation(FQuat::Slerp(QuatA, QuatB, Alpha));
 		return;
 	}
@@ -171,7 +173,7 @@ void ABoardActor::UpdatePoseFromHistory()
 	// end it's outside of instead of extrapolating.
 	const FTimestampedBoardState& Clamp = (RenderTime < History[0].ArrivalTimeSeconds) ? History[0] : History.Last();
 	TransformToApply = OverboardWire::MuJoCoToUnreal(Clamp.State.Pos, Clamp.State.Quat);
-	SetActorLocation(FVector(TransformToApply.PosCm[0], TransformToApply.PosCm[1], TransformToApply.PosCm[2]));
+	SetActorLocation(FVector(TransformToApply.PosCm[0], TransformToApply.PosCm[1], TransformToApply.PosCm[2]) + WorldOriginOffsetCm);
 	SetActorRotation(FQuat(TransformToApply.QuatWXYZ[1], TransformToApply.QuatWXYZ[2], TransformToApply.QuatWXYZ[3], TransformToApply.QuatWXYZ[0]));
 }
 

@@ -10,6 +10,8 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Logging/LogMacros.h"
+#include "GameFramework/PlayerStart.h"
+#include "EngineUtils.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogOverboardLevel, Log, All);
 
@@ -125,13 +127,50 @@ void AOverboardGameMode::BeginPlay()
 		SpawnMotionReferenceMarkers(World);
 	}
 
-	SpawnedBoard = World->SpawnActor<ABoardActor>(FVector(0.f, 0.f, 50.f), FRotator::ZeroRotator);
+	// Where MuJoCo's origin lands in this level. The C++ placeholder ground is centred on the
+	// world origin, so zero is right for OB_Main and every level that came before this; an
+	// imported environment almost never is, so it says where it wants the board by placing a
+	// single PlayerStart. First one found wins -- if a level has several, that is a level-
+	// authoring mistake and the log below says which one was taken, rather than picking silently.
+	//
+	// PlayerStart is deliberately reused rather than a bespoke marker class: it already exists in
+	// the editor's Place Actors panel, so putting the board somewhere needs no C++, no Blueprint
+	// and nothing this repo has to ship. DefaultPawnClass is still nullptr and the camera pawn
+	// still auto-possesses, so nothing actually spawns AT the PlayerStart through the normal
+	// GameMode flow -- it is being used purely as a level-authored coordinate.
+	FVector OriginOffsetCm = FVector::ZeroVector;
+	const APlayerStart* Start = nullptr;
+	for (TActorIterator<APlayerStart> It(World); It; ++It)
+	{
+		Start = *It;
+		break;
+	}
+
+	if (Start)
+	{
+		OriginOffsetCm = Start->GetActorLocation();
+		UE_LOG(LogOverboardLevel, Log, TEXT("AOverboardGameMode: PlayerStart '%s' found; MuJoCo origin -> UE (%.1f, %.1f, %.1f) cm."),
+			*Start->GetName(), OriginOffsetCm.X, OriginOffsetCm.Y, OriginOffsetCm.Z);
+	}
+	else
+	{
+		UE_LOG(LogOverboardLevel, Log, TEXT("AOverboardGameMode: no PlayerStart in this level; MuJoCo origin stays at UE world origin."));
+	}
+
+	SpawnedBoard = World->SpawnActor<ABoardActor>(OriginOffsetCm + FVector(0.f, 0.f, 50.f), FRotator::ZeroRotator);
+	if (SpawnedBoard)
+	{
+		// Must be set before the first wire packet is applied, or the board renders one frame at
+		// the unoffset origin -- which in a large imported level is far enough away to read as a
+		// flicker on screen.
+		SpawnedBoard->SetWorldOriginOffsetCm(OriginOffsetCm);
+	}
 
 	// W2: something to look through. See AOverboardCameraPawn -- possesses itself, finds the
 	// board lazily, so spawn order relative to SpawnedBoard above doesn't matter. Starting
 	// transform here is just "somewhere behind the board"; the pawn's own Tick takes over
 	// immediately once it acquires a follow target.
-	World->SpawnActor<AOverboardCameraPawn>(FVector(-800.f, 0.f, 200.f), FRotator::ZeroRotator);
+	World->SpawnActor<AOverboardCameraPawn>(OriginOffsetCm + FVector(-800.f, 0.f, 200.f), FRotator::ZeroRotator);
 }
 
 void AOverboardGameMode::SpawnMotionReferenceMarkers(UWorld* World) const

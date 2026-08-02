@@ -38,6 +38,22 @@ public:
 	// render pose, so it reacts on the tick data actually arrives, not one render-delay later.
 	bool IsFallen() const { return bLatestSampleFallen; }
 
+	// Where MuJoCo's world origin lands in UE world space, in centimetres.
+	//
+	// The wire carries an ABSOLUTE position and UpdatePoseFromHistory applies it with
+	// SetActorLocation, so without this the board is pinned to UE (0,0,0) no matter where it is
+	// spawned -- the first packet overwrites the spawn transform. That is fine over the C++
+	// placeholder ground (a 100x100m plane centred on the origin) but useless in an imported
+	// environment, where the origin is wherever the environment author happened to put it and is
+	// typically not flat, not paved, and sometimes not even above ground.
+	//
+	// This is a RENDERING offset and nothing else. It is added after MuJoCoToUnreal and never
+	// fed back anywhere: the wire, the controller and MuJoCo all keep working in MuJoCo's own
+	// frame, exactly as before. Moving the board around a level cannot change a single physics
+	// value, which is the property ADR-0009 is protecting.
+	void SetWorldOriginOffsetCm(const FVector& InOffsetCm) { WorldOriginOffsetCm = InOffsetCm; }
+	FVector GetWorldOriginOffsetCm() const { return WorldOriginOffsetCm; }
+
 protected:
 	// The actor's true root: identity scale, always. BoxMesh and MeshAssemblyRoot are SIBLINGS
 	// attached here, not parent/child of each other -- see the scale bug this fixed (overboard#162):
@@ -89,6 +105,11 @@ protected:
 	// True once every part above has loaded and built successfully. While false, BoxMesh is the
 	// visible fallback and the real-mesh components stay hidden -- see TryBuildRealMesh.
 	bool bRealMeshLoaded = false;
+
+	// Zero by default, so OB_Main and every existing capture are bit-identical to before this
+	// existed. Set by AOverboardGameMode from the level's PlayerStart, if it has one.
+	UPROPERTY(EditAnywhere, Category = "Board|Level")
+	FVector WorldOriginOffsetCm = FVector::ZeroVector;
 
 private:
 	TUniquePtr<FBoardStateClient> StateClient;
