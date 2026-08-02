@@ -182,8 +182,12 @@ void AOverboardGameMode::BeginPlay()
 	// immediately once it acquires a follow target.
 	// "Behind the board" is only behind it once the origin is yawed -- rotate the offset too, or
 	// the camera starts off to one side and swings across on the first tick.
-	const FVector CameraOffset = FRotator(0.f, OriginYawDeg, 0.f).RotateVector(FVector(-800.f, 0.f, 200.f));
-	World->SpawnActor<AOverboardCameraPawn>(OriginOffsetCm + CameraOffset, FRotator(0.f, OriginYawDeg, 0.f));
+	//
+	// +X, not -X: the board's nose is its local -X, so the TAIL side -- where the chase camera
+	// belongs, and where AOverboardCameraPawn::Tick settles it -- is +X. Spawning at -X put the
+	// camera in front and left it to swing 180 deg through the board on the first few frames.
+	const FVector CameraOffset = FRotator(0.f, OriginYawDeg, 0.f).RotateVector(FVector(800.f, 0.f, 200.f));
+	World->SpawnActor<AOverboardCameraPawn>(OriginOffsetCm + CameraOffset, FRotator(0.f, OriginYawDeg + 180.f, 0.f));
 }
 
 void AOverboardGameMode::SpawnMotionReferenceMarkers(UWorld* World) const
