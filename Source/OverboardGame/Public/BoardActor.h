@@ -54,6 +54,20 @@ public:
 	void SetWorldOriginOffsetCm(const FVector& InOffsetCm) { WorldOriginOffsetCm = InOffsetCm; }
 	FVector GetWorldOriginOffsetCm() const { return WorldOriginOffsetCm; }
 
+	// Which way MuJoCo's +X points in this level, in degrees of world yaw.
+	//
+	// Position offset alone is not enough once the board is somewhere real: a road runs whichever
+	// way the environment author laid it, and MuJoCo's forward is a fixed axis. Without this the
+	// board drives across the carriageway instead of along it, and no amount of moving the
+	// PlayerStart fixes that.
+	//
+	// YAW ONLY, and that restriction is not fussiness. Pitch or roll here would rotate the frame
+	// that gravity is expressed in: the board would render leaning, and a viewer would read it as
+	// the controller failing to hold level when nothing of the sort had happened. Yaw about the
+	// world vertical is the one rotation that cannot lie about attitude.
+	void SetWorldOriginYawDeg(float InYawDeg) { WorldOriginYawDeg = InYawDeg; }
+	float GetWorldOriginYawDeg() const { return WorldOriginYawDeg; }
+
 protected:
 	// The actor's true root: identity scale, always. BoxMesh and MeshAssemblyRoot are SIBLINGS
 	// attached here, not parent/child of each other -- see the scale bug this fixed (overboard#162):
@@ -106,10 +120,45 @@ protected:
 	// visible fallback and the real-mesh components stay hidden -- see TryBuildRealMesh.
 	bool bRealMeshLoaded = false;
 
+	// --- Pint skin ---------------------------------------------------------------------------
+	//
+	// A COSMETIC SKIN, and the distinction is the whole point. MuJoCo simulates the Openwheel
+	// geometry above and continues to; this only changes what is drawn. The two are not the same
+	// vehicle -- the Pint deck is ~0.70 m against the 0.938 m Openwheel one -- so footage using
+	// this skin may not be presented as a simulation result. See
+	// Content/ThirdParty/PintPreview/NOTICE.md, which also covers the CC BY 4.0 attribution and
+	// the trademark caveat that licence does not address.
+	//
+	// The cost of turning it on is real and worth stating: while the client renders exactly what
+	// MuJoCo simulates, the render is a free visual check on the coordinate transform -- a board
+	// that floats or sinks is a bug signal. With a differently-proportioned chassis that signal is
+	// gone, because "wrong asset scale" and "pose stream offset" now look identical.
+	UPROPERTY(EditAnywhere, Category = "Board|Skin")
+	bool bUsePintSkin = true;
+
+	UPROPERTY(VisibleAnywhere, Category = "Board|Skin")
+	TObjectPtr<USceneComponent> PintAssemblyRoot;
+
+	UPROPERTY(VisibleAnywhere, Category = "Board|Skin")
+	TObjectPtr<UStaticMeshComponent> PintFrameMesh;
+	UPROPERTY(VisibleAnywhere, Category = "Board|Skin")
+	TObjectPtr<UStaticMeshComponent> PintWheelTireMesh;
+	UPROPERTY(VisibleAnywhere, Category = "Board|Skin")
+	TObjectPtr<UStaticMeshComponent> PintWheelHubMesh;
+
+	// All three Pint parts resolved in the constructor. If false the skin is skipped entirely and
+	// the Openwheel geometry stays visible -- same all-or-nothing rule as TryBuildRealMesh, for
+	// the same reason: half a board reads as a rendering bug, not as graceful degradation.
+	bool bPintSkinLoaded = false;
+
 	// Zero by default, so OB_Main and every existing capture are bit-identical to before this
 	// existed. Set by AOverboardGameMode from the level's PlayerStart, if it has one.
 	UPROPERTY(EditAnywhere, Category = "Board|Level")
 	FVector WorldOriginOffsetCm = FVector::ZeroVector;
+
+	// Zero by default, so OB_Main and every existing capture are unchanged. See SetWorldOriginYawDeg.
+	UPROPERTY(EditAnywhere, Category = "Board|Level")
+	float WorldOriginYawDeg = 0.f;
 
 private:
 	TUniquePtr<FBoardStateClient> StateClient;

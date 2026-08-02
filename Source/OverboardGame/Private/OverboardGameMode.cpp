@@ -139,38 +139,51 @@ void AOverboardGameMode::BeginPlay()
 	// still auto-possesses, so nothing actually spawns AT the PlayerStart through the normal
 	// GameMode flow -- it is being used purely as a level-authored coordinate.
 	FVector OriginOffsetCm = FVector::ZeroVector;
+	float OriginYawDeg = 0.f;
 	const APlayerStart* Start = nullptr;
-	for (TActorIterator<APlayerStart> It(World); It; ++It)
+	if (bUsePlayerStartAsWorldOrigin)
 	{
-		Start = *It;
-		break;
+		for (TActorIterator<APlayerStart> It(World); It; ++It)
+		{
+			Start = *It;
+			break;
+		}
 	}
 
 	if (Start)
 	{
 		OriginOffsetCm = Start->GetActorLocation();
-		UE_LOG(LogOverboardLevel, Log, TEXT("AOverboardGameMode: PlayerStart '%s' found; MuJoCo origin -> UE (%.1f, %.1f, %.1f) cm."),
-			*Start->GetName(), OriginOffsetCm.X, OriginOffsetCm.Y, OriginOffsetCm.Z);
+		// Yaw only -- see ABoardActor::SetWorldOriginYawDeg for why pitch/roll are discarded
+		// rather than forwarded. A PlayerStart dropped by hand is rarely perfectly level, and
+		// inheriting that tilt would render as the board failing to balance.
+		OriginYawDeg = Start->GetActorRotation().Yaw;
+		UE_LOG(LogOverboardLevel, Log, TEXT("AOverboardGameMode: PlayerStart '%s' found; MuJoCo origin -> UE (%.1f, %.1f, %.1f) cm, yaw %.1f deg."),
+			*Start->GetName(), OriginOffsetCm.X, OriginOffsetCm.Y, OriginOffsetCm.Z, OriginYawDeg);
 	}
 	else
 	{
-		UE_LOG(LogOverboardLevel, Log, TEXT("AOverboardGameMode: no PlayerStart in this level; MuJoCo origin stays at UE world origin."));
+		UE_LOG(LogOverboardLevel, Log, TEXT("AOverboardGameMode: MuJoCo origin stays at UE world origin (bUsePlayerStartAsWorldOrigin=%s)."),
+			bUsePlayerStartAsWorldOrigin ? TEXT("true, but no PlayerStart found") : TEXT("false"));
 	}
 
-	SpawnedBoard = World->SpawnActor<ABoardActor>(OriginOffsetCm + FVector(0.f, 0.f, 50.f), FRotator::ZeroRotator);
+	SpawnedBoard = World->SpawnActor<ABoardActor>(OriginOffsetCm + FVector(0.f, 0.f, 50.f), FRotator(0.f, OriginYawDeg, 0.f));
 	if (SpawnedBoard)
 	{
 		// Must be set before the first wire packet is applied, or the board renders one frame at
 		// the unoffset origin -- which in a large imported level is far enough away to read as a
 		// flicker on screen.
 		SpawnedBoard->SetWorldOriginOffsetCm(OriginOffsetCm);
+		SpawnedBoard->SetWorldOriginYawDeg(OriginYawDeg);
 	}
 
 	// W2: something to look through. See AOverboardCameraPawn -- possesses itself, finds the
 	// board lazily, so spawn order relative to SpawnedBoard above doesn't matter. Starting
 	// transform here is just "somewhere behind the board"; the pawn's own Tick takes over
 	// immediately once it acquires a follow target.
-	World->SpawnActor<AOverboardCameraPawn>(OriginOffsetCm + FVector(-800.f, 0.f, 200.f), FRotator::ZeroRotator);
+	// "Behind the board" is only behind it once the origin is yawed -- rotate the offset too, or
+	// the camera starts off to one side and swings across on the first tick.
+	const FVector CameraOffset = FRotator(0.f, OriginYawDeg, 0.f).RotateVector(FVector(-800.f, 0.f, 200.f));
+	World->SpawnActor<AOverboardCameraPawn>(OriginOffsetCm + CameraOffset, FRotator(0.f, OriginYawDeg, 0.f));
 }
 
 void AOverboardGameMode::SpawnMotionReferenceMarkers(UWorld* World) const

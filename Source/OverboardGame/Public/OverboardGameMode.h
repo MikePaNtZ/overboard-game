@@ -55,6 +55,20 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Board|Level")
 	bool bSpawnMotionReferenceMarkers = true;
 
+	// Whether this level's PlayerStart defines where MuJoCo's origin sits in the world.
+	//
+	// Default FALSE, and that default is load-bearing. OB_Main has a PlayerStart at (0, 0, 92) --
+	// the ordinary "lift a pawn clear of the floor" offset every default level ships with. An
+	// earlier revision read the first PlayerStart unconditionally, which silently raised the board
+	// 92 cm above OB_Main's placeholder ground while claiming to change nothing there. A level has
+	// to opt in, because a PlayerStart's Z means "where a pawn stands", not "where the ground is",
+	// and those differ by exactly the amount that makes a board look like it is hovering.
+	//
+	// Set true only by AOverboardGameMode_NoGround: a level that supplies its own environment is
+	// the only kind that needs to say where in that environment the board belongs.
+	UPROPERTY(EditDefaultsOnly, Category = "Board|Level")
+	bool bUsePlayerStartAsWorldOrigin = false;
+
 private:
 	UPROPERTY(Transient)
 	TObjectPtr<ABoardActor> SpawnedBoard;
