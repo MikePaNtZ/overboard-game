@@ -23,6 +23,11 @@ wire/*.dSYM
 mesh/test_stl_loader
 mesh/*.dSYM
 
+# Standalone terrain envelope build output (terrain/Makefile builds these locally).
+terrain/test_terrain
+terrain/terraincheck
+terrain/*.dSYM
+
 # Third-party environment art, imported locally, NEVER committed.
 #
 # Content/CityPark/ is the Fab "City Park Environment Collection" (~1.5 GB), copied in from a
