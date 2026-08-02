@@ -15,8 +15,13 @@ ABoardActor::ABoardActor()
 {
 	PrimaryActorTick.bCanEverTick = true;
 
+	// Identity-scale actor root. BoxMesh and MeshAssemblyRoot attach here as SIBLINGS -- see the
+	// header comment on SceneRoot for the scale bug this exists to prevent from recurring.
+	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
+	RootComponent = SceneRoot;
+
 	BoxMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("BoxMesh"));
-	RootComponent = BoxMesh;
+	BoxMesh->SetupAttachment(SceneRoot);
 
 	// Placeholder for the real board model. As of W3 the real geometry (below) is the primary
 	// visual; this stays as the fallback if it fails to load at runtime -- see class header.
@@ -25,7 +30,8 @@ ABoardActor::ABoardActor()
 	{
 		BoxMesh->SetStaticMesh(CubeFinder.Object);
 	}
-	// Board-ish proportions rather than a 1m cube: long, thin, low.
+	// Board-ish proportions rather than a 1m cube: long, thin, low. This scale is BoxMesh's own
+	// and must never propagate anywhere else -- it very nearly did once (see SceneRoot comment).
 	BoxMesh->SetRelativeScale3D(FVector(0.7f, 0.25f, 0.08f));
 
 	// THE RULE: this application computes no board physics. Collision and gravity are off --
@@ -37,8 +43,10 @@ ABoardActor::ABoardActor()
 	BoxMesh->SetMobility(EComponentMobility::Movable);
 
 	// --- W3 real mesh: built at runtime from STL, see mesh/README.md ------------------------
+	// Sibling of BoxMesh, both attached directly to the identity-scale SceneRoot -- NOT to
+	// BoxMesh or to each other, so the placeholder's cosmetic scale cannot reach this hierarchy.
 	MeshAssemblyRoot = CreateDefaultSubobject<USceneComponent>(TEXT("MeshAssemblyRoot"));
-	MeshAssemblyRoot->SetupAttachment(RootComponent);
+	MeshAssemblyRoot->SetupAttachment(SceneRoot);
 	MeshAssemblyRoot->SetVisibility(false, true); // hidden until TryBuildRealMesh succeeds
 
 	auto MakePart = [this](const TCHAR* Name) -> UProceduralMeshComponent*
@@ -189,12 +197,42 @@ bool ABoardActor::TryBuildRealMesh()
 	};
 
 	bool bAllOk = true;
+	FBox BodyLocalBounds(EForceInit::ForceInit); // union of all 7 STL parts, actor-local space
 	for (const FPartSpec& Part : Parts)
 	{
-		if (!BuildPartFromStl(Part.Component, Part.StlBaseName, Part.ExtraYawDeg))
+		if (!BuildPartFromStl(Part.Component, Part.StlBaseName, Part.ExtraYawDeg, BodyLocalBounds))
 		{
 			bAllOk = false;
 		}
+	}
+
+	// Arithmetic check, not eyeballing (overboard#162): the body (7 STL parts, not the wheel) is
+	// 938 x 232 x 83mm per direct STL measurement, i.e. a (46.9, 11.6, 4.2)cm half-extent in
+	// actor-local space. This is computed independently of the actor's current world transform
+	// (spawn position, any received pose) specifically so it stays meaningful before any wire
+	// state has arrived. A real fix here changed a silent scale bug (real mesh inheriting
+	// BoxMesh's (0.7,0.25,0.08) placeholder-shaping scale) that was NOT visible in the wheel-only
+	// bounds check below, because the wheel is a sibling of BoxMesh too, not a child of it --
+	// only components actually nested under BoxMesh inherited the bug. Log this every time so
+	// that stays caught if it ever regresses.
+	if (BodyLocalBounds.IsValid)
+	{
+		const FVector BodyExtent = BodyLocalBounds.GetExtent(); // half-size, cm
+		const FVector BodySize = BodyLocalBounds.GetSize();
+		constexpr float kExpectedHalfX = 46.9f, kExpectedHalfY = 11.6f, kExpectedHalfZ = 4.2f;
+		constexpr float kToleranceCm = 2.0f; // generous sanity-check tolerance, not a unit test
+		const bool bXOk = FMath::IsNearlyEqual(BodyExtent.X, kExpectedHalfX, kToleranceCm);
+		const bool bYOk = FMath::IsNearlyEqual(BodyExtent.Y, kExpectedHalfY, kToleranceCm);
+		const bool bZOk = FMath::IsNearlyEqual(BodyExtent.Z, kExpectedHalfZ, kToleranceCm);
+		UE_LOG(LogOverboardMesh, Log,
+			TEXT("ABoardActor: body (7 STL parts) local bounds half-extent = (%.2f, %.2f, %.2f) cm, full size = (%.2f, %.2f, %.2f) cm ")
+			TEXT("-- expected half-extent ~(46.9, 11.6, 4.2) cm / full ~(93.8, 23.2, 8.3) cm. %s"),
+			BodyExtent.X, BodyExtent.Y, BodyExtent.Z, BodySize.X, BodySize.Y, BodySize.Z,
+			(bXOk && bYOk && bZOk) ? TEXT("MATCH.") : TEXT("MISMATCH -- scale or placement bug, do not trust this render."));
+	}
+	else
+	{
+		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor: body bounds empty -- no STL part contributed a single vertex."));
 	}
 
 	// Wheel: not an STL, a primitive cylinder. Radius 145.4mm / width 150mm (mesh/README.md,
@@ -245,7 +283,7 @@ bool ABoardActor::TryBuildRealMesh()
 	return bAllOk;
 }
 
-bool ABoardActor::BuildPartFromStl(UProceduralMeshComponent* Component, const FString& StlBaseName, float ExtraYawDeg)
+bool ABoardActor::BuildPartFromStl(UProceduralMeshComponent* Component, const FString& StlBaseName, float ExtraYawDeg, FBox& InOutLocalBounds)
 {
 	if (!Component)
 	{
@@ -309,6 +347,10 @@ bool ABoardActor::BuildPartFromStl(UProceduralMeshComponent* Component, const FS
 		Vertices.Add(V0);
 		Vertices.Add(V2);
 		Vertices.Add(V1);
+
+		InOutLocalBounds += V0;
+		InOutLocalBounds += V1;
+		InOutLocalBounds += V2;
 
 		const FVector FaceNormal = FVector::CrossProduct(V2 - V0, V1 - V0).GetSafeNormal();
 		Normals.Add(FaceNormal);

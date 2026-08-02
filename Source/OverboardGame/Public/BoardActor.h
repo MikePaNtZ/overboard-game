@@ -39,6 +39,16 @@ public:
 	bool IsFallen() const { return bLatestSampleFallen; }
 
 protected:
+	// The actor's true root: identity scale, always. BoxMesh and MeshAssemblyRoot are SIBLINGS
+	// attached here, not parent/child of each other -- see the scale bug this fixed (overboard#162):
+	// BoxMesh carries its own non-uniform SetRelativeScale3D to turn a 1m cube into a board-ish
+	// placeholder shape, and a child component inherits its parent's scale by default. The real
+	// mesh was attached under BoxMesh, so it silently inherited (0.7, 0.25, 0.08) on top of its
+	// own correct mm->cm conversion -- exact match to the measured on-screen sliver. The
+	// placeholder's cosmetic scale must never be able to reach anything else in the hierarchy.
+	UPROPERTY(VisibleAnywhere, Category = "Board")
+	TObjectPtr<USceneComponent> SceneRoot;
+
 	UPROPERTY(VisibleAnywhere, Category = "Board")
 	TObjectPtr<UStaticMeshComponent> BoxMesh;
 
@@ -96,8 +106,11 @@ private:
 	// Loads Meshes/openwheel/<StlBaseName>.stl and builds it into Component as one procedural
 	// mesh section. ExtraYawDeg applies an additional local Z rotation on top of the shared
 	// zero-offset placement (only front_footpad needs this -- see mesh/README.md). Returns false
-	// and logs the parse error on failure.
-	bool BuildPartFromStl(UProceduralMeshComponent* Component, const FString& StlBaseName, float ExtraYawDeg = 0.f);
+	// and logs the parse error on failure. Every processed vertex also extends InOutLocalBounds,
+	// in the actor's local space (Meshes/README.md's mm->cm + Y-mirror conversion already
+	// applied), so TryBuildRealMesh can log and arithmetically check the whole assembly's size
+	// instead of asking a human to eyeball it on screen.
+	bool BuildPartFromStl(UProceduralMeshComponent* Component, const FString& StlBaseName, float ExtraYawDeg, FBox& InOutLocalBounds);
 
 	bool bLatestSampleFallen = false;
 };
