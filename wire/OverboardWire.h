@@ -56,12 +56,40 @@ namespace OverboardWire
 			: 0;
 	}
 
-	// State packet flags (bit0 armed, bit1 valid, bit2 fallen)
+	// State packet flags (bit0 armed, bit1 valid, bit2 fallen, bit3 loss-of-authority warning)
 	namespace EStateFlags
 	{
 		constexpr uint16_t Armed = 1u << 0;
 		constexpr uint16_t Valid = 1u << 1;
 		constexpr uint16_t Fallen = 1u << 2;
+
+		/// ADR-0011 exit criterion (c), condition 3 of the second ratification: the
+		/// loss-of-authority warning. Set while the host's filtered authority utilisation is
+		/// over `AUTHORITY_UTILISATION_WARN` AND the board is below speed-cap onset -- the
+		/// discriminator the ADR specifies, because saturation ABOVE the onset is survivable
+		/// (something is already unloading the board) and a warning that fired on it would be
+		/// noise. Measured host-side lead: the warning asserts at 3.000 s, saturation at
+		/// 4.920 s, `FALLEN` at 5.868 s. It leads `FALLEN` by **2.868 s**; `FALLEN` itself
+		/// TRAILS saturation by -0.948 s, i.e. it annunciates a fall that is already decided.
+		///
+		/// ============================================================================
+		/// THE HOST DOES NOT SET THIS BIT YET. THIS IS THE RECEIVING HALF ONLY.
+		/// ============================================================================
+		///
+		/// `sim-host` computes the signal every cycle (`host.rs`, `authority_warning`) and
+		/// currently sends it to **stderr and the trace CSV only** -- it is not on the wire.
+		/// Issue overboard-game#19 was filed on the understanding that this "arrives over the
+		/// existing state stream"; it does not, and that gap is the reason the warning cannot
+		/// reach a player today. Requested from Senior Controls as a work request; until it
+		/// lands this bit reads 0 on every packet, which is exactly the neutral, backward-
+		/// compatible behaviour a not-yet-set flag bit should have.
+		///
+		/// **No schema bump.** This is a new bit inside the existing `flags` field, not a wider
+		/// wire, so it is backward compatible in both directions -- the same call `sim-host`
+		/// itself made for `INPUT_FLAG_KICK` (input bit 2), which was added without touching
+		/// `schema_version`. A v1 or v2 packet from a host that does not set it decodes
+		/// identically to before.
+		constexpr uint16_t AuthorityWarning = 1u << 3;
 	}
 
 	// Input packet flags (bit0 arm, bit1 reset)

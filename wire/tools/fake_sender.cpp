@@ -24,6 +24,14 @@
 //                                to exercise the rider-offset rendering path without a real host
 //                                (which doesn't speak v2 yet either). Combine with other modes,
 //                                e.g. `fake_sender --rider --rotate`.
+//   fake_sender --authority-cliff
+//                               replays ADR-0011's MEASURED full-stick-from-rest cliff at 50Hz:
+//                                the loss-of-authority warning bit at sim_t 3.000s, envelope
+//                                saturation at 4.920s, FALLEN at 5.868s, inverted at 6.470s.
+//                                Exists so the warning can be TRIGGERED and its on-screen lead
+//                                timed -- the real host computes the signal but does not put it
+//                                on the wire yet (see EStateFlags::AuthorityWarning). Replays
+//                                measured numbers; computes no physics.
 //
 // macOS/BSD sockets only, no UE dependency.
 #include "../OverboardWire.h"
@@ -102,6 +110,119 @@ namespace
 	void SetNoseUp(FBoardState& S, double PhiRad)   { S.Quat[0] = static_cast<float>(std::cos(PhiRad / 2.0)); S.Quat[1] = 0.f; S.Quat[2] = static_cast<float>(-std::sin(PhiRad / 2.0)); S.Quat[3] = 0.f; }
 	void SetYawLeft(FBoardState& S, double PhiRad)  { S.Quat[0] = static_cast<float>(std::cos(PhiRad / 2.0)); S.Quat[1] = 0.f; S.Quat[2] = 0.f; S.Quat[3] = static_cast<float>(std::sin(PhiRad / 2.0)); }
 	void SetRollRight(FBoardState& S, double PhiRad){ S.Quat[0] = static_cast<float>(std::cos(PhiRad / 2.0)); S.Quat[1] = static_cast<float>(std::sin(PhiRad / 2.0)); S.Quat[2] = 0.f; S.Quat[3] = 0.f; }
+
+	// ---- --authority-cliff ------------------------------------------------------------------
+	//
+	// Replays ADR-0011's measured full-stick-from-rest cliff at 50 Hz so the loss-of-authority
+	// warning can be TRIGGERED and its on-screen lead timed, without the real host (which does
+	// not put the warning on the wire yet -- see EStateFlags::AuthorityWarning).
+	//
+	// **This computes nothing.** Every instant below is a number measured in `overboard` and
+	// replayed here; the boundary rule that nothing outside that repo computes board physics is
+	// intact, in the same way a pose track is replayed rather than derived. The pitch between
+	// the stated instants is interpolated purely so the board moves on screen.
+	//
+	// | sim time | event                                    | source                  |
+	// |----------|------------------------------------------|-------------------------|
+	// | 3.000 s  | filtered authority utilisation > 0.85    | overboard#205           |
+	// | 4.920 s  | envelope saturated, 40 A pinned          | ADR-0011 / #205 (4.92)  |
+	// | 5.868 s  | FALLEN trips, -20.1 deg                  | ADR-0011 / #205 (5.87)  |
+	// | 6.470 s  | fully inverted, -179.5 deg               | ADR-0011                |
+	//
+	// The point of the mode is the first row against the third: 2.868 s of lead, versus FALLEN
+	// TRAILING saturation by -0.948 s.
+	constexpr double kCliffWarningS    = 3.000;
+	constexpr double kCliffSaturationS = 4.920;
+	constexpr double kCliffFallenS     = 5.868;
+	constexpr double kCliffInvertedS   = 6.470;
+	constexpr double kCliffEndS        = 7.000;
+
+	double CliffPitchDeg(double T)
+	{
+		// Piecewise-linear through ADR-0011's own table. Presentation only.
+		if (T <= kCliffSaturationS) { return -10.4 * (T / kCliffSaturationS); }
+		if (T <= kCliffFallenS)     { return -10.4 + (-20.1 + 10.4) * (T - kCliffSaturationS) / (kCliffFallenS - kCliffSaturationS); }
+		if (T <= kCliffInvertedS)   { return -20.1 + (-179.5 + 20.1) * (T - kCliffFallenS) / (kCliffInvertedS - kCliffFallenS); }
+		return -179.5;
+	}
+
+	void RunAuthorityCliff()
+	{
+		sockaddr_in Dest;
+		int Sock = OpenSocketToHost(Dest);
+		if (Sock < 0) { return; }
+
+		std::printf("fake_sender --authority-cliff: replaying ADR-0011's measured full-stick cliff.\n");
+		std::printf("  warning bit set at sim_t=%.3f s, FALLEN at %.3f s -- %.3f s of lead.\n",
+			kCliffWarningS, kCliffFallenS, kCliffFallenS - kCliffWarningS);
+
+		const auto WallStart = std::chrono::steady_clock::now();
+		bool AnnouncedWarning = false;
+		bool AnnouncedFallen = false;
+		uint64_t Seq = 0;
+
+		for (double T = 0.0; T <= kCliffEndS; T += kSendIntervalMs / 1000.0)
+		{
+			FBoardState State = BaseState(Seq++, T);
+
+			const double PitchDeg = CliffPitchDeg(T);
+			const double PitchRad = PitchDeg * 3.14159265358979323846 / 180.0;
+			State.PitchRad = static_cast<float>(PitchRad);
+			SetNoseUp(State, PitchRad);
+			State.Pos[0] = static_cast<float>(0.5 * 2.0 * T * T); // roughly the recorded ground speed
+			State.MotorCurrentA = static_cast<float>(T >= kCliffSaturationS ? 40.0 : 40.0 * (T / kCliffSaturationS));
+
+			if (T >= kCliffWarningS)
+			{
+				State.Flags |= EStateFlags::AuthorityWarning;
+				if (!AnnouncedWarning)
+				{
+					AnnouncedWarning = true;
+					const double WallMs = std::chrono::duration<double, std::milli>(
+						std::chrono::steady_clock::now() - WallStart).count();
+					std::printf("  [wall %8.1f ms] AuthorityWarning bit SET   (sim_t=%.3f s)\n", WallMs, T);
+					std::fflush(stdout);
+				}
+			}
+			if (T >= kCliffFallenS)
+			{
+				State.Flags |= EStateFlags::Fallen;
+				if (!AnnouncedFallen)
+				{
+					AnnouncedFallen = true;
+					const double WallMs = std::chrono::duration<double, std::milli>(
+						std::chrono::steady_clock::now() - WallStart).count();
+					std::printf("  [wall %8.1f ms] Fallen bit SET             (sim_t=%.3f s)\n", WallMs, T);
+					std::fflush(stdout);
+				}
+			}
+
+			SendState(Sock, Dest, State);
+
+			// ABSOLUTE schedule, not accumulated sleeps. `sleep_for(20ms)` in a loop measured
+			// ~8 Hz here, not 50 -- macOS sleep granularity plus per-iteration work, compounding
+			// every iteration. That is not a cosmetic difference: it is EXACTLY the defect
+			// overboard#191 fixed, where `send-input` paced on a wall clock delivered 7-13 Hz
+			// against the host's 100 ms staleness cutoff, silently zeroed a run-varying fraction
+			// of the input, and thereby MASKED the very instability ADR-0011 was called over.
+			// The one lesson that repo paid for twice is not worth re-learning in a test tool,
+			// so this replay is paced against a fixed origin and reports the rate it achieved.
+			std::this_thread::sleep_until(WallStart + std::chrono::duration_cast<
+				std::chrono::steady_clock::duration>(std::chrono::duration<double>(T + kSendIntervalMs / 1000.0)));
+		}
+
+		const double ElapsedS = std::chrono::duration<double>(
+			std::chrono::steady_clock::now() - WallStart).count();
+		const double RateHz = Seq / ElapsedS;
+		std::printf("fake_sender --authority-cliff: done -- %llu packets in %.3f s = %.1f Hz.\n",
+			static_cast<unsigned long long>(Seq), ElapsedS, RateHz);
+		if (RateHz < 12.0)
+		{
+			std::printf("  WARNING: delivered at %.1f Hz, at or under the host's 100 ms staleness\n"
+			            "  cutoff. A run at this rate measures nothing (overboard#191).\n", RateHz);
+		}
+		close(Sock);
+	}
 
 	void RunPositionSweep(int Count)
 	{
@@ -243,6 +364,7 @@ int main(int argc, char** argv)
 	bool BadMagic = false;
 	bool Rotate = false;
 	bool Burst = false;
+	bool AuthorityCliff = false;
 	int Count = 50;
 
 	for (int i = 1; i < argc; ++i)
@@ -268,9 +390,17 @@ int main(int argc, char** argv)
 		{
 			gRiderTest = true;
 		}
+		else if (Arg == "--authority-cliff")
+		{
+			AuthorityCliff = true;
+		}
 	}
 
-	if (Rotate)
+	if (AuthorityCliff)
+	{
+		RunAuthorityCliff();
+	}
+	else if (Rotate)
 	{
 		RunRotationSequence();
 	}

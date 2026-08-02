@@ -253,6 +253,28 @@ void ABoardActor::UpdatePoseFromHistory()
 	// Newest raw sample, not the interpolated render pose -- see IsFallen()'s comment on why.
 	bLatestSampleFallen = (History.Last().State.Flags & OverboardWire::EStateFlags::Fallen) != 0;
 
+	// ADR-0011 exit criterion (c), condition 3 -- see IsAuthorityWarning(). Same newest-raw-
+	// sample rule, and here it is load-bearing rather than merely consistent: the ADR is relying
+	// on 2.868 s of lead over FALLEN, and reading this off the render-delayed pose would spend
+	// RenderDelaySeconds of it for nothing.
+	//
+	// The arrival timestamp is captured on the RISING EDGE only, so it is the moment the warning
+	// first arrived rather than the moment of the most recent packet still carrying it. That is
+	// the instant the HUD's latency measurement has to be against.
+	{
+		const bool bWarningNow =
+			(History.Last().State.Flags & OverboardWire::EStateFlags::AuthorityWarning) != 0;
+		if (bWarningNow && !bLatestSampleAuthorityWarning)
+		{
+			AuthorityWarningArrivalTimeSeconds = History.Last().ArrivalTimeSeconds;
+		}
+		else if (!bWarningNow)
+		{
+			AuthorityWarningArrivalTimeSeconds = 0.0;
+		}
+		bLatestSampleAuthorityWarning = bWarningNow;
+	}
+
 	// Real simulated ballast displacement (wire v2; a v1 packet leaves these at 0, the documented
 	// v1 "neutral rider" behaviour). Same newest-raw-sample reasoning as bLatestSampleFallen --
 	// this is a local, board-relative offset, not something that benefits from render-delay
