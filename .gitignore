@@ -37,5 +37,15 @@ mesh/*.dSYM
 # and honest failure mode.
 Content/CityPark/
 
+# Content/Mannequins/ is Epic's template mannequin content (SKM_Manny_Simple + its skeleton,
+# materials, textures and animations), shipped locally with every UE 5.7 install under
+# Engine/../Templates/TemplateResources/High/Characters/Content/Mannequins/ -- see
+# docs/mannequin-rider.md. It is licensed under the UE EULA as template content, not licensed for
+# redistribution in an arbitrary public repo, and this repo is public: same reasoning as
+# Content/CityPark/ above, not re-litigated here. ~126 MB, also fails the "never check binaries
+# into git" rule on size alone. `ABoardActor`'s rider component (bShowRider) falls back
+# gracefully -- board still renders, no rider, logged loudly -- if this directory is absent.
+Content/Mannequins/
+
 # macOS Finder noise.
 .DS_Store

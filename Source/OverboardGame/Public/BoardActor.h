@@ -19,6 +19,8 @@
 
 class UStaticMeshComponent;
 class UProceduralMeshComponent;
+class USkeletalMeshComponent;
+class UAnimSequence;
 
 UCLASS()
 class OVERBOARDGAME_API ABoardActor : public AActor
@@ -160,6 +162,35 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Board|Level")
 	float WorldOriginYawDeg = 0.f;
 
+	// --- Rider stand-in ------------------------------------------------------------------------
+	//
+	// CEO ask, after seeing an early capture (overboard#162): a board with nobody on it does not
+	// read as being ridden, and a tall object shows lean/rotation far more legibly than a low
+	// deck. Full honesty note in docs/mannequin-rider.md -- short version: the PHYSICS has a
+	// rigid ballast on two slide joints, no legs, no arms, no articulation. Manny is a costume on
+	// that lump. The pose (a stock idle animation, so he is not left T-posing -- the single most
+	// damaging thing a placeholder rider could do in the launch footage) and the stance transform
+	// (rotated to face across the board) are both INVENTED, not simulated. The fore/aft and
+	// lateral OFFSET is real: wire v2's rider_fore_aft_m / rider_lateral_m, applied with NO
+	// amplification -- a real ~2-4cm displacement renders as ~2-4cm, which is the honest thing to
+	// do with it. If amplification is ever added for legibility, it is a new non-physical channel
+	// and must be declared as such (overboard#163) -- this pass does not add one.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider")
+	bool bShowRider = true;
+
+	UPROPERTY(VisibleAnywhere, Category = "Board|Rider")
+	TObjectPtr<USkeletalMeshComponent> RiderMesh;
+
+	// True only if both the skeletal mesh AND the idle animation resolved in the constructor.
+	// Same all-or-nothing rule as the Pint skin and the Openwheel mesh: a rider stuck in the
+	// default bind/T-pose (no animation applied) is worse than no rider at all, so this is not a
+	// graceful degradation -- see docs/mannequin-rider.md for the (very likely) cause, missing
+	// Content/Mannequins/, and how to fix it.
+	bool bRiderLoaded = false;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> RiderIdleAnim;
+
 private:
 	TUniquePtr<FBoardStateClient> StateClient;
 
@@ -183,4 +214,10 @@ private:
 	bool BuildPartFromStl(UProceduralMeshComponent* Component, const FString& StlBaseName, float ExtraYawDeg, FBox& InOutLocalBounds);
 
 	bool bLatestSampleFallen = false;
+
+	// Newest raw rider ballast displacement, metres, MuJoCo frame -- same "newest sample, not
+	// the interpolated render pose" reasoning as bLatestSampleFallen. 0 on a v1 packet, which is
+	// the documented v1 neutral-rider behaviour (wire/OverboardWire.h), not a sentinel.
+	float LatestRiderForeAftM = 0.f;
+	float LatestRiderLateralM = 0.f;
 };

@@ -1,6 +1,8 @@
 #include "BoardActor.h"
 
 #include "Components/StaticMeshComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Animation/AnimSequence.h"
 #include "ProceduralMeshComponent.h"
 #include "UObject/ConstructorHelpers.h"
 #include "CoordinateTransform.h"
@@ -105,6 +107,38 @@ ABoardActor::ABoardActor()
 		PintWheelTireMesh->SetStaticMesh(PintTireFinder.Object);
 		PintWheelHubMesh->SetStaticMesh(PintHubFinder.Object);
 	}
+
+	// --- Rider stand-in: a fourth sibling of SceneRoot, same isolation rule as the others ------
+	// See docs/mannequin-rider.md for the full honesty note; short version in the header comment.
+	RiderMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("RiderMesh"));
+	RiderMesh->SetupAttachment(SceneRoot);
+	RiderMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	RiderMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+	RiderMesh->SetSimulatePhysics(false);
+	RiderMesh->SetEnableGravity(false);
+	RiderMesh->SetMobility(EComponentMobility::Movable);
+	RiderMesh->SetVisibility(false, true); // shown in BeginPlay only if mesh AND animation resolved
+
+	// Base stance transform -- a first guess, UNVERIFIED visually (no display in this
+	// environment); flagged for the COO/CEO to iterate on once they can see it (see
+	// docs/mannequin-rider.md). Deck top sits roughly 5.8cm above the actor origin (the footpad
+	// Z range from the real STL bounds -- see TryBuildRealMesh's body-bounds log); Manny's
+	// component origin is at his feet (standard UE mannequin convention), so placing him there
+	// should land his feet near the footpads. Yaw 90 degrees turns him to face across the board,
+	// which is how a onewheel is actually ridden, rather than down its length. The idle
+	// animation's own leg pose (feet together, not truly astride the deck) is not corrected here
+	// -- that needs a custom pose authored in the editor, out of scope for this pass.
+	RiderMesh->SetRelativeLocation(FVector(0.f, 0.f, 5.8f));
+	RiderMesh->SetRelativeRotation(FRotator(0.f, 90.f, 0.f));
+
+	static ConstructorHelpers::FObjectFinder<USkeletalMesh> RiderMeshFinder(TEXT("/Game/Mannequins/Meshes/SKM_Manny_Simple.SKM_Manny_Simple"));
+	static ConstructorHelpers::FObjectFinder<UAnimSequence> RiderIdleAnimFinder(TEXT("/Game/Mannequins/Anims/Unarmed/MM_Idle.MM_Idle"));
+	bRiderLoaded = RiderMeshFinder.Succeeded() && RiderIdleAnimFinder.Succeeded();
+	if (bRiderLoaded)
+	{
+		RiderMesh->SetSkeletalMesh(RiderMeshFinder.Object);
+		RiderIdleAnim = RiderIdleAnimFinder.Object; // PlayAnimation happens in BeginPlay, same as the mesh visibility below
+	}
 }
 
 void ABoardActor::BeginPlay()
@@ -138,6 +172,19 @@ void ABoardActor::BeginPlay()
 	else if (bUsePintSkin)
 	{
 		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: Pint skin requested but its meshes did not resolve; keeping Openwheel geometry."));
+	}
+
+	// Rider stand-in -- see docs/mannequin-rider.md. All-or-nothing: a rider stuck in the
+	// default T-pose (mesh resolved, animation didn't, or vice versa) is worse than no rider.
+	if (bShowRider && bRiderLoaded)
+	{
+		RiderMesh->SetVisibility(true, true);
+		RiderMesh->PlayAnimation(RiderIdleAnim, /*bLooping=*/true);
+		UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: rider visible, playing a stock idle animation (INVENTED pose, not simulated -- see docs/mannequin-rider.md)."));
+	}
+	else if (bShowRider)
+	{
+		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: rider requested (bShowRider) but the mannequin mesh/animation did not resolve -- Content/Mannequins/ is most likely not copied in locally (see docs/mannequin-rider.md). Board renders without a rider."));
 	}
 
 	StateClient = MakeUnique<FBoardStateClient>();
@@ -184,6 +231,23 @@ void ABoardActor::UpdatePoseFromHistory()
 
 	// Newest raw sample, not the interpolated render pose -- see IsFallen()'s comment on why.
 	bLatestSampleFallen = (History.Last().State.Flags & OverboardWire::EStateFlags::Fallen) != 0;
+
+	// Real simulated ballast displacement (wire v2; a v1 packet leaves these at 0, the documented
+	// v1 "neutral rider" behaviour). Same newest-raw-sample reasoning as bLatestSampleFallen --
+	// this is a local, board-relative offset, not something that benefits from render-delay
+	// interpolation the way the world pose does.
+	LatestRiderForeAftM = History.Last().State.RiderForeAftM;
+	LatestRiderLateralM = History.Last().State.RiderLateralM;
+	if (bShowRider && bRiderLoaded)
+	{
+		// mm/m -> cm and the same local-space Y-mirror convention as everything else attached to
+		// this actor (see mesh/README.md) -- these are LOCAL displacements in the board's own
+		// frame, not world positions, so MuJoCoToUnreal's world-pose transform does not apply
+		// here; the local-mirror rule does. NO amplification -- see docs/mannequin-rider.md.
+		const float OffsetXCm = LatestRiderForeAftM * 100.f;
+		const float OffsetYCm = -LatestRiderLateralM * 100.f;
+		RiderMesh->SetRelativeLocation(FVector(OffsetXCm, OffsetYCm, 5.8f));
+	}
 
 	const double RenderTime = FPlatformTime::Seconds() - static_cast<double>(RenderDelaySeconds);
 
