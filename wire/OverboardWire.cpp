@@ -93,10 +93,13 @@ namespace OverboardWire
 	{
 		OutState = FBoardState{};
 
-		if (Buffer == nullptr || Len < kStatePacketWireSize)
+		// Magic and schema_version both live in the fixed v1 header region (offsets 0 and 4),
+		// unchanged by the v2 bump, so it's safe to read them before we know which version-sized
+		// buffer we actually need.
+		if (Buffer == nullptr || Len < kStatePacketWireSizeV1)
 		{
 			OutError = "OBW1 packet too short: got " + std::to_string(Len) + " bytes, need at least " +
-				std::to_string(kStatePacketWireSize);
+				std::to_string(kStatePacketWireSizeV1);
 			return false;
 		}
 
@@ -110,10 +113,18 @@ namespace OverboardWire
 		}
 
 		const uint16_t SchemaVersion = GetU16(Buffer, 4);
-		if (SchemaVersion != kSchemaVersion)
+		const size_t ExpectedSize = GetStatePacketWireSize(SchemaVersion);
+		if (ExpectedSize == 0)
 		{
-			OutError = "OBW1 schema_version mismatch: got " + std::to_string(SchemaVersion) + ", expected " +
-				std::to_string(kSchemaVersion) + ". Dropping packet.";
+			// Neither 1 nor 2 -- this is the actual "fail loudly" gate. A v1 packet is NOT this
+			// branch; see the header comment on why v1 is accepted, not an error.
+			OutError = "OBW1 schema_version " + std::to_string(SchemaVersion) + " is not 1 or 2 -- this build only understands v1/v2. Dropping packet.";
+			return false;
+		}
+		if (Len < ExpectedSize)
+		{
+			OutError = "OBW1 v" + std::to_string(SchemaVersion) + " packet too short: got " + std::to_string(Len) +
+				" bytes, need at least " + std::to_string(ExpectedSize);
 			return false;
 		}
 
@@ -134,6 +145,14 @@ namespace OverboardWire
 		OutState.PitchRad = GetF32(Buffer, 60);
 		OutState.YawRad = GetF32(Buffer, 64);
 		OutState.MotorCurrentA = GetF32(Buffer, 68);
+
+		if (SchemaVersion == kStateSchemaVersionV2)
+		{
+			OutState.RiderForeAftM = GetF32(Buffer, 72);
+			OutState.RiderLateralM = GetF32(Buffer, 76);
+		}
+		// else: v1 -- RiderForeAftM/RiderLateralM already default-initialised to 0 (neutral).
+
 		return true;
 	}
 
@@ -156,6 +175,11 @@ namespace OverboardWire
 		PutF32(Buffer, 60, State.PitchRad);
 		PutF32(Buffer, 64, State.YawRad);
 		PutF32(Buffer, 68, State.MotorCurrentA);
+		if (State.SchemaVersion == kStateSchemaVersionV2)
+		{
+			PutF32(Buffer, 72, State.RiderForeAftM);
+			PutF32(Buffer, 76, State.RiderLateralM);
+		}
 	}
 
 	void EncodeInputPacket(const FInputPacket& Packet, uint8_t* Buffer)
@@ -190,10 +214,10 @@ namespace OverboardWire
 		}
 
 		const uint16_t SchemaVersion = GetU16(Buffer, 4);
-		if (SchemaVersion != kSchemaVersion)
+		if (SchemaVersion != kInputSchemaVersion)
 		{
 			OutError = "OBI1 schema_version mismatch: got " + std::to_string(SchemaVersion) + ", expected " +
-				std::to_string(kSchemaVersion) + ". Dropping packet.";
+				std::to_string(kInputSchemaVersion) + ". Dropping packet.";
 			return false;
 		}
 
