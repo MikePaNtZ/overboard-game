@@ -172,20 +172,31 @@ and passed, but worth re-confirming after any transform-adjacent change).
    `FQuat` constructor's `(X,Y,Z,W)` argument order against `QuatWXYZ`), not in `fake_sender` —
    it emits exactly the quaternions `wire/tests/test_wire.cpp` already asserts on in CI.
 
-6. **Check the stick mapping and feel.** Plug in a gamepad:
+6. **Check the mapping and feel.** Keyboard works with no gamepad plugged in — the CEO's explicit
+   ask, so a keyboard-first driving session doesn't need an Xbox controller at all:
 
-   | Stick | Wire channel(s) | What it does |
-   |---|---|---|
-   | Left stick, Y (fore/aft) | `weight_shift_fore_aft` | **Lean command.** Forward = accelerate, back = decelerate then reverse. Centre = coast (no braking). |
-   | Right stick, X (left/right) | `weight_shift_lateral` **and** `steer`, simultaneously | Lean-to-steer: one physical axis drives both wire channels. `steer` is explicitly non-physical — see `OverboardPlayerController.h`. |
-   | Face button (bottom, e.g. A/Cross) | `arm` | |
-   | Face button (right, e.g. B/Circle) | `reset` | |
+   | Gamepad | Keyboard (both work) | Wire channel(s) | What it does |
+   |---|---|---|---|
+   | Left stick, Y (fore/aft) | **W / Up Arrow** = positive, **S / Down Arrow** = negative | `weight_shift_fore_aft` | **Lean command.** Forward = accelerate, back = decelerate then reverse. Centre/no key = coast (no braking). |
+   | Right stick, X (left/right) | **D / Right Arrow** = positive, **A / Left Arrow** = negative | `weight_shift_lateral` **and** `steer`, simultaneously | Lean-to-steer: one physical input drives both wire channels. `steer` is explicitly non-physical — see `OverboardPlayerController.h`. |
+   | Face button (bottom, e.g. A/Cross) | **Space** | `arm` | |
+   | Face button (right, e.g. B/Circle) | **R** | `reset` | |
+
+   The gamepad bindings are byte-for-byte unchanged from before keyboard support was added — same
+   keys, same code path, still the launch configuration. Keyboard is additive, in the same
+   mapping context, not a replacement.
 
    Deadzone (`StickDeadzone`, default 0.12) and a response curve (`ResponseCurveExponent`,
    default 2.0) are applied before every send — see `AOverboardPlayerController::ShapeAxis`.
-   Mike drove the real host with this mapping end-to-end (forward/coast/reverse all worked); if
-   it still feels twitchy or numb, those two named tunables (`Board|Input` category) are where
-   to change it.
+   Mike drove the real host with the gamepad mapping end-to-end (forward/coast/reverse all
+   worked); if it still feels twitchy or numb, those two named tunables (`Board|Input` category)
+   are where to change it.
+
+   **Keyboard-specific:** a key is digital (0 or full deflection the instant it's pressed), unlike
+   a stick's gradual sweep, so `KeyboardRampSpeed` (`Board|Input`, default 3.0) ramps the sent
+   value toward whatever's held rather than snapping to full lean in one frame — a raw digital
+   slam to ±1 would feel bad and might not even be drivable. Unverified by feel (no display in
+   this environment); tune it if a keypress still feels like a jolt rather than a lean.
 
    With no host running: no errors in the Output Log is the available check, and optionally
    `nc -ul 9602` in a terminal to confirm UDP datagrams land while you move the stick (binary

@@ -26,6 +26,19 @@
 // steer is explicitly a NON-PHYSICAL game channel (the simulated wheel is a cylinder and cannot
 // carve) -- see the wire spec and the repo README's "what is deliberately not physical" section.
 // Nothing produced via this channel may be presented as a controls result.
+//
+// KEYBOARD (overboard#162, CEO ask: "I want the driven mode to work on keyboard first"):
+// added ALONGSIDE the gamepad bindings above, in the same mapping context -- the gamepad path is
+// untouched and stays the launch configuration.
+//   W / Up Arrow    -> weight_shift_fore_aft positive   S / Down Arrow -> negative
+//   D / Right Arrow -> weight_shift_lateral + steer positive   A / Left Arrow -> negative
+//   Space           -> arm                               R              -> reset
+// Each axis is two digital key mappings (one with a Negate modifier) feeding the same Axis1D
+// action the analogue stick does -- Enhanced Input combines whichever source is active. A raw
+// digital key is 0 or +-1 the instant it's pressed/released, unlike a stick's gradual sweep, so
+// SendInputPacket ramps toward whatever the mapped value is (see SmoothedForeAft etc. and
+// KeyboardRampSpeed below) rather than sending a snap to full lean -- gamepad input already
+// arrives gradually, so the same ramp is a no-op for it in practice.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -71,6 +84,16 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Board|Input", meta = (ClampMin = "1.0", ClampMax = "4.0"))
 	float ResponseCurveExponent = 2.0f;
 
+	// FInterpTo speed ramping the raw mapped axis value toward what SendInputPacket actually
+	// sends (see SmoothedForeAft etc.). A keyboard key is digital -- 0 or +-1 the instant it's
+	// pressed or released -- and "an analogue stick moves gradually, and the whole control feel
+	// depends on that" (overboard#162 CEO dispatch), so this exists specifically to keep a
+	// keyboard-driven lean from slamming to full deflection in one frame. Higher = snappier,
+	// lower = more gradual. First guess, not a measured value -- tune by feel once someone has
+	// actually driven it with a keyboard.
+	UPROPERTY(EditAnywhere, Category = "Board|Input", meta = (ClampMin = "0.5", ClampMax = "20.0"))
+	float KeyboardRampSpeed = 3.0f;
+
 private:
 	UPROPERTY(Transient)
 	TObjectPtr<UInputMappingContext> MappingContext;
@@ -86,14 +109,21 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> IA_Reset;
 
-	// Raw, unshaped stick state as last reported by Enhanced Input. Deadzone/curve shaping and
-	// clamping happen in SendInputPacket, right before encoding -- not here -- so there's exactly
-	// one place that turns "what the stick is doing" into "what goes on the wire".
+	// Raw, unshaped axis state as last reported by Enhanced Input -- the TARGET the ramp below
+	// chases, not what gets sent. For the gamepad this already moves gradually; for the keyboard
+	// this snaps between 0 and +-1 the instant a key is pressed/released.
 	float CurrentForeAft = 0.f;
 	float CurrentLateral = 0.f;
 	float CurrentSteer = 0.f;
 	bool bArmHeld = false;
 	bool bResetHeld = false;
+
+	// Ramped toward Current* each PlayerTick via KeyboardRampSpeed, so a digital keyboard press
+	// ramps in rather than snapping to full deflection. This -- not Current* directly -- is what
+	// SendInputPacket passes through ShapeAxis (deadzone/curve) and sends.
+	float SmoothedForeAft = 0.f;
+	float SmoothedLateral = 0.f;
+	float SmoothedSteer = 0.f;
 
 	FSocket* SendSocket = nullptr;
 	TSharedPtr<FInternetAddr> HostAddr;

@@ -5,6 +5,7 @@
 #include "InputMappingContext.h"
 #include "InputAction.h"
 #include "InputTriggers.h"
+#include "InputModifiers.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "IPAddress.h"
@@ -62,32 +63,50 @@ void AOverboardPlayerController::SetupInputComponent()
 	Super::SetupInputComponent();
 
 	// Built at runtime rather than as .uasset data assets -- still no editor session available
-	// to author Input Mapping Context assets as of W2 either. See class header for the W2
-	// mapping and why right-stick-X legitimately drives two wire channels at once.
+	// to author Input Mapping Context assets as of W2 either. See class header for the full
+	// mapping (gamepad AND keyboard) and why right-stick-X / A-D / Left-Right legitimately drive
+	// two wire channels at once.
 	MappingContext = NewObject<UInputMappingContext>(this, TEXT("OverboardMappingContext"));
+
+	// Maps two positive keys and two negative keys (Negate modifier) onto one Axis1D action --
+	// the standard Enhanced Input pattern for a digital key pair driving an analogue-shaped
+	// action. Both WASD and the arrow keys are mapped, per the CEO's "direction pad" ask.
+	auto MapDigitalAxisPair = [this](UInputAction* Action, FKey PositiveKey1, FKey PositiveKey2, FKey NegativeKey1, FKey NegativeKey2)
+	{
+		MappingContext->MapKey(Action, PositiveKey1);
+		MappingContext->MapKey(Action, PositiveKey2);
+		MappingContext->MapKey(Action, NegativeKey1).Modifiers.Add(NewObject<UInputModifierNegate>(this));
+		MappingContext->MapKey(Action, NegativeKey2).Modifiers.Add(NewObject<UInputModifierNegate>(this));
+	};
 
 	IA_WeightShiftForeAft = NewObject<UInputAction>(this, TEXT("IA_WeightShiftForeAft"));
 	IA_WeightShiftForeAft->ValueType = EInputActionValueType::Axis1D;
-	MappingContext->MapKey(IA_WeightShiftForeAft, EKeys::Gamepad_LeftY);
+	MappingContext->MapKey(IA_WeightShiftForeAft, EKeys::Gamepad_LeftY); // gamepad path unchanged
+	MapDigitalAxisPair(IA_WeightShiftForeAft, EKeys::W, EKeys::Up, EKeys::S, EKeys::Down);
 
 	IA_WeightShiftLateral = NewObject<UInputAction>(this, TEXT("IA_WeightShiftLateral"));
 	IA_WeightShiftLateral->ValueType = EInputActionValueType::Axis1D;
-	MappingContext->MapKey(IA_WeightShiftLateral, EKeys::Gamepad_RightX);
+	MappingContext->MapKey(IA_WeightShiftLateral, EKeys::Gamepad_RightX); // gamepad path unchanged
+	MapDigitalAxisPair(IA_WeightShiftLateral, EKeys::D, EKeys::Right, EKeys::A, EKeys::Left);
 
 	// NON-PHYSICAL game steering channel -- see class comment. Deliberately the same physical
-	// axis as weight_shift_lateral above (lean-to-steer): two UInputActions bound to one key,
-	// each producing its own (here, identical) raw value that gets shaped/sent independently.
+	// inputs as weight_shift_lateral above (lean-to-steer): separate UInputActions bound to the
+	// same keys, each producing its own (here, identical) raw value that gets shaped/sent
+	// independently.
 	IA_Steer = NewObject<UInputAction>(this, TEXT("IA_Steer"));
 	IA_Steer->ValueType = EInputActionValueType::Axis1D;
-	MappingContext->MapKey(IA_Steer, EKeys::Gamepad_RightX);
+	MappingContext->MapKey(IA_Steer, EKeys::Gamepad_RightX); // gamepad path unchanged
+	MapDigitalAxisPair(IA_Steer, EKeys::D, EKeys::Right, EKeys::A, EKeys::Left);
 
 	IA_Arm = NewObject<UInputAction>(this, TEXT("IA_Arm"));
 	IA_Arm->ValueType = EInputActionValueType::Boolean;
-	MappingContext->MapKey(IA_Arm, EKeys::Gamepad_FaceButton_Bottom);
+	MappingContext->MapKey(IA_Arm, EKeys::Gamepad_FaceButton_Bottom); // gamepad path unchanged
+	MappingContext->MapKey(IA_Arm, EKeys::SpaceBar);
 
 	IA_Reset = NewObject<UInputAction>(this, TEXT("IA_Reset"));
 	IA_Reset->ValueType = EInputActionValueType::Boolean;
-	MappingContext->MapKey(IA_Reset, EKeys::Gamepad_FaceButton_Right);
+	MappingContext->MapKey(IA_Reset, EKeys::Gamepad_FaceButton_Right); // gamepad path unchanged
+	MappingContext->MapKey(IA_Reset, EKeys::R);
 
 	if (ULocalPlayer* LocalPlayer = GetLocalPlayer())
 	{
@@ -127,6 +146,13 @@ void AOverboardPlayerController::PlayerTick(float DeltaTime)
 	Super::PlayerTick(DeltaTime);
 
 	CheckForAutoResetOnFall();
+
+	// Ramp toward whatever Enhanced Input reported this frame -- see KeyboardRampSpeed's comment.
+	// For the gamepad, Current* already moves gradually, so this is a near no-op; for the
+	// keyboard, Current* snaps between 0 and +-1 and this is what turns that into a ramp.
+	SmoothedForeAft = FMath::FInterpTo(SmoothedForeAft, CurrentForeAft, DeltaTime, KeyboardRampSpeed);
+	SmoothedLateral = FMath::FInterpTo(SmoothedLateral, CurrentLateral, DeltaTime, KeyboardRampSpeed);
+	SmoothedSteer = FMath::FInterpTo(SmoothedSteer, CurrentSteer, DeltaTime, KeyboardRampSpeed);
 
 	// Send at frame rate (#162 W2 dispatch) -- no accumulator/throttle. The wire has no framing
 	// beyond seq, so sending every Tick is both the simplest thing and what was asked for; if
@@ -179,11 +205,12 @@ void AOverboardPlayerController::SendInputPacket()
 	const bool bSendReset = bResetHeld || bAutoResetPending;
 	bAutoResetPending = false; // one-shot: consumed the instant it's sent, never held
 	Packet.Flags = (bArmHeld ? OverboardWire::EInputFlags::Arm : 0) | (bSendReset ? OverboardWire::EInputFlags::Reset : 0);
-	// Deadzone + curve shape the raw stick, then clamp is the final, unconditional step before
-	// the wire -- do not rely on the host to sanitise, even though it does (#162 W2 dispatch).
-	Packet.WeightShiftForeAft = FMath::Clamp(ShapeAxis(CurrentForeAft), -1.f, 1.f);
-	Packet.WeightShiftLateral = FMath::Clamp(ShapeAxis(CurrentLateral), -1.f, 1.f);
-	Packet.Steer = FMath::Clamp(ShapeAxis(CurrentSteer), -1.f, 1.f); // NON-PHYSICAL
+	// Ramped (Smoothed*, not Current* -- see KeyboardRampSpeed), then deadzone + curve shape,
+	// then clamp is the final, unconditional step before the wire -- do not rely on the host to
+	// sanitise, even though it does (#162 W2 dispatch).
+	Packet.WeightShiftForeAft = FMath::Clamp(ShapeAxis(SmoothedForeAft), -1.f, 1.f);
+	Packet.WeightShiftLateral = FMath::Clamp(ShapeAxis(SmoothedLateral), -1.f, 1.f);
+	Packet.Steer = FMath::Clamp(ShapeAxis(SmoothedSteer), -1.f, 1.f); // NON-PHYSICAL
 
 	uint8 Buf[OverboardWire::kInputPacketWireSize];
 	OverboardWire::EncodeInputPacket(Packet, Buf);

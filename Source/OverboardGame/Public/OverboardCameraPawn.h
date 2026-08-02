@@ -63,8 +63,20 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Board|Camera")
 	float FollowLocationSpeed = 4.f; // FInterpTo speed, position
 
+	// overboard#162: reduced from 2.0. This reverses an earlier decision, deliberately -- an
+	// intermediate attempt at lagging this same speed was explicitly NOT landed because at the
+	// time "turn not discernible" turned out to be the host sending a yaw-free quaternion (fixed
+	// upstream in overboard/#175), so a camera fix would have been compensating for a bug that no
+	// longer existed. That reasoning was right then and is confirmed wrong now: the board
+	// genuinely yaws (peak-to-peak swing measured at 162 degrees), and the chase camera follows
+	// that yaw so closely that the board stays pinned facing up-screen and only the world rotates
+	// around it -- the carve is real and still invisible. At Speed=2.0 a first-order lag's
+	// steady-state trailing angle for a turn is approximately (turn rate / Speed), which for a
+	// multi-second 162 degree swing was only a few degrees -- not enough to read. Lower is more
+	// lag; tune against real footage, not this reasoning -- this is a starting point, not a
+	// verified value (no display in this environment to check it against).
 	UPROPERTY(EditAnywhere, Category = "Board|Camera")
-	float FollowYawSpeed = 2.f; // FInterpTo speed, yaw only -- slower than position so the camera settles in behind rather than snapping
+	float FollowYawSpeed = 0.6f; // FInterpTo speed, yaw only
 
 private:
 	TWeakObjectPtr<ABoardActor> FollowTarget;
