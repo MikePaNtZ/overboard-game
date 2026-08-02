@@ -198,6 +198,26 @@ and passed, but worth re-confirming after any transform-adjacent change).
    slam to ±1 would feel bad and might not even be drivable. Unverified by feel (no display in
    this environment); tune it if a keypress still feels like a jolt rather than a lean.
 
+   **Press Escape to quit.** The CEO's first session trapped him in the window with no way out
+   short of switching virtual desktops to force-quit. Escape is now mapped to `IA_Quit` in the
+   same mapping context as everything else.
+
+   **If a keypress or stick move does nothing at all** (not "feels wrong", genuinely zero effect):
+   this exact symptom already happened once — both `SetupInputComponent()`'s `InputComponent` and
+   `InitInputSystem()`'s `PlayerInput` silently fell back to plain (non-Enhanced) base classes in
+   `-game` mode, because `UInputSettings::GetDefault{InputComponent,PlayerInput}Class()` resolves
+   a `TSoftClassPtr` that's only valid if the class happens to already be loaded in memory at that
+   exact moment — `Config/DefaultEngine.ini`'s `DefaultPlayerInputClass`/`DefaultInputComponentClass`
+   settings were correct and still didn't help. Both are now pinned explicitly in code
+   (`AOverboardPlayerController`'s constructor and `SetupInputComponent`), not left to that
+   resolution. If input goes dark again: run with `-OverboardInputSelfTest` on the command line
+   (headless-safe, no display needed) — it injects a simulated keyboard AND gamepad axis press
+   through the real Enhanced Input pipeline via `UPlayerInput::InputKey`/`FInputKeyEventArgs::
+   CreateSimulated` and logs `OverboardInputSelfTest KEYBOARD: PASS/FAIL` and `...GAMEPAD:
+   PASS/FAIL`. Raising `LogOverboardInput` to `Verbose` (`-LogCmds="LogOverboardInput Verbose"`)
+   also logs the actual value arriving at every handler, every frame — if the handler never
+   fires, it's the mapping; if it fires with zero, it's the action/trigger, not the mapping.
+
    With no host running: no errors in the Output Log is the available check, and optionally
    `nc -ul 9602` in a terminal to confirm UDP datagrams land while you move the stick (binary
    noise in `nc` is expected — it's not a text protocol).
