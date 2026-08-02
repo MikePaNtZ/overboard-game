@@ -1,0 +1,26 @@
+# OB_City -- ridden-surface declaration
+#
+# ADR-0011 condition 2. See ../README.md for what this file is and ../TerrainLimits.h for the
+# envelope it is checked against.
+#
+# OB_City is the level this project actually drives in: Epic's City Park Environment Collection,
+# streamed in as an always-loaded sublevel, with the board placed on the road by the crosswalk.
+#
+# THIS LEVEL IS NOT VERIFIED, AND THE CHECK SAYS SO ON EVERY RUN. That is the honest state, not
+# an oversight: the park is a 1.5 GB Fab pack that is gitignored and can never be committed
+# (docs/citypark-level.md), so no CI job can open it, and nobody has yet traced its road surface
+# against the envelope. Until somebody does, this level fails `terraincheck --strict`, which is
+# what a public build must run -- and ADR-0011 holds the launch anyway.
+
+level      Content/Maps/OB_City.umap
+level_hash 52dcaaa2106fc45c
+
+note The board rides MuJoCo's flat 20 m x 20 m plane and is DRAWN over the park. Nothing in this level reaches the physics -- ADR-0010 cut terrain from the wire and explicitly did not cancel it. So today the park's kerbs, steps and camber are a rendering divergence rather than a stability risk, and the reason to measure them anyway is that the drawn world is the specification for the ridden one. See ../TerrainLimits.h, "WHY A RENDERER HAS AN OPINION ABOUT TERRAIN AT ALL".
+
+note To clear this: run the terrain probe over the drivable path from OB_BoardOrigin, replace the surface below with `kind probe` and its measured points, and set `status verified`. The board origin is at (-3880, -7450, -275.0) yaw 90, and the road surface there measures -275.0 cm carrying 14,316 cm2 of MergedRoad2 -- one measured point, which is a height and not a surface, which is exactly why it is not enough.
+
+surface citypark_road
+  kind      external
+  status    unverified
+  reach_m   100.0
+  source    Epic City Park Environment Collection, streamed sublevel /Game/CityPark/Maps/Showcase. Geometry is not in this repo and has not been traced. reach_m 100 is the drivable radius from OB_BoardOrigin a run can cover -- a run is 15-20 m, and the host corridor is +-50 m (CORRIDOR_X_MAX_M), so 100 m bounds it with margin. The one datum that exists is the road surface height at the origin, -275.0 cm, recorded in docs/citypark-level.md.

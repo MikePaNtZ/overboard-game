@@ -1,0 +1,34 @@
+name: terrain
+
+# Gates the ADR-0011 condition-2 authored-world envelope: the world this project ships must stay
+# inside what the controller measurably survives, and that constraint has to be a CHECK rather
+# than a convention -- otherwise the ADR's move of the kerb-strike criterion onto the hardware
+# gate is the softening manoeuvre it forbids by name.
+#
+# Deliberately does NOT build the UE project -- terrain/ is plain, engine-free C++17 by design
+# (same reasoning as wire/ and mesh/), which is what makes it cheap enough to run on every push.
+# It is also why the levels declare their drivable surfaces as text: a .umap is an opaque binary
+# and OB_City's scenery is a gitignored 1.5 GB Fab pack, so a gate that needed to open them would
+# be a gate that ran nowhere.
+#
+# `make check` is the half that matters for AC3 of issue #208 -- this job fires where TERRAIN
+# changes (a new level, an edited level, a new mesh), not only where control code does.
+on:
+  push:
+  pull_request:
+
+jobs:
+  envelope:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Do the RULES fire? Every limit is exercised by synthesising a violating asset -- a real
+      # binary STL with a real 20 mm kerb in it -- and asserting rejection, each paired with a
+      # compliant near-miss so a check that rejected everything could not pass.
+      - name: make test
+        run: cd terrain && make test
+
+      # Do the LEVELS pass? A validator nobody points at the assets is not a gate.
+      - name: make check
+        run: cd terrain && make check

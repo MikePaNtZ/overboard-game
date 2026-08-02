@@ -1,0 +1,21 @@
+# OB_Main -- ridden-surface declaration
+#
+# ADR-0011 condition 2. See ../README.md for what this file is and ../TerrainLimits.h for the
+# envelope it is checked against.
+#
+# OB_Main is the level that works with no third-party content: a runtime-spawned placeholder
+# plane and a field of motion-reference markers, nothing else. It is the right level for
+# coordinate-transform and handedness checks precisely because it has no scenery.
+
+level      Content/Maps/OB_Main.umap
+level_hash b5e92fd43f779c3d
+
+note The marker field is DRAWN-ONLY OBSTACLE geometry standing on the drivable plane, and the envelope below does not cover it -- stated here rather than left quiet. AOverboardGameMode::SpawnMotionReferenceMarkers puts 1 m x 1 m posts, 2.5-4.0 m tall, on an 8 m grid over +-20 m, with a 3 m clear zone at the origin. The board is drawn passing through them; nothing collides, because this repo computes no physics. They are landmarks, not terrain, so they are not a drivable surface and the step rule does not apply to them. But if terrain ever reaches the wire (ADR-0010 cut it and did not cancel it), an 8 m grid of posts inside the corridor becomes ridden geometry, and this note is the pointer to that.
+
+surface placeholder_ground
+  kind      plane
+  status    verified
+  slope_deg 0.0
+  run_out_m 0.0
+  source    AOverboardGameMode::BeginPlay spawns /Engine/BasicShapes/Plane.Plane at FVector::ZeroVector with FRotator::ZeroRotator, scaled (100, 100, 1) -- a 100 m x 100 m analytic plane. Slope is exactly zero by construction: an identity rotation on a flat engine primitive. There is no geometry to measure and nothing that could drift, which is why this is `verified` from code rather than from a probe. Covers the host's +-50 m corridor (CORRIDOR_X_MAX_M).
+
