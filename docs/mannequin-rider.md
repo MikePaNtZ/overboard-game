@@ -29,6 +29,18 @@ and the Output Log says so loudly (`ABoardActor: rider mesh/animation did not re
 is the intended and honest failure mode — never a hard failure, per the standing rule that an
 invisible/broken board is worse than a plain one.
 
+## Corrected once against real capture, and the height figure changed as a result
+
+First pass shipped with a height derived from `TryBuildRealMesh`'s own logged body bounds
+(footpad Z max, ~5.8cm above the actor origin) and an extra +90 degree facing rotation. Real
+footage showed both wrong: he was facing down the road (see the facing note below) and the board
+sat visibly below and behind his feet. Height is now the CEO's directly-measured **~8.3cm** deck
+top (a single named constant, `kRiderDeckHeightCm` in `BoardActor.cpp`, used everywhere the
+rider's height is set so the two call sites cannot drift apart the way an internal estimate and a
+real measurement briefly did). Fore/aft placement otherwise still centres him at the board's
+local origin (roughly the axle) before the real ballast offset is added — reasonable by
+construction, not yet independently re-confirmed against footage.
+
 ## What is actually simulated, and what is not — read this before trusting the footage
 
 **The physics has a rigid ballast on two slide joints, not a person.** It has no legs, no arms, no
@@ -45,12 +57,21 @@ Consequences, stated plainly rather than left implicit:
   MuJoCo in any way.** No articulated riding stance was authored — that needs the editor's
   animation tools, out of scope for this pass, and any custom pose would be exactly as invented as
   the stock idle, just more expensive to produce.
-- **The facing (rotated 90 degrees to face across the board) is a fixed, hand-picked transform**,
-  not something the physics chose — a real onewheel rider stands roughly perpendicular to the
-  direction of travel. This rotates the whole body; it does **not** spread his feet apart into an
-  astride stance. The idle animation's own leg pose (feet together, standing upright) is used
-  as-is. A true wide, planted riding stance needs a custom pose authored in the editor — out of
-  scope for this pass, and the first thing worth revisiting once someone can see the result.
+- **The facing is a fixed, hand-picked transform**, not something the physics chose — a real
+  onewheel rider stands roughly perpendicular to the direction of travel (skateboard/snowboard
+  stance), not facing down it. As shipped, `RiderMesh` is given **no additional relative yaw at
+  all** (`FRotator::ZeroRotator`): the UE mannequin's bind pose already faces its own local +Y,
+  and this actor's board faces along local X (nose at -X) — so an unrotated Manny already faces
+  across the board. (An earlier attempt added +90 degrees on the wrong assumption that his bind
+  pose faces +X; real footage showed that turned him to face the board's nose, "down the road,
+  arms out like a snowboarder." See the code comment in `ABoardActor`'s constructor for the full
+  derivation.) This is not a fully authored stance — it rotates the whole body; it does **not**
+  spread his feet apart into an astride stance. The idle animation's own leg pose (feet together,
+  standing upright) is used as-is; no stock animation in `Content/Mannequins/Anims/` offers a
+  wider standing stance (checked: idle/attack/walk/jog/jump only, and walk/jog are directional
+  cycles, not a static wide pose), and a true wide, planted riding stance needs a custom pose
+  authored in the editor — deliberately out of scope this pass, called out as low-priority
+  ("minor cosmetic issue") relative to the facing/placement fixes.
 - **The fore/aft and lateral offset IS real physics** — those two numbers are the actual simulated
   ballast displacement (wire v2, `rider_fore_aft_m` / `rider_lateral_m`), applied with no
   amplification: small values (a few centimetres) render as a few centimetres of shift, not

@@ -13,6 +13,16 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogOverboardMesh, Log, All);
 
+namespace
+{
+	// Deck-top height above the actor origin, cm -- the COO's directly-stated measurement
+	// (overboard#162, corrected from an earlier internally-computed 5.8cm after real footage
+	// showed the rider hovering above/behind the deck). One named constant, used everywhere the
+	// rider's height is set, specifically so the constructor's base pose and
+	// UpdatePoseFromHistory's per-tick offset cannot drift apart the way they briefly did here.
+	constexpr float kRiderDeckHeightCm = 8.3f;
+}
+
 ABoardActor::ABoardActor()
 {
 	PrimaryActorTick.bCanEverTick = true;
@@ -119,17 +129,28 @@ ABoardActor::ABoardActor()
 	RiderMesh->SetMobility(EComponentMobility::Movable);
 	RiderMesh->SetVisibility(false, true); // shown in BeginPlay only if mesh AND animation resolved
 
-	// Base stance transform -- a first guess, UNVERIFIED visually (no display in this
-	// environment); flagged for the COO/CEO to iterate on once they can see it (see
-	// docs/mannequin-rider.md). Deck top sits roughly 5.8cm above the actor origin (the footpad
-	// Z range from the real STL bounds -- see TryBuildRealMesh's body-bounds log); Manny's
-	// component origin is at his feet (standard UE mannequin convention), so placing him there
-	// should land his feet near the footpads. Yaw 90 degrees turns him to face across the board,
-	// which is how a onewheel is actually ridden, rather than down its length. The idle
-	// animation's own leg pose (feet together, not truly astride the deck) is not corrected here
-	// -- that needs a custom pose authored in the editor, out of scope for this pass.
-	RiderMesh->SetRelativeLocation(FVector(0.f, 0.f, 5.8f));
-	RiderMesh->SetRelativeRotation(FRotator(0.f, 90.f, 0.f));
+	// Base stance transform, corrected once against real footage (overboard#162 -- first attempt
+	// had him facing down the road, arms out like a snowboarder; second attempt below).
+	//
+	// FACING: the first attempt applied an extra +90 degree yaw on the assumption Manny's bind
+	// pose faces the mesh's own local +X. That assumption was the bug. The UE mannequin's actual
+	// bind-pose forward is +Y in its own component space -- this is *why* the standard
+	// ThirdPerson-template convention gives the mesh component a -90 degree yaw relative to its
+	// (capsule-forward = +X) owner: rotating a +Y-facing bind pose by -90 lands it on +X. So at
+	// RELATIVE YAW 0 (no correction at all), Manny already faces this actor's local +Y -- which
+	// is exactly "across the board" (lateral), since the board's direction of travel is its local
+	// X axis (nose at -X). The earlier +90 rotated that already-correct +Y-facing bind pose onto
+	// -X, i.e. facing the board's NOSE -- precisely "facing down the road", matching what was
+	// seen. Fix: no additional yaw at all.
+	//
+	// HEIGHT: corrected from an internally-computed 5.8cm to the COO's directly-stated ~8.3cm
+	// deck-top height, per real footage showing the board sitting below and behind his feet.
+	//
+	// Both of these were corrected by REASONING about the mannequin's known bind-pose convention
+	// and the COO's stated measurement, not by seeing it -- still no display in this environment.
+	// If footage says otherwise, that observation wins; see docs/mannequin-rider.md.
+	RiderMesh->SetRelativeLocation(FVector(0.f, 0.f, kRiderDeckHeightCm));
+	RiderMesh->SetRelativeRotation(FRotator::ZeroRotator);
 
 	static ConstructorHelpers::FObjectFinder<USkeletalMesh> RiderMeshFinder(TEXT("/Game/Mannequins/Meshes/SKM_Manny_Simple.SKM_Manny_Simple"));
 	static ConstructorHelpers::FObjectFinder<UAnimSequence> RiderIdleAnimFinder(TEXT("/Game/Mannequins/Anims/Unarmed/MM_Idle.MM_Idle"));
@@ -246,7 +267,7 @@ void ABoardActor::UpdatePoseFromHistory()
 		// here; the local-mirror rule does. NO amplification -- see docs/mannequin-rider.md.
 		const float OffsetXCm = LatestRiderForeAftM * 100.f;
 		const float OffsetYCm = -LatestRiderLateralM * 100.f;
-		RiderMesh->SetRelativeLocation(FVector(OffsetXCm, OffsetYCm, 5.8f));
+		RiderMesh->SetRelativeLocation(FVector(OffsetXCm, OffsetYCm, kRiderDeckHeightCm));
 	}
 
 	const double RenderTime = FPlatformTime::Seconds() - static_cast<double>(RenderDelaySeconds);
