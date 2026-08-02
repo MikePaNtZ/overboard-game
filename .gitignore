@@ -23,5 +23,19 @@ wire/*.dSYM
 mesh/test_stl_loader
 mesh/*.dSYM
 
+# Third-party environment art, imported locally, NEVER committed.
+#
+# Content/CityPark/ is the Fab "City Park Environment Collection" (~1.5 GB), copied in from a
+# local install of that pack -- see docs/citypark-level.md. It is licensed to Mike's Epic
+# account, not to this repo: the Fab EULA grants use in projects, not redistribution of the raw
+# assets, and this repo is PUBLIC. Committing it would be both a 1.5 GB binary blob in a repo
+# whose rule is "never check binaries into git" and a licence breach. Anyone cloning this repo
+# re-imports it themselves from their own Fab library.
+#
+# The level that USES it (Content/Maps/OB_City.umap) is small and IS committed -- it will show
+# as a load error with unresolved references until the pack is imported, which is the intended
+# and honest failure mode.
+Content/CityPark/
+
 # macOS Finder noise.
 .DS_Store

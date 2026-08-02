@@ -60,7 +60,17 @@ void AOverboardCameraPawn::Tick(float DeltaSeconds)
 	SetActorLocation(NewLocation);
 
 	// Yaw only -- deliberately does not inherit the board's pitch/roll (see class header).
-	const float TargetYaw = FollowTarget->GetActorRotation().Yaw;
+	//
+	// +180 deg, and it is a fix, not a preference. The board's nose is its LOCAL -X (MuJoCo's
+	// convention, carried through unchanged by MuJoCoToUnreal -- see overboard_onewheel.xml,
+	// "FORWARD IS -X"), while a UE SpringArm places its camera behind the pawn's +X. Matching the
+	// board's yaw directly therefore parked the camera on the NOSE side, filming the board driving
+	// head-on into the lens: "lean forward" appeared to drive it towards the viewer, and because a
+	// head-on view mirrors the horizontal axis, a correct right-hand carve read as turning left.
+	// Both symptoms, one cause. Adding half a turn puts the camera behind the tail looking the way
+	// the board travels, which is also the more legible shot -- the viewer sees where it is going,
+	// not where it has been.
+	const float TargetYaw = FollowTarget->GetActorRotation().Yaw + 180.f;
 	const FRotator NewRotation = FMath::RInterpTo(GetActorRotation(), FRotator(0.f, TargetYaw, 0.f), DeltaSeconds, FollowYawSpeed);
 	SetActorRotation(FRotator(0.f, NewRotation.Yaw, 0.f));
 }
