@@ -1,18 +1,20 @@
 # Attribution — Onewheel Pint preview model
 
-> **INCOMPLETE — DO NOT PUSH THIS REPO UNTIL THE TWO `TODO` FIELDS BELOW ARE FILLED IN.**
-> CC BY 4.0 requires naming the creator and identifying the work. Neither is recoverable from
-> the download: the FBX's `Author` and `Creator` fields are empty, and the only filesystem
-> metadata is a Chrome quarantine flag with no source URL. Mike has the Sketchfab page.
-
 ## The work
 
-- **Title:** TODO — model title as shown on its source page
-- **Creator:** TODO — artist name/handle as shown on its source page
-- **Source:** Sketchfab (exact URL: TODO)
-- **Licence:** Creative Commons Attribution 4.0 International (CC BY 4.0)
-  — https://creativecommons.org/licenses/by/4.0/
-- **Original file date:** 2019-12-07, exported from Blender 2.81
+**"OneWheel Pint" by maxime.montegnies (@aimix)** —
+https://sketchfab.com/3d-models/onewheel-pint-cb822b5e535641f7ba23893a8f61b16e
+
+Licensed **Creative Commons Attribution 4.0 International (CC BY 4.0)** —
+https://creativecommons.org/licenses/by/4.0/
+
+Published November 2019 on Sketchfab; the file in hand is a Blender 2.81 FBX export dated
+2019-12-07, consistent with that.
+
+The attribution above was not recoverable from the download itself — the FBX's `Author` and
+`Creator` fields are empty and the only filesystem metadata was a Chrome quarantine flag with no
+source URL. It came from Mike and was confirmed against the model page, which states the licence
+as "CC Attribution" linking to the CC BY 4.0 deed.
 
 ## What is redistributed here
 
