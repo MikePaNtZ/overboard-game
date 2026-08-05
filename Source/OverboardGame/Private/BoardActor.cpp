@@ -324,7 +324,9 @@ bool ABoardActor::TryStartRidingAnim()
 
 float ABoardActor::GetRiderBaseHeightCm() const
 {
-	return bRidingAnimActive ? (kRiderDeckHeightCm - kRidingAnimRootLiftCm) : kRiderDeckHeightCm;
+	return bRidingAnimActive
+		? (kRiderDeckHeightCm - kRidingAnimRootLiftCm + RiderRidingHeightTrimCm)
+		: kRiderDeckHeightCm;
 }
 
 void ABoardActor::UpdateRidingAnimParams()
@@ -382,12 +384,45 @@ void ABoardActor::UpdateRidingAnimParams()
 	// Deferred to the first tick with a posed skeleton rather than done in BeginPlay: bone
 	// transforms are meaningless until the animation has evaluated at least once, and reading them
 	// too early would report the bind pose while claiming to describe the riding pose.
+	// Running minimum of the lowest foot, tracked EVERY tick rather than sampled once.
+	//
+	// kRidingAnimRootLiftCm was measured from a single pose, and that is exactly why feet dive
+	// under the deck while turning: the blendspace's turn poses drop a foot lower than the centre
+	// pose it was measured from. One sample cannot see that; a running minimum over a --carve
+	// sweep can, and reports the trim needed to clear the worst case rather than the average one.
+	if (RiderMesh->GetNumBones() > 0)
+	{
+		const int32 FootLIdx = RiderMesh->GetBoneIndex(TEXT("foot_l"));
+		const int32 FootRIdx = RiderMesh->GetBoneIndex(TEXT("foot_r"));
+		if (FootLIdx != INDEX_NONE && FootRIdx != INDEX_NONE)
+		{
+			const FTransform ToActor = GetActorTransform();
+			const float LowestNow = FMath::Min(
+				ToActor.InverseTransformPosition(RiderMesh->GetBoneLocation(TEXT("foot_l"), EBoneSpaces::WorldSpace)).Z,
+				ToActor.InverseTransformPosition(RiderMesh->GetBoneLocation(TEXT("foot_r"), EBoneSpaces::WorldSpace)).Z);
+
+			// Report only on a meaningful new low, so a carve sweep prints a short descending
+			// series ending at the worst case instead of a line per frame.
+			if (LowestNow < MinFootZObservedCm - 0.5f)
+			{
+				MinFootZObservedCm = LowestNow;
+				const float ClearanceCm = LowestNow - kRiderDeckHeightCm;
+				UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER FEET: new lowest foot %.1f cm (deck top %.1f cm) -> clearance %+.1f cm.%s"),
+					LowestNow, kRiderDeckHeightCm, ClearanceCm,
+					ClearanceCm < 0.f
+						? TEXT(" FOOT IS THROUGH THE DECK -- raise RiderRidingHeightTrimCm by at least this much.")
+						: TEXT(""));
+			}
+		}
+	}
+
 	// Re-arms whenever the yaw knob moves, so dragging it in the Details panel produces a fresh
 	// measurement per attempt instead of one stale reading from the first configuration tried.
 	if (!FMath::IsNearlyEqual(RiderRidingYawDeg, LastDiagnosticYawDeg))
 	{
 		LastDiagnosticYawDeg = RiderRidingYawDeg;
 		bLoggedRiderPlacementDiagnostic = false;
+		MinFootZObservedCm = TNumericLimits<float>::Max(); // else the previous yaw's worst case leaks in
 	}
 
 	if (!bLoggedRiderPlacementDiagnostic && RiderMesh->GetNumBones() > 0)

@@ -263,8 +263,10 @@ protected:
 	// reasoned first guess and this may not converge at all (see the honest note in
 	// docs/rider-riding-animation.md about the possibility that this pack simply does not fit a
 	// onewheel).
+	// -90, CONFIRMED BY EYE 2026-08-04. +90 and -90 both put the feet on the footpads -- they are
+	// mirror images, the regular/goofy choice -- and -90 is the one that looked right.
 	UPROPERTY(EditAnywhere, Category = "Board|Rider")
-	float RiderRidingYawDeg = 90.f;
+	float RiderRidingYawDeg = -90.f;
 
 	// Yaw alone fixes WHERE THE FEET LAND but breaks WHICH WAY THE RIDER LEANS, because the
 	// animation leans the body along its own facing. Turned 90 degrees, the pack's forward lean
@@ -278,8 +280,15 @@ protected:
 	// Geometrically coherent; whether it READS correctly is a different question, since the pack's
 	// turn poses likely carry steering-specific upper-body twist that may look wrong standing in
 	// for an acceleration lean. That is exactly what this toggle exists to let you find out.
+	// FALSE, and this is an empirical correction to my own reasoning. I argued the swap was
+	// geometrically necessary -- that a yawed rider would lean at right angles to the board. Play
+	// testing said otherwise: unswapped reads correctly and swapped does not. The geometric
+	// argument was about where the body's axes point; what actually governs how it reads is how
+	// the pack authored the poses, which no amount of reasoning from bone positions was going to
+	// tell me. Kept as a toggle because it costs nothing and the finding is worth being able to
+	// re-check.
 	UPROPERTY(EditAnywhere, Category = "Board|Rider")
-	bool bSwapRidingAxes = true;
+	bool bSwapRidingAxes = false;
 
 private:
 	TUniquePtr<FBoardStateClient> StateClient;
@@ -321,6 +330,16 @@ private:
 	// four lines buried in the pose interpolator.
 	void UpdateRidingAnimParams();
 
+	// Manual trim on top of the measured root lift, cm. Positive raises the rider.
+	//
+	// Exists because kRidingAnimRootLiftCm was measured from ONE pose (the centre of the
+	// blendspace) and the rider's lowest foot is not at the same height in every pose -- turning
+	// drops a foot through the deck. Rather than re-measure by hand per pose, the placement
+	// diagnostic now tracks the running MINIMUM foot height across a whole session, so a --carve
+	// run reports the true worst case and this trim can be set from it once.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider")
+	float RiderRidingHeightTrimCm = 0.f;
+
 	// Base height of the rider component above the actor origin, cm. Differs by tier: the riding
 	// animation carries its own ~31 cm root lift that the stock standing idle does not, so one
 	// shared constant cannot plant both poses. See kRidingAnimRootLiftCm.
@@ -348,6 +367,10 @@ private:
 
 	// Yaw the placement diagnostic last reported against, so dragging RiderRidingYawDeg re-arms it.
 	float LastDiagnosticYawDeg = 0.f;
+
+	// Running minimum of the rider's lowest foot height, actor-local cm, across the whole PIE
+	// session. A single-pose measurement cannot see the turn poses that clip; this can.
+	float MinFootZObservedCm = TNumericLimits<float>::Max();
 
 	bool bLatestSampleFallen = false;
 
