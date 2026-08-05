@@ -33,7 +33,7 @@ anyone the footage.
       so every internal reference dangled and **the rider has been in bind pose, with default
       materials, since it was added** — while the log reported an idle animation playing. Content
       moved, both asset paths corrected, `docs/mannequin-rider.md` amended. See that document.
-- [ ] **C0 — Verify: the asset tier resolved.** *(Output Log, no PIE needed)*
+- [x] **C0 — Verify: the asset tier resolved.** Tier 1 confirmed 2026-08-04: blendspace bound, axes `Turn` and `Forward` both `[-1..1]`.
 - [ ] **C1 — Verify: the numbers, before the picture.** *(Output Log, no PIE needed)*
 - [ ] **C2 — Verify: the stance is right.** *(PIE, static)*
 - [ ] **C3 — Verify: it moves, and moves correctly.** *(PIE, `--carve`)*
@@ -69,10 +69,21 @@ Open the project and press Play. Filter the Output Log for `LogOverboardMesh`. E
 **A T-posing rider should be impossible.** If you see one, that's the highest-priority bug here,
 because the whole tier design exists to prevent exactly it.
 
-Tier 1 also logs the authored axis names and ranges, e.g.
-`Axis0 'Turn' [-1.00..1.00], Axis1 'Forward' [0.00..600.00]`. **Those numbers are read off the
-asset, not assumed by the code** — I never hardcoded them, so seeing them confirms what the pack
-author actually chose.
+Tier 1 also logs the authored axis names and ranges, read off the asset rather than hardcoded.
+Confirmed on 2026-08-04:
+
+```
+Axis0 'Turn' [-1.00..1.00], Axis1 'Forward' [-1.00..1.00]
+```
+
+**Both axes are signed**, which is the convenient case: `MapNormalisedToAxis(N, -1, 1)` is the
+identity, so the normalised signal *is* the axis value and the mapping adds nothing to reason
+about. It also means the pack's Idle sample sits at the centre of both axes rather than at an
+end — which is why decelerating through zero into reverse (C3 phase 3) blends continuously
+instead of jumping.
+
+The code does not assume any of this: it reads the ranges at runtime and handles a signed or an
+unsigned axis either way. If a future pack version re-authors these, the mapping follows.
 
 ### C1 — do the driving numbers make sense? (Output Log only)
 
