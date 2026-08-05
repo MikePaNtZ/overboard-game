@@ -304,6 +304,11 @@ private:
 	// is needed for.
 	double LastRidingTraceLogTimeSeconds = 0.0;
 
+	// One-shot guard for the rider placement measurement -- see UpdateRidingAnimParams. Fires on
+	// the first tick the skeleton is actually posed, not in BeginPlay, because bone transforms
+	// before the first animation evaluation describe the bind pose and would quietly lie.
+	bool bLoggedRiderPlacementDiagnostic = false;
+
 	bool bLatestSampleFallen = false;
 
 	// See IsAuthorityWarning(). Reset to false (and the timestamp to 0) the moment the signal

@@ -341,6 +341,43 @@ void ABoardActor::UpdateRidingAnimParams()
 	const float AxisYValue = MapNormalisedToAxis(ForwardNormalised, RidingAxisMin.Y, RidingAxisMax.Y);
 	SingleNode->SetBlendSpacePosition(FVector(AxisXValue, AxisYValue, 0.f));
 
+	// One-shot placement diagnostic. First real footage showed the rider and the board plainly not
+	// belonging to each other, and "looks about a foot too high" is not a number anyone can fix a
+	// constant with. Same convention TryBuildRealMesh already uses on the board geometry: measure
+	// it, print it, check the arithmetic -- rather than asking a human to judge a distance by eye
+	// in a perspective projection, which is exactly the judgement a screenshot is worst at.
+	//
+	// Deferred to the first tick with a posed skeleton rather than done in BeginPlay: bone
+	// transforms are meaningless until the animation has evaluated at least once, and reading them
+	// too early would report the bind pose while claiming to describe the riding pose.
+	if (!bLoggedRiderPlacementDiagnostic && RiderMesh->GetNumBones() > 0)
+	{
+		const int32 FootLIndex = RiderMesh->GetBoneIndex(TEXT("foot_l"));
+		const int32 FootRIndex = RiderMesh->GetBoneIndex(TEXT("foot_r"));
+		if (FootLIndex != INDEX_NONE && FootRIndex != INDEX_NONE)
+		{
+			bLoggedRiderPlacementDiagnostic = true;
+
+			// Everything in the ACTOR's local frame, because that is the frame kRiderDeckHeightCm
+			// is expressed in and therefore the only frame in which the fix is a single number.
+			const FTransform ActorToWorld = GetActorTransform();
+			const FVector FootLLocal = ActorToWorld.InverseTransformPosition(RiderMesh->GetBoneLocation(TEXT("foot_l"), EBoneSpaces::WorldSpace));
+			const FVector FootRLocal = ActorToWorld.InverseTransformPosition(RiderMesh->GetBoneLocation(TEXT("foot_r"), EBoneSpaces::WorldSpace));
+			const float LowestFootZ = FMath::Min(FootLLocal.Z, FootRLocal.Z);
+			const float FootSeparationY = FMath::Abs(FootLLocal.Y - FootRLocal.Y);
+
+			const FBoxSphereBounds RiderBounds = RiderMesh->CalcBounds(RiderMesh->GetComponentTransform());
+			const float RiderHeightCm = RiderBounds.BoxExtent.Z * 2.f;
+
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT: lowest foot sits %.1f cm above the actor origin; deck top is %.1f cm (kRiderDeckHeightCm). ERROR = %+.1f cm -- subtract this from kRiderDeckHeightCm to plant the feet."),
+				LowestFootZ, kRiderDeckHeightCm, LowestFootZ - kRiderDeckHeightCm);
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT: rider height %.1f cm (expect ~180 for a correctly-scaled mannequin -- a 2x error here is a SCALE bug, not an offset bug). Foot separation %.1f cm across the board (expect ~25-45 for an astride stance, ~10-15 if the feet are still together). Board deck is 93.8 cm long, 23.2 cm wide."),
+				RiderHeightCm, FootSeparationY);
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT: foot_l local (%.1f, %.1f, %.1f), foot_r local (%.1f, %.1f, %.1f). If the two feet differ mostly in X rather than Y, the rider is facing ALONG the board (down the road) instead of across it."),
+				FootLLocal.X, FootLLocal.Y, FootLLocal.Z, FootRLocal.X, FootRLocal.Y, FootRLocal.Z);
+		}
+	}
+
 	// Checkpoint C1: the numbers before the picture. Once a second, so the log stays readable.
 	const double Now = FPlatformTime::Seconds();
 	if (Now - LastRidingTraceLogTimeSeconds >= 1.0)
