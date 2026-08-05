@@ -516,6 +516,20 @@ void ABoardActor::BeginPlay()
 
 		bRidingAnimActive = (bUseRidingAnim && bRidingAnimLoaded) ? TryStartRidingAnim() : false;
 
+		// Apply the riding stance transform HERE, not only in the per-tick path.
+		//
+		// Everything that positions the rider used to live inside UpdatePoseFromHistory, which
+		// returns early until the first wire packet arrives. That left the rider sitting in the
+		// constructor's stock-idle transform -- yaw 0 and 31.2 cm too high -- for the whole
+		// interval between pressing Play and the first packet, which with no sender running is
+		// forever. Visible symptom: "the rider doesn't come up facing the right way until I run
+		// carve." The height was wrong the entire time too, just less obviously.
+		//
+		// The rest state has to be correct on its own, because it is the state anyone sees who
+		// opens the level without a host or a fake_sender attached.
+		RiderMesh->SetRelativeLocation(FVector(0.f, 0.f, GetRiderBaseHeightCm()));
+		RiderMesh->SetRelativeRotation(bRidingAnimActive ? FRotator(0.f, RiderRidingYawDeg, 0.f) : FRotator::ZeroRotator);
+
 		if (bRidingAnimActive)
 		{
 			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: rider visible, playing the AUTHORED RIDING STANCE (Fab MonoWheel Board pack). Every joint angle is the pack artist's invention -- the physics is still a rigid ballast with no articulation. Only the POSE SELECTION is driven by simulated values. See docs/rider-riding-animation.md."));
