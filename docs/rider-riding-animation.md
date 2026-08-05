@@ -16,6 +16,42 @@ were told we'd have to author already exists, and this work is about wiring it t
 no arms, no articulation, no balance of its own. Read the honesty section below before showing
 anyone the footage.
 
+## ⚠ Open risk: the pack animates a different vehicle
+
+**Measured 2026-08-04, and confirmed independently on screen.** The pack's riding stance is an
+**electric unicycle** stance, not a onewheel one.
+
+| Measurement | Value | Reading |
+|---|---|---|
+| Foot spread, board Y (lateral) | 47.8 cm | Feet **side by side**, hanging ~12 cm off each side of a 23.2 cm deck |
+| Foot spread, board X (fore/aft) | 1.2 cm | Feet **not** on the fore and aft footpads |
+| Root lift above deck | 31.2 cm | A unicycle's **pedal height** |
+| Rider height | 170.6 cm | Scale is fine — this is not a scale bug |
+
+A standing person's feet separate along their own left–right axis, perpendicular to their facing.
+A Y-dominant spread therefore means the body faces **along** the board — down the road. That is
+how you ride a unicycle with pedals either side of a central wheel. A onewheel rider stands the
+other way round: feet fore and aft of the wheel, body square across the board.
+
+**This was a scoping miss.** The original scope called foot spacing "cosmetic — authored for their
+board's proportions." It is not proportions, it is stance topology, and it is the one thing that
+could sink this whole approach.
+
+### Why a 90° yaw is not obviously enough
+
+`RiderRidingYawDeg` puts the feet on the footpads and the body across the board. But the animation
+leans the body **along its own facing**, so once turned, the pack's forward lean points across our
+board instead of at its nose. `bSwapRidingAxes` compensates: after the yaw, the rider's
+body-forward axis *is* our lateral axis and their body-lateral axis *is* our travel direction, so
+the drivers swap with them.
+
+That is geometrically coherent. **It is not confirmed to read correctly**, and geometric coherence
+is not the same as looking right — the pack's turn poses probably carry steering-specific
+upper-body twist that may look wrong standing in for an acceleration lean.
+
+**A real possible outcome is that this pack does not fit a onewheel and the work is shelved.** The
+branch is the rollback; nothing has to merge.
+
 ## Milestones
 
 - [x] **M0 — Import the asset subset, licensed and ignored.** 1.8 MB of a 439 MB pack; the
@@ -35,7 +71,10 @@ anyone the footage.
       moved, both asset paths corrected, `docs/mannequin-rider.md` amended. See that document.
 - [x] **C0 — Verify: the asset tier resolved.** Tier 1 confirmed 2026-08-04: blendspace bound, axes `Turn` and `Forward` both `[-1..1]`.
 - [ ] **C1 — Verify: the numbers, before the picture.** *(Output Log, no PIE needed)*
-- [ ] **C2 — Verify: the stance is right.** *(PIE, static)*
+- [~] **C2 — Verify: the stance is right.** *Partial.* Height fixed (measured +31.2 cm, now
+      applied as `kRidingAnimRootLiftCm`); scale confirmed correct at 170.6 cm. **Stance failed** —
+      unicycle stance, not onewheel. See the open risk above. `RiderRidingYawDeg` /
+      `bSwapRidingAxes` are the live experiment.
 - [ ] **C3 — Verify: it moves, and moves correctly.** *(PIE, `--carve`)*
 - [ ] **C4 — Verify: against the real host.**
 - [ ] **M6 — Declaration line + `docs/mannequin-rider.md` update.** Launch-blocking; do it only
