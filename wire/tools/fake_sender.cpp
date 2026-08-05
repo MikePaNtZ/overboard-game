@@ -29,7 +29,11 @@
 //                                corner of the rider riding blendspace is reached. Use this, not
 //                                --rider, to check the riding animation: --rider holds a FIXED
 //                                displacement, so the turn axis never moves. ~24 s, self-labelling
-//                                per phase. Overrides --rider's rider channel if both are given.
+//                                per phase. The board also YAWS, BANKS and PITCHES through a
+//                                fabricated carve so the lean can be judged against a turning
+//                                board -- a plausible shape to make the animation legible, NOT a
+//                                trajectory MuJoCo would produce, and no claim may rest on it.
+//                                Overrides --rider's rider channel if both are given.
 //   fake_sender --authority-cliff
 //                               replays ADR-0011's MEASURED full-stick-from-rest cliff at 50Hz:
 //                                the loss-of-authority warning bit at sim_t 3.000s, envelope
@@ -116,6 +120,33 @@ namespace
 	void SetNoseUp(FBoardState& S, double PhiRad)   { S.Quat[0] = static_cast<float>(std::cos(PhiRad / 2.0)); S.Quat[1] = 0.f; S.Quat[2] = static_cast<float>(-std::sin(PhiRad / 2.0)); S.Quat[3] = 0.f; }
 	void SetYawLeft(FBoardState& S, double PhiRad)  { S.Quat[0] = static_cast<float>(std::cos(PhiRad / 2.0)); S.Quat[1] = 0.f; S.Quat[2] = 0.f; S.Quat[3] = static_cast<float>(std::sin(PhiRad / 2.0)); }
 	void SetRollRight(FBoardState& S, double PhiRad){ S.Quat[0] = static_cast<float>(std::cos(PhiRad / 2.0)); S.Quat[1] = static_cast<float>(std::sin(PhiRad / 2.0)); S.Quat[2] = 0.f; S.Quat[3] = 0.f; }
+
+	// Hamilton product, (w,x,y,z) -- the single-axis helpers above cannot express a banked turn,
+	// which needs yaw, roll and pitch at once. Order is yaw * roll * pitch: roll and pitch are
+	// applied in the board's own frame after it has been turned, which is what "banking into a
+	// turn" means.
+	void QuatMul(const double A[4], const double B[4], double Out[4])
+	{
+		Out[0] = A[0]*B[0] - A[1]*B[1] - A[2]*B[2] - A[3]*B[3];
+		Out[1] = A[0]*B[1] + A[1]*B[0] + A[2]*B[3] - A[3]*B[2];
+		Out[2] = A[0]*B[2] - A[1]*B[3] + A[2]*B[0] + A[3]*B[1];
+		Out[3] = A[0]*B[3] + A[1]*B[2] - A[2]*B[1] + A[3]*B[0];
+	}
+
+	// Same per-axis conventions as SetYawLeft / SetRollRight / SetNoseUp above, composed.
+	void SetBankedTurn(FBoardState& S, double YawRad, double RollRad, double PitchRad)
+	{
+		const double Yaw[4]   = { std::cos(YawRad/2.0),   0.0,                    0.0,                     std::sin(YawRad/2.0) };
+		const double Roll[4]  = { std::cos(RollRad/2.0),  std::sin(RollRad/2.0),  0.0,                     0.0 };
+		const double Pitch[4] = { std::cos(PitchRad/2.0), 0.0,                    -std::sin(PitchRad/2.0), 0.0 };
+		double YR[4], Q[4];
+		QuatMul(Yaw, Roll, YR);
+		QuatMul(YR, Pitch, Q);
+		S.Quat[0] = static_cast<float>(Q[0]);
+		S.Quat[1] = static_cast<float>(Q[1]);
+		S.Quat[2] = static_cast<float>(Q[2]);
+		S.Quat[3] = static_cast<float>(Q[3]);
+	}
 
 	// ---- --authority-cliff ------------------------------------------------------------------
 	//
@@ -250,7 +281,7 @@ namespace
 		constexpr double kPhaseSeconds[] = {6.0, 12.0, 4.0, 2.0};
 		const char* const kPhaseLabels[] = {
 			"accelerate 0 -> 6 m/s, straight (Idle -> Forward)",
-			"hold ~3 m/s, lateral sweeps full left <-> full right x2 (Left_1/2/3, Right_1/2/3)",
+			"hold ~3 m/s, banked carve left <-> right x2 -- board turns, rider leans (Left/Right_1/2/3)",
 			"decelerate through zero to -2 m/s (Forward -> Idle -> Backward)",
 			"back to rest (Idle)",
 		};
@@ -262,6 +293,9 @@ namespace
 		const double Dt = kSendIntervalMs / 1000.0;
 		double T = 0.0;
 		double PosX = 0.0;
+		double PosY = 0.0;
+		double YawRad = 0.0;
+		double PrevSpeedMs = 0.0;
 		double WheelAngleRad = 0.0;
 		uint64_t Seq = 0;
 		int ReportedPhase = -1;
@@ -298,10 +332,44 @@ namespace
 				default: SpeedMs = -2.0 + 2.0 * U; break;
 			}
 
-			PosX += SpeedMs * Dt;
+			// --- The board actually turns -----------------------------------------------------
+			//
+			// Earlier this mode drove the board dead straight and swept only the rider channel, to
+			// isolate the blendspace turn axis from board attitude. That isolation cost more than
+			// it bought: a rider leaning hard into a carve while the board tracks arrow-straight
+			// reads as broken even when the animation is perfect, so it could not answer the
+			// question C3 actually asks.
+			//
+			// FABRICATED, and labelled as such wherever it is described. This is a plausible
+			// carve shape chosen to make the animation judgeable, NOT a trajectory MuJoCo would
+			// produce. Nothing measured is claimed here and no control decision may be tuned from
+			// it. The renderer still computes no physics -- a test stimulus inventing a pose
+			// stream is exactly what a test stimulus is for.
+			//
+			// Yaw rate follows the same expression the CLIENT uses for its turn axis
+			// (-lateral/full), so the board turns the way the rider leans by construction rather
+			// than by coincidence. If it comes out mirrored on screen, this sign is the one place
+			// to flip -- and that would be a finding about the client's convention, not about
+			// this file.
+			const double LateralNorm = std::fmax(-1.0, std::fmin(1.0, -LateralM / 0.04));
+			constexpr double kMaxYawRateRadS = 0.8;  // ~46 deg/s at full lean
+			constexpr double kMaxBankRad = 0.26;     // ~15 deg
+			YawRad += LateralNorm * kMaxYawRateRadS * Dt;
+			const double BankRad = LateralNorm * kMaxBankRad;
+
+			// Nose-down under acceleration, nose-up under braking -- from the ACCELERATION, not
+			// the speed, so a steady cruise sits level the way a real board does.
+			const double AccelMs2 = (SpeedMs - PrevSpeedMs) / Dt;
+			PrevSpeedMs = SpeedMs;
+			const double PitchRad = std::fmax(-0.20, std::fmin(0.20, -AccelMs2 * 0.02));
+
+			PosX += SpeedMs * std::cos(YawRad) * Dt;
+			PosY += SpeedMs * std::sin(YawRad) * Dt;
 			WheelAngleRad += (SpeedMs / kWheelRadiusM) * Dt;
 
 			FBoardState State = BaseState(Seq++, T);
+			SetBankedTurn(State, YawRad, BankRad, PitchRad);
+			State.Pos[1] = static_cast<float>(PosY);
 			State.Pos[0] = static_cast<float>(PosX);
 			State.WheelRateRadS = static_cast<float>(SpeedMs / kWheelRadiusM);
 			State.WheelAngleRad = static_cast<float>(WheelAngleRad);
