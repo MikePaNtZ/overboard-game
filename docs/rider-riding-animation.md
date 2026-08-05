@@ -27,6 +27,12 @@ anyone the footage.
 - [x] **M3 — Three-tier graceful fallback.** Riding stance → stock idle → no rider, each logged.
 - [x] **M4 — A stimulus that actually exercises it.** `fake_sender --carve`.
 - [x] **M5 — Build green.** `wire` tests pass; the Unreal editor module compiles clean.
+- [x] **M5a — Fix the mannequin import path.** *Unplanned.* C0's first run reported the rider
+      mesh's skeleton as `null`: the template mannequin content was imported to
+      `Content/Mannequins/` when its packages record themselves as `/Game/Characters/Mannequins/`,
+      so every internal reference dangled and **the rider has been in bind pose, with default
+      materials, since it was added** — while the log reported an idle animation playing. Content
+      moved, both asset paths corrected, `docs/mannequin-rider.md` amended. See that document.
 - [ ] **C0 — Verify: the asset tier resolved.** *(Output Log, no PIE needed)*
 - [ ] **C1 — Verify: the numbers, before the picture.** *(Output Log, no PIE needed)*
 - [ ] **C2 — Verify: the stance is right.** *(PIE, static)*
@@ -58,7 +64,7 @@ Open the project and press Play. Filter the Output Log for `LogOverboardMesh`. E
 | `Content/MonoWheel_Board/ is not imported locally` | Tier 2. The asset copy didn't land — re-run the import below. |
 | `riding blendspace did not bind ... skeletons incompatible at runtime` | Tier 2, and the interesting failure. `AddCompatibleSkeleton` was rejected. Tell me — plan B is to import the pack's own `SKM_Manny_Simple` (+18.5 MB). |
 | `playing a stock idle animation` alone | Tier 2 for another reason. |
-| `rider requested ... did not resolve` | Tier 3. `Content/Mannequins/` is missing — predates this work. |
+| `rider requested ... did not resolve` | Tier 3. `Content/Characters/Mannequins/` is missing — predates this work. |
 
 **A T-posing rider should be impossible.** If you see one, that's the highest-priority bug here,
 because the whole tier design exists to prevent exactly it.
@@ -219,7 +225,7 @@ convincing and no more real.
 **MonoWheel Board**, from Fab, licensed to Mike's Epic account. `Content/MonoWheel_Board/` is
 **gitignored and will never be committed** — the Fab EULA grants use in projects, not
 redistribution of raw assets, and this repo is public. Same reasoning as `Content/CityPark/` and
-`Content/Mannequins/`.
+`Content/Characters/Mannequins/`.
 
 Only 1.8 MB of the 439 MB pack is imported: the ten riding sequences, the `Riding_BS` blendspace,
 and the pack's own `SK_Mannequin` skeleton asset (161 KB) those sequences are bound to.

@@ -208,7 +208,7 @@ protected:
 	// Same all-or-nothing rule as the Pint skin and the Openwheel mesh: a rider stuck in the
 	// default bind/T-pose (no animation applied) is worse than no rider at all, so this is not a
 	// graceful degradation -- see docs/mannequin-rider.md for the (very likely) cause, missing
-	// Content/Mannequins/, and how to fix it.
+	// Content/Characters/Mannequins/, and how to fix it.
 	bool bRiderLoaded = false;
 
 	UPROPERTY(Transient)

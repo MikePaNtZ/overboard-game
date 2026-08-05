@@ -201,8 +201,21 @@ ABoardActor::ABoardActor()
 	RiderMesh->SetRelativeLocation(FVector(0.f, 0.f, kRiderDeckHeightCm));
 	RiderMesh->SetRelativeRotation(FRotator::ZeroRotator);
 
-	static ConstructorHelpers::FObjectFinder<USkeletalMesh> RiderMeshFinder(TEXT("/Game/Mannequins/Meshes/SKM_Manny_Simple.SKM_Manny_Simple"));
-	static ConstructorHelpers::FObjectFinder<UAnimSequence> RiderIdleAnimFinder(TEXT("/Game/Mannequins/Anims/Unarmed/MM_Idle.MM_Idle"));
+	// /Game/Characters/Mannequins/, NOT /Game/Mannequins/, and the extra directory level is
+	// load-bearing rather than cosmetic. Epic's template mannequin packages record their own
+	// object paths as /Game/Characters/Mannequins/... internally, so importing them one level
+	// higher leaves every INTERNAL reference dangling while the top-level asset still loads
+	// happily by file path. The visible result is a mesh that resolves here, passes the
+	// bRiderLoaded check, renders -- and has a NULL skeleton, because SKM_Manny_Simple's hard
+	// reference to its own SK_Mannequin cannot be found.
+	//
+	// A skeletal mesh with a null skeleton silently ignores PlayAnimation. That is how the rider
+	// stood in bind pose through every capture up to this point while the log cheerfully reported
+	// an idle animation playing, and it is very likely what the first footage note in
+	// docs/mannequin-rider.md was actually describing as "arms out like a snowboarder" -- an
+	// A-pose, not a facing error. The materials were dangling for the same reason.
+	static ConstructorHelpers::FObjectFinder<USkeletalMesh> RiderMeshFinder(TEXT("/Game/Characters/Mannequins/Meshes/SKM_Manny_Simple.SKM_Manny_Simple"));
+	static ConstructorHelpers::FObjectFinder<UAnimSequence> RiderIdleAnimFinder(TEXT("/Game/Characters/Mannequins/Anims/Unarmed/MM_Idle.MM_Idle"));
 	bRiderLoaded = RiderMeshFinder.Succeeded() && RiderIdleAnimFinder.Succeeded();
 	if (bRiderLoaded)
 	{
@@ -211,7 +224,7 @@ ABoardActor::ABoardActor()
 	}
 
 	// Riding blendspace from the Fab pack -- optional by construction. Content/MonoWheel_Board/ is
-	// gitignored (licence, same as Content/Mannequins/), so a fresh clone resolves nothing here and
+	// gitignored (licence, same as Content/Characters/Mannequins/), so a fresh clone resolves nothing here and
 	// must still run: bRidingAnimLoaded false simply leaves the rider on the stock idle. Note this
 	// is a SOFT dependency in a way the rider mesh is not -- failing to find it is an expected
 	// state, not an error, and is logged as such in BeginPlay.
@@ -236,9 +249,23 @@ bool ABoardActor::TryStartRidingAnim()
 	USkeleton* const AnimSkeleton = RiderRidingBlendSpace->GetSkeleton();
 	if (!MeshSkeleton || !AnimSkeleton)
 	{
-		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: riding animation skipped -- rider mesh skeleton (%s) or blendspace skeleton (%s) is null."),
-			MeshSkeleton ? *MeshSkeleton->GetName() : TEXT("null"),
-			AnimSkeleton ? *AnimSkeleton->GetName() : TEXT("null"));
+		// Distinguish the three failures explicitly. Collapsing them into one "something was null"
+		// line cost a diagnostic round-trip once already: a mesh that loads but whose SKELETON is
+		// null is a dangling-internal-reference symptom (wrong import path -- see the finder above)
+		// and looks nothing like a mesh that simply is not there, but they logged identically.
+		if (!MeshAsset)
+		{
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: riding animation skipped -- the rider component has NO skeletal mesh asset at all."));
+		}
+		else if (!MeshSkeleton)
+		{
+			UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor: riding animation skipped -- rider mesh '%s' loaded but its SKELETON IS NULL. That means its internal asset references are dangling, which almost always means the mannequin content was imported to the wrong path: it must be Content/Characters/Mannequins/ (the packages record themselves as /Game/Characters/Mannequins/...), NOT Content/Mannequins/. NOTE: this also means the stock idle is not playing either and the rider is in BIND POSE -- see docs/mannequin-rider.md."),
+				*MeshAsset->GetName());
+		}
+		else
+		{
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: riding animation skipped -- the riding blendspace has no skeleton."));
+		}
 		return false;
 	}
 
@@ -385,7 +412,7 @@ void ABoardActor::BeginPlay()
 	}
 	else if (bShowRider)
 	{
-		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: rider requested (bShowRider) but the mannequin mesh/animation did not resolve -- Content/Mannequins/ is most likely not copied in locally (see docs/mannequin-rider.md). Board renders without a rider."));
+		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: rider requested (bShowRider) but the mannequin mesh/animation did not resolve -- Content/Characters/Mannequins/ is most likely not copied in locally (see docs/mannequin-rider.md). Board renders without a rider."));
 	}
 
 	StateClient = MakeUnique<FBoardStateClient>();

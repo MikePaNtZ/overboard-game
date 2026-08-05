@@ -42,7 +42,7 @@ terrain/*.dSYM
 # and honest failure mode.
 Content/CityPark/
 
-# Content/Mannequins/ is Epic's template mannequin content (SKM_Manny_Simple + its skeleton,
+# Content/Characters/Mannequins/ is Epic's template mannequin content (SKM_Manny_Simple + its skeleton,
 # materials, textures and animations), shipped locally with every UE 5.7 install under
 # Engine/../Templates/TemplateResources/High/Characters/Content/Mannequins/ -- see
 # docs/mannequin-rider.md. It is licensed under the UE EULA as template content, not licensed for
@@ -50,7 +50,14 @@ Content/CityPark/
 # Content/CityPark/ above, not re-litigated here. ~126 MB, also fails the "never check binaries
 # into git" rule on size alone. `ABoardActor`'s rider component (bShowRider) falls back
 # gracefully -- board still renders, no rider, logged loudly -- if this directory is absent.
-Content/Mannequins/
+#
+# NOTE THE PATH: Content/Characters/Mannequins/, not Content/Mannequins/. These packages record
+# their own object paths as /Game/Characters/Mannequins/... internally, so importing them one
+# level higher leaves every internal reference (skeleton, materials, rigs) dangling while the
+# top-level assets still load by file path -- a rider that renders, in bind pose, with default
+# materials, and a log line claiming an idle animation is playing. That was live for several
+# captures. See docs/mannequin-rider.md.
+Content/Characters/Mannequins/
 
 # Content/MonoWheel_Board/ is the Fab pack "MonoWheel Board", licensed to Mike's Epic account.
 # Same reasoning as Content/CityPark/ above -- the Fab EULA grants use in projects, not
