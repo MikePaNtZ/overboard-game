@@ -249,6 +249,38 @@ protected:
 	// on the stock idle (or absent) and no blend parameters are pushed at all.
 	bool bRidingAnimActive = false;
 
+	// --- Stance correction knobs: LIVE-EDITABLE EXPERIMENT, not settled values ------------------
+	//
+	// Measured 2026-08-04 and confirmed by eye: the pack's riding stance is an ELECTRIC UNICYCLE
+	// stance, not a onewheel one. Its rider stands with both feet side by side on pedals either
+	// side of a central wheel, facing along the direction of travel. A onewheel rider stands the
+	// other way round -- feet fore and aft of the wheel, body square across the board. The
+	// diagnostic put the feet at board-local Y = +24.4 / -23.4 with X identical, which is the
+	// unicycle arrangement, hanging ~12 cm off each side of a 23.2 cm deck.
+	//
+	// Both knobs below are applied every tick, so they can be dragged in the Details panel during
+	// PIE and judged immediately. NEITHER HAS BEEN CONFIRMED TO LOOK RIGHT -- the defaults are a
+	// reasoned first guess and this may not converge at all (see the honest note in
+	// docs/rider-riding-animation.md about the possibility that this pack simply does not fit a
+	// onewheel).
+	UPROPERTY(EditAnywhere, Category = "Board|Rider")
+	float RiderRidingYawDeg = 90.f;
+
+	// Yaw alone fixes WHERE THE FEET LAND but breaks WHICH WAY THE RIDER LEANS, because the
+	// animation leans the body along its own facing. Turned 90 degrees, the pack's forward lean
+	// points across our board instead of at its nose.
+	//
+	// Swapping which wire signal drives which blendspace axis restores the geometry: after the
+	// yaw, the rider's body-forward axis is our board's lateral axis, and their body-lateral axis
+	// is our board's direction of travel. So board SPEED should drive the animation's turn/lean
+	// axis, and board LATERAL displacement should drive its forward/back axis.
+	//
+	// Geometrically coherent; whether it READS correctly is a different question, since the pack's
+	// turn poses likely carry steering-specific upper-body twist that may look wrong standing in
+	// for an acceleration lean. That is exactly what this toggle exists to let you find out.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider")
+	bool bSwapRidingAxes = true;
+
 private:
 	TUniquePtr<FBoardStateClient> StateClient;
 
@@ -289,6 +321,11 @@ private:
 	// four lines buried in the pose interpolator.
 	void UpdateRidingAnimParams();
 
+	// Base height of the rider component above the actor origin, cm. Differs by tier: the riding
+	// animation carries its own ~31 cm root lift that the stock standing idle does not, so one
+	// shared constant cannot plant both poses. See kRidingAnimRootLiftCm.
+	float GetRiderBaseHeightCm() const;
+
 	// Newest raw wheel rate, rad/s, straight off the wire -- drives the blendspace's forward axis
 	// via the wheel radius. Same newest-raw-sample rule as the ballast displacements below.
 	float LatestWheelRateRadS = 0.f;
@@ -308,6 +345,9 @@ private:
 	// the first tick the skeleton is actually posed, not in BeginPlay, because bone transforms
 	// before the first animation evaluation describe the bind pose and would quietly lie.
 	bool bLoggedRiderPlacementDiagnostic = false;
+
+	// Yaw the placement diagnostic last reported against, so dragging RiderRidingYawDeg re-arms it.
+	float LastDiagnosticYawDeg = 0.f;
 
 	bool bLatestSampleFallen = false;
 

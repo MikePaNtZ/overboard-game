@@ -53,6 +53,20 @@ namespace
 	constexpr float kRidingFullLeanSpeedMs = 5.0f;
 	constexpr float kRidingFullLeanLateralM = 0.04f;
 
+	// MEASURED, 2026-08-04, by the placement diagnostic in UpdateRidingAnimParams: with the rider
+	// component at kRiderDeckHeightCm, the riding animation's lowest foot sat 39.5 cm above the
+	// actor origin, i.e. 31.2 cm above the deck top it should be standing on.
+	//
+	// This is a property of the ANIMATION, not of our board, and that is why it cannot be folded
+	// into kRiderDeckHeightCm: the stock standing idle puts the mannequin's feet at the mesh
+	// origin, so sharing one constant would plant the riding pose correctly and bury the idle pose
+	// 31 cm underground. The two poses genuinely have different root-to-foot distances and need
+	// two numbers.
+	//
+	// The size of it is the tell. 31 cm is not a tuning discrepancy, it is the pedal height of a
+	// self-balancing unicycle -- see the stance note in docs/rider-riding-animation.md.
+	constexpr float kRidingAnimRootLiftCm = 31.2f;
+
 	// Maps a normalised [-1, 1] signal onto one authored blendspace axis.
 	//
 	// Handles both axis conventions the pack could plausibly have used, because this code reads
@@ -308,12 +322,22 @@ bool ABoardActor::TryStartRidingAnim()
 	return true;
 }
 
+float ABoardActor::GetRiderBaseHeightCm() const
+{
+	return bRidingAnimActive ? (kRiderDeckHeightCm - kRidingAnimRootLiftCm) : kRiderDeckHeightCm;
+}
+
 void ABoardActor::UpdateRidingAnimParams()
 {
 	if (!bRidingAnimActive || !RiderMesh)
 	{
 		return;
 	}
+
+	// Applied every tick rather than once in BeginPlay, deliberately: it makes the stance knobs
+	// draggable in the Details panel mid-PIE. This is an unsettled experiment and the cost of
+	// re-setting a rotation each frame is nothing against the cost of a rebuild per attempt.
+	RiderMesh->SetRelativeRotation(FRotator(0.f, RiderRidingYawDeg, 0.f));
 
 	UAnimSingleNodeInstance* const SingleNode = RiderMesh->GetSingleNodeInstance();
 	if (!SingleNode)
@@ -337,8 +361,16 @@ void ABoardActor::UpdateRidingAnimParams()
 	// Which axis is which is NOT assumed: the pack named them, and TryStartRidingAnim logged the
 	// names. Axis0 is the horizontal (Turn) axis and Axis1 the vertical (Forward) axis, which is
 	// the blendspace convention and matches the names dumped from the asset.
-	const float AxisXValue = MapNormalisedToAxis(TurnNormalised, RidingAxisMin.X, RidingAxisMax.X);
-	const float AxisYValue = MapNormalisedToAxis(ForwardNormalised, RidingAxisMin.Y, RidingAxisMax.Y);
+	//
+	// bSwapRidingAxes exchanges which signal reaches which axis -- see the header note. With the
+	// rider yawed 90 degrees to stand across the board, their body-forward axis IS our lateral
+	// axis and their body-lateral axis IS our direction of travel, so the drivers have to swap
+	// with them or the rider leans at right angles to what the board is doing.
+	const float TurnAxisDriver = bSwapRidingAxes ? ForwardNormalised : TurnNormalised;
+	const float ForwardAxisDriver = bSwapRidingAxes ? TurnNormalised : ForwardNormalised;
+
+	const float AxisXValue = MapNormalisedToAxis(TurnAxisDriver, RidingAxisMin.X, RidingAxisMax.X);
+	const float AxisYValue = MapNormalisedToAxis(ForwardAxisDriver, RidingAxisMin.Y, RidingAxisMax.Y);
 	SingleNode->SetBlendSpacePosition(FVector(AxisXValue, AxisYValue, 0.f));
 
 	// One-shot placement diagnostic. First real footage showed the rider and the board plainly not
@@ -350,6 +382,14 @@ void ABoardActor::UpdateRidingAnimParams()
 	// Deferred to the first tick with a posed skeleton rather than done in BeginPlay: bone
 	// transforms are meaningless until the animation has evaluated at least once, and reading them
 	// too early would report the bind pose while claiming to describe the riding pose.
+	// Re-arms whenever the yaw knob moves, so dragging it in the Details panel produces a fresh
+	// measurement per attempt instead of one stale reading from the first configuration tried.
+	if (!FMath::IsNearlyEqual(RiderRidingYawDeg, LastDiagnosticYawDeg))
+	{
+		LastDiagnosticYawDeg = RiderRidingYawDeg;
+		bLoggedRiderPlacementDiagnostic = false;
+	}
+
 	if (!bLoggedRiderPlacementDiagnostic && RiderMesh->GetNumBones() > 0)
 	{
 		const int32 FootLIndex = RiderMesh->GetBoneIndex(TEXT("foot_l"));
@@ -369,11 +409,19 @@ void ABoardActor::UpdateRidingAnimParams()
 			const FBoxSphereBounds RiderBounds = RiderMesh->CalcBounds(RiderMesh->GetComponentTransform());
 			const float RiderHeightCm = RiderBounds.BoxExtent.Z * 2.f;
 
-			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT: lowest foot sits %.1f cm above the actor origin; deck top is %.1f cm (kRiderDeckHeightCm). ERROR = %+.1f cm -- subtract this from kRiderDeckHeightCm to plant the feet."),
-				LowestFootZ, kRiderDeckHeightCm, LowestFootZ - kRiderDeckHeightCm);
-			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT: rider height %.1f cm (expect ~180 for a correctly-scaled mannequin -- a 2x error here is a SCALE bug, not an offset bug). Foot separation %.1f cm across the board (expect ~25-45 for an astride stance, ~10-15 if the feet are still together). Board deck is 93.8 cm long, 23.2 cm wide."),
-				RiderHeightCm, FootSeparationY);
-			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT: foot_l local (%.1f, %.1f, %.1f), foot_r local (%.1f, %.1f, %.1f). If the two feet differ mostly in X rather than Y, the rider is facing ALONG the board (down the road) instead of across it."),
+			const float FootSeparationX = FMath::Abs(FootLLocal.X - FootRLocal.X);
+
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT (yaw %.0f deg): lowest foot sits %.1f cm above the actor origin; deck top is %.1f cm. RESIDUAL ERROR = %+.1f cm (should now be ~0 -- kRidingAnimRootLiftCm = %.1f cm is already applied)."),
+				RiderRidingYawDeg, LowestFootZ, kRiderDeckHeightCm, LowestFootZ - kRiderDeckHeightCm, kRidingAnimRootLiftCm);
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT: rider height %.1f cm (expect ~180; a 2x error here would be a SCALE bug, not an offset bug). Board deck is 93.8 cm long, 23.2 cm wide."),
+				RiderHeightCm);
+			// CORRECTED TEST -- the earlier version of this line had the axes the wrong way round.
+			// A standing person's feet separate along their own LEFT-RIGHT axis, which is
+			// perpendicular to their facing. So feet spread in board-Y means the body faces along
+			// board-X (down the road, unicycle stance); feet spread in board-X means the body
+			// faces across the board (onewheel stance, what we want).
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT: foot spread X (fore/aft) = %.1f cm, Y (lateral) = %.1f cm. X-dominant = ONEWHEEL stance, feet on the footpads, body across the board -- WANTED. Y-dominant = UNICYCLE stance, feet side by side, body down the road -- WRONG for this vehicle. foot_l (%.1f, %.1f, %.1f), foot_r (%.1f, %.1f, %.1f)."),
+				FootSeparationX, FootSeparationY,
 				FootLLocal.X, FootLLocal.Y, FootLLocal.Z, FootRLocal.X, FootRLocal.Y, FootRLocal.Z);
 		}
 	}
@@ -541,7 +589,7 @@ void ABoardActor::UpdatePoseFromHistory()
 		// here; the local-mirror rule does. NO amplification -- see docs/mannequin-rider.md.
 		const float OffsetXCm = LatestRiderForeAftM * 100.f;
 		const float OffsetYCm = -LatestRiderLateralM * 100.f;
-		RiderMesh->SetRelativeLocation(FVector(OffsetXCm, OffsetYCm, kRiderDeckHeightCm));
+		RiderMesh->SetRelativeLocation(FVector(OffsetXCm, OffsetYCm, GetRiderBaseHeightCm()));
 	}
 
 	const double RenderTime = FPlatformTime::Seconds() - static_cast<double>(RenderDelaySeconds);
