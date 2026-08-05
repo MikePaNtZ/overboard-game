@@ -24,6 +24,12 @@
 //                                to exercise the rider-offset rendering path without a real host
 //                                (which doesn't speak v2 yet either). Combine with other modes,
 //                                e.g. `fake_sender --rider --rotate`.
+//   fake_sender --carve         sweeps wheel rate and rider lateral displacement through their
+//                                full ranges (and past them, to exercise the clamps) so every
+//                                corner of the rider riding blendspace is reached. Use this, not
+//                                --rider, to check the riding animation: --rider holds a FIXED
+//                                displacement, so the turn axis never moves. ~24 s, self-labelling
+//                                per phase. Overrides --rider's rider channel if both are given.
 //   fake_sender --authority-cliff
 //                               replays ADR-0011's MEASURED full-stick-from-rest cliff at 50Hz:
 //                                the loss-of-authority warning bit at sim_t 3.000s, envelope
@@ -224,6 +230,96 @@ namespace
 		close(Sock);
 	}
 
+	// ---- --carve ---------------------------------------------------------------------------
+	//
+	// Exercises every corner of the rider riding blendspace (overboard-game rider animation work).
+	// This mode exists because --rider holds a FIXED displacement, so with it the blendspace turn
+	// axis sits at one constant value and the rider never visibly moves -- the Left_2/3 and
+	// Right_2/3 poses would first appear in real footage, never having been seen.
+	//
+	// Deliberately sweeps PAST the client's declared full-lean gains (5.0 m/s, 0.04 m lateral) so
+	// the clamps at both ends get exercised too: an animation that keeps deforming past the axis
+	// limit is a mapping bug, and one that pops on reaching it is a blend bug. Neither is visible
+	// if the stimulus stays politely inside range.
+	//
+	// This is a TEST STIMULUS, not a simulation: the numbers are chosen to cover the input space,
+	// and no combination here is claimed to be a trajectory MuJoCo would produce.
+	void RunCarveSweep()
+	{
+		constexpr float kWheelRadiusM = 0.1454f; // matches BoardActor.cpp / mesh/README.md
+		constexpr double kPhaseSeconds[] = {6.0, 12.0, 4.0, 2.0};
+		const char* const kPhaseLabels[] = {
+			"accelerate 0 -> 6 m/s, straight (Idle -> Forward)",
+			"hold ~3 m/s, lateral sweeps full left <-> full right x2 (Left_1/2/3, Right_1/2/3)",
+			"decelerate through zero to -2 m/s (Forward -> Idle -> Backward)",
+			"back to rest (Idle)",
+		};
+
+		sockaddr_in Dest;
+		int Sock = OpenSocketToHost(Dest);
+		if (Sock < 0) { return; }
+
+		const double Dt = kSendIntervalMs / 1000.0;
+		double T = 0.0;
+		double PosX = 0.0;
+		double WheelAngleRad = 0.0;
+		uint64_t Seq = 0;
+		int ReportedPhase = -1;
+
+		double TotalSeconds = 0.0;
+		for (double P : kPhaseSeconds) { TotalSeconds += P; }
+
+		while (T < TotalSeconds)
+		{
+			// Locate the phase and the elapsed time within it.
+			int Phase = 0;
+			double PhaseStart = 0.0;
+			while (Phase < 3 && T >= PhaseStart + kPhaseSeconds[Phase])
+			{
+				PhaseStart += kPhaseSeconds[Phase];
+				++Phase;
+			}
+			const double U = (T - PhaseStart) / kPhaseSeconds[Phase]; // 0..1 within the phase
+
+			if (Phase != ReportedPhase)
+			{
+				ReportedPhase = Phase;
+				std::printf("[fake_sender --carve] %s\n", kPhaseLabels[Phase]);
+				std::fflush(stdout);
+			}
+
+			double SpeedMs = 0.0;
+			double LateralM = 0.0;
+			switch (Phase)
+			{
+				case 0: SpeedMs = 6.0 * U; break;
+				case 1: SpeedMs = 3.0; LateralM = 0.055 * std::sin(U * 2.0 * 2.0 * M_PI); break;
+				case 2: SpeedMs = 6.0 - 8.0 * U; break;
+				default: SpeedMs = -2.0 + 2.0 * U; break;
+			}
+
+			PosX += SpeedMs * Dt;
+			WheelAngleRad += (SpeedMs / kWheelRadiusM) * Dt;
+
+			FBoardState State = BaseState(Seq++, T);
+			State.Pos[0] = static_cast<float>(PosX);
+			State.WheelRateRadS = static_cast<float>(SpeedMs / kWheelRadiusM);
+			State.WheelAngleRad = static_cast<float>(WheelAngleRad);
+			// Overwrite whatever --rider set: this mode owns the rider channel by construction,
+			// so `--carve --rider` is not a contradiction that silently produces a frozen sweep.
+			State.RiderLateralM = static_cast<float>(LateralM);
+			State.RiderForeAftM = static_cast<float>(0.03 * (SpeedMs / 6.0));
+			SendState(Sock, Dest, State);
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(kSendIntervalMs));
+			T += Dt;
+		}
+
+		std::printf("[fake_sender --carve] done -- %llu packets over %.1f s\n",
+			static_cast<unsigned long long>(Seq), TotalSeconds);
+		close(Sock);
+	}
+
 	void RunPositionSweep(int Count)
 	{
 		sockaddr_in Dest;
@@ -365,6 +461,7 @@ int main(int argc, char** argv)
 	bool Rotate = false;
 	bool Burst = false;
 	bool AuthorityCliff = false;
+	bool Carve = false;
 	int Count = 50;
 
 	for (int i = 1; i < argc; ++i)
@@ -394,9 +491,17 @@ int main(int argc, char** argv)
 		{
 			AuthorityCliff = true;
 		}
+		else if (Arg == "--carve")
+		{
+			Carve = true;
+		}
 	}
 
-	if (AuthorityCliff)
+	if (Carve)
+	{
+		RunCarveSweep();
+	}
+	else if (AuthorityCliff)
 	{
 		RunAuthorityCliff();
 	}

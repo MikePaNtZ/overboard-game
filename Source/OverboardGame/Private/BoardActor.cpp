@@ -3,6 +3,10 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimSequence.h"
+#include "Animation/AnimSingleNodeInstance.h"
+#include "Animation/BlendSpace.h"
+#include "Animation/Skeleton.h"
+#include "Engine/SkeletalMesh.h"
 #include "ProceduralMeshComponent.h"
 #include "UObject/ConstructorHelpers.h"
 #include "CoordinateTransform.h"
@@ -21,6 +25,51 @@ namespace
 	// rider's height is set, specifically so the constructor's base pose and
 	// UpdatePoseFromHistory's per-tick offset cannot drift apart the way they briefly did here.
 	constexpr float kRiderDeckHeightCm = 8.3f;
+
+	// Wheel radius, metres -- the MuJoCo primitive cylinder the plant model actually simulates
+	// (145.4 mm; see mesh/README.md, same figure WheelMesh is built at). Turns the wire's
+	// wheel_rate_rad_s into ground speed. This one is NOT a tuning knob: it is a property of the
+	// simulated vehicle, and if it ever disagrees with the model it is a bug, not a preference.
+	constexpr float kWheelRadiusM = 0.1454f;
+
+	// --- DECLARED NON-PHYSICAL GAINS ------------------------------------------------------------
+	//
+	// These two constants are a new non-physical channel and are declared as one, per the standing
+	// rule in docs/mannequin-rider.md and the channel declaration at overboard#163. Read that rule
+	// before touching them: the fore/aft and lateral rider OFFSET is deliberately applied with no
+	// amplification at all, and these gains do NOT change that -- the offset code below is
+	// untouched. What they scale is only WHICH AUTHORED POSE the blendspace selects.
+	//
+	// Why a gain is unavoidable here: the blendspace's axes are in the pack author's units, chosen
+	// for their vehicle, and our signals are in SI units from MuJoCo. Something has to map one onto
+	// the other, and a mapping with no declared reference point is just an undeclared gain with
+	// extra steps. So both are stated as "the value at which the rider reaches FULL authored lean",
+	// which is a claim a reader can disagree with and re-tune, rather than a magic multiplier.
+	//
+	// Neither figure is measured -- they are legibility choices, and the honest thing is to say so.
+	// kRidingFullLeanSpeedMs is set well above the ~1.1 m/s the host currently starts at so normal
+	// riding does not sit pinned at the axis limit. kRidingFullLeanLateralM is the COO's stated
+	// "full lateral" ballast displacement, the same 4 cm figure fake_sender --rider uses.
+	constexpr float kRidingFullLeanSpeedMs = 5.0f;
+	constexpr float kRidingFullLeanLateralM = 0.04f;
+
+	// Maps a normalised [-1, 1] signal onto one authored blendspace axis.
+	//
+	// Handles both axis conventions the pack could plausibly have used, because this code reads
+	// the ranges off the asset at runtime rather than assuming them: a SIGNED axis (Min < 0, e.g.
+	// turn: full-left .. centre .. full-right) maps symmetrically about the midpoint, and an
+	// UNSIGNED axis (Min >= 0, e.g. speed: 0 .. max) maps the positive half only. Getting this
+	// wrong the other way would park a signed axis at its minimum and look like a stuck animation.
+	float MapNormalisedToAxis(float Normalised, float AxisMin, float AxisMax)
+	{
+		if (AxisMin < 0.f)
+		{
+			const float Mid = 0.5f * (AxisMin + AxisMax);
+			const float Half = 0.5f * (AxisMax - AxisMin);
+			return FMath::Clamp(Mid + Normalised * Half, AxisMin, AxisMax);
+		}
+		return FMath::Clamp(AxisMin + FMath::Clamp(Normalised, 0.f, 1.f) * (AxisMax - AxisMin), AxisMin, AxisMax);
+	}
 }
 
 ABoardActor::ABoardActor()
@@ -160,6 +209,120 @@ ABoardActor::ABoardActor()
 		RiderMesh->SetSkeletalMesh(RiderMeshFinder.Object);
 		RiderIdleAnim = RiderIdleAnimFinder.Object; // PlayAnimation happens in BeginPlay, same as the mesh visibility below
 	}
+
+	// Riding blendspace from the Fab pack -- optional by construction. Content/MonoWheel_Board/ is
+	// gitignored (licence, same as Content/Mannequins/), so a fresh clone resolves nothing here and
+	// must still run: bRidingAnimLoaded false simply leaves the rider on the stock idle. Note this
+	// is a SOFT dependency in a way the rider mesh is not -- failing to find it is an expected
+	// state, not an error, and is logged as such in BeginPlay.
+	static ConstructorHelpers::FObjectFinder<UBlendSpace> RidingBlendSpaceFinder(
+		TEXT("/Game/MonoWheel_Board/Animations/UE5/MonoWheel_Board_Riding_BS.MonoWheel_Board_Riding_BS"));
+	bRidingAnimLoaded = RidingBlendSpaceFinder.Succeeded();
+	if (bRidingAnimLoaded)
+	{
+		RiderRidingBlendSpace = RidingBlendSpaceFinder.Object;
+	}
+}
+
+bool ABoardActor::TryStartRidingAnim()
+{
+	if (!RiderRidingBlendSpace || !RiderMesh)
+	{
+		return false;
+	}
+
+	USkeletalMesh* const MeshAsset = RiderMesh->GetSkeletalMeshAsset();
+	USkeleton* const MeshSkeleton = MeshAsset ? MeshAsset->GetSkeleton() : nullptr;
+	USkeleton* const AnimSkeleton = RiderRidingBlendSpace->GetSkeleton();
+	if (!MeshSkeleton || !AnimSkeleton)
+	{
+		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: riding animation skipped -- rider mesh skeleton (%s) or blendspace skeleton (%s) is null."),
+			MeshSkeleton ? *MeshSkeleton->GetName() : TEXT("null"),
+			AnimSkeleton ? *AnimSkeleton->GetName() : TEXT("null"));
+		return false;
+	}
+
+	// Cross-register compatibility unless they are literally the same asset. See the header note:
+	// both directions, deliberately, because the engine's runtime compatibility check is not a
+	// contract this code should assume the direction of.
+	if (MeshSkeleton != AnimSkeleton)
+	{
+		MeshSkeleton->AddCompatibleSkeleton(AnimSkeleton);
+		AnimSkeleton->AddCompatibleSkeleton(MeshSkeleton);
+		UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: registered skeleton compatibility %s <-> %s for the riding animation."),
+			*MeshSkeleton->GetName(), *AnimSkeleton->GetName());
+	}
+
+	RiderMesh->PlayAnimation(RiderRidingBlendSpace, /*bLooping=*/true);
+
+	// VERIFY it took rather than assuming. PlayAnimation returns void and declines silently on a
+	// skeleton it will not accept -- and the silent-decline case is precisely a rider left in the
+	// bind pose, the one outcome docs/mannequin-rider.md calls the most damaging thing a
+	// placeholder rider can do. So the success of this function is defined by what the component
+	// is actually holding afterwards, not by having called the setter.
+	UAnimSingleNodeInstance* const SingleNode = RiderMesh->GetSingleNodeInstance();
+	if (!SingleNode || SingleNode->GetAnimationAsset() != RiderRidingBlendSpace)
+	{
+		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: riding blendspace did not bind to the rider mesh (skeletons %s / %s incompatible at runtime); falling back to the stock idle."),
+			*MeshSkeleton->GetName(), *AnimSkeleton->GetName());
+		return false;
+	}
+
+	// Axis ranges come from the asset, never from a hardcoded guess -- and go straight to the log
+	// so the authored numbers are visible in the session that needs them.
+	const FBlendParameter& AxisX = RiderRidingBlendSpace->GetBlendParameter(0);
+	const FBlendParameter& AxisY = RiderRidingBlendSpace->GetBlendParameter(1);
+	RidingAxisMin = FVector2D(AxisX.Min, AxisY.Min);
+	RidingAxisMax = FVector2D(AxisX.Max, AxisY.Max);
+	UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: riding blendspace bound. Axis0 '%s' [%.2f..%.2f], Axis1 '%s' [%.2f..%.2f]. Gains: full lean at %.2f m/s fore/aft, %.3f m lateral (DECLARED non-physical -- docs/rider-riding-animation.md)."),
+		*AxisX.DisplayName, AxisX.Min, AxisX.Max,
+		*AxisY.DisplayName, AxisY.Min, AxisY.Max,
+		kRidingFullLeanSpeedMs, kRidingFullLeanLateralM);
+	return true;
+}
+
+void ABoardActor::UpdateRidingAnimParams()
+{
+	if (!bRidingAnimActive || !RiderMesh)
+	{
+		return;
+	}
+
+	UAnimSingleNodeInstance* const SingleNode = RiderMesh->GetSingleNodeInstance();
+	if (!SingleNode)
+	{
+		return;
+	}
+
+	// Ground speed from the wheel rate MuJoCo computed. Signed: reverse drives the backward pose,
+	// which is the whole reason the pack ships a Backward sequence.
+	const float SpeedMs = LatestWheelRateRadS * kWheelRadiusM;
+	const float ForwardNormalised = FMath::Clamp(SpeedMs / kRidingFullLeanSpeedMs, -1.f, 1.f);
+
+	// Turn comes from the REAL simulated ballast lateral displacement, not from the player's steer
+	// stick. Steering is already declared a non-physical game channel, so feeding the rider's lean
+	// from the stick would show intent rather than what the board did -- and the two differ exactly
+	// when it matters, e.g. a steer command the controller could not honour. The sign carries the
+	// same local-space Y-mirror convention as the offset code below and everything else attached to
+	// this actor (mesh/README.md).
+	const float TurnNormalised = FMath::Clamp(-LatestRiderLateralM / kRidingFullLeanLateralM, -1.f, 1.f);
+
+	// Which axis is which is NOT assumed: the pack named them, and TryStartRidingAnim logged the
+	// names. Axis0 is the horizontal (Turn) axis and Axis1 the vertical (Forward) axis, which is
+	// the blendspace convention and matches the names dumped from the asset.
+	const float AxisXValue = MapNormalisedToAxis(TurnNormalised, RidingAxisMin.X, RidingAxisMax.X);
+	const float AxisYValue = MapNormalisedToAxis(ForwardNormalised, RidingAxisMin.Y, RidingAxisMax.Y);
+	SingleNode->SetBlendSpacePosition(FVector(AxisXValue, AxisYValue, 0.f));
+
+	// Checkpoint C1: the numbers before the picture. Once a second, so the log stays readable.
+	const double Now = FPlatformTime::Seconds();
+	if (Now - LastRidingTraceLogTimeSeconds >= 1.0)
+	{
+		LastRidingTraceLogTimeSeconds = Now;
+		UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor riding: wheel %.2f rad/s -> %.2f m/s (fwd norm %.2f -> axis1 %.2f) | lateral %.3f m (turn norm %.2f -> axis0 %.2f)"),
+			LatestWheelRateRadS, SpeedMs, ForwardNormalised, AxisYValue,
+			LatestRiderLateralM, TurnNormalised, AxisXValue);
+	}
 }
 
 void ABoardActor::BeginPlay()
@@ -197,11 +360,28 @@ void ABoardActor::BeginPlay()
 
 	// Rider stand-in -- see docs/mannequin-rider.md. All-or-nothing: a rider stuck in the
 	// default T-pose (mesh resolved, animation didn't, or vice versa) is worse than no rider.
+	// Three tiers, most-wanted first, each falling through to the next: authored riding stance ->
+	// stock standing idle -> no rider. Only the LAST tier is a degradation worth warning about;
+	// tier 2 is the documented behaviour of a clone without the (gitignored, licensed) Fab pack.
 	if (bShowRider && bRiderLoaded)
 	{
 		RiderMesh->SetVisibility(true, true);
-		RiderMesh->PlayAnimation(RiderIdleAnim, /*bLooping=*/true);
-		UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: rider visible, playing a stock idle animation (INVENTED pose, not simulated -- see docs/mannequin-rider.md)."));
+
+		bRidingAnimActive = (bUseRidingAnim && bRidingAnimLoaded) ? TryStartRidingAnim() : false;
+
+		if (bRidingAnimActive)
+		{
+			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: rider visible, playing the AUTHORED RIDING STANCE (Fab MonoWheel Board pack). Every joint angle is the pack artist's invention -- the physics is still a rigid ballast with no articulation. Only the POSE SELECTION is driven by simulated values. See docs/rider-riding-animation.md."));
+		}
+		else
+		{
+			RiderMesh->PlayAnimation(RiderIdleAnim, /*bLooping=*/true);
+			if (bUseRidingAnim && !bRidingAnimLoaded)
+			{
+				UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: riding animation requested but Content/MonoWheel_Board/ is not imported locally (expected on a fresh clone -- it is gitignored, see docs/rider-riding-animation.md). Falling back to the stock idle."));
+			}
+			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: rider visible, playing a stock idle animation (INVENTED pose, not simulated -- see docs/mannequin-rider.md)."));
+		}
 	}
 	else if (bShowRider)
 	{
@@ -281,6 +461,14 @@ void ABoardActor::UpdatePoseFromHistory()
 	// interpolation the way the world pose does.
 	LatestRiderForeAftM = History.Last().State.RiderForeAftM;
 	LatestRiderLateralM = History.Last().State.RiderLateralM;
+	LatestWheelRateRadS = History.Last().State.WheelRateRadS;
+
+	// Blend parameters BEFORE the offset below, so the two stay visibly independent: the offset is
+	// the honest un-amplified ballast displacement and always has been, while the blend parameters
+	// are the new declared-gain channel. They read the same source values and must not be confused
+	// for each other.
+	UpdateRidingAnimParams();
+
 	if (bShowRider && bRiderLoaded)
 	{
 		// mm/m -> cm and the same local-space Y-mirror convention as everything else attached to

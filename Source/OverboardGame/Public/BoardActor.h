@@ -21,6 +21,7 @@ class UStaticMeshComponent;
 class UProceduralMeshComponent;
 class USkeletalMeshComponent;
 class UAnimSequence;
+class UBlendSpace;
 
 UCLASS()
 class OVERBOARDGAME_API ABoardActor : public AActor
@@ -213,6 +214,41 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> RiderIdleAnim;
 
+	// --- Riding animation (Fab pack "MonoWheel Board") -----------------------------------------
+	//
+	// Replaces the stock standing idle with an authored ASTRIDE RIDING STANCE, blended by two
+	// values taken off the wire. This closes the "feet together, standing upright" gap
+	// docs/mannequin-rider.md called out as unfixable without authoring a custom pose -- the pack
+	// authored one, so nothing here is hand-animated.
+	//
+	// WHAT IS AND IS NOT SIMULATED, unchanged in spirit from the stock-idle case and restated
+	// because a moving rider invites the assumption that the motion means something: the PHYSICS
+	// still has a rigid ballast on two slide joints. No legs, no arms, no articulation, no balance
+	// of its own. Every joint angle you see is the pack artist's invention. What is real is only
+	// WHEN each pose is selected: the two blendspace axes are driven by wire values MuJoCo
+	// actually computed (wheel rate, ballast lateral displacement), through two DECLARED gain
+	// constants in BoardActor.cpp. The gains are a new non-physical channel and are declared as
+	// such per overboard#163 -- see docs/rider-riding-animation.md.
+	//
+	// Default TRUE on this branch so a verification run needs no editor fiddling. Whether it stays
+	// true on master is the merge decision, not this flag's.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider")
+	bool bUseRidingAnim = true;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UBlendSpace> RiderRidingBlendSpace;
+
+	// True if the blendspace asset resolved in the constructor. NOT the same as bRidingAnimActive:
+	// the asset can resolve and still fail to bind to the rider mesh (skeleton mismatch), which is
+	// exactly the failure this design has to survive gracefully rather than T-pose through.
+	bool bRidingAnimLoaded = false;
+
+	// True only once the blendspace has been VERIFIED to be the mesh's live animation asset --
+	// i.e. PlayAnimation was called AND the single-node instance actually took it. Set in
+	// TryStartRidingAnim, read every tick before pushing blend parameters. If false, the rider is
+	// on the stock idle (or absent) and no blend parameters are pushed at all.
+	bool bRidingAnimActive = false;
+
 private:
 	TUniquePtr<FBoardStateClient> StateClient;
 
@@ -234,6 +270,39 @@ private:
 	// applied), so TryBuildRealMesh can log and arithmetically check the whole assembly's size
 	// instead of asking a human to eyeball it on screen.
 	bool BuildPartFromStl(UProceduralMeshComponent* Component, const FString& StlBaseName, float ExtraYawDeg, FBox& InOutLocalBounds);
+
+	// Binds the riding blendspace to the rider mesh and confirms it took. Returns false (leaving
+	// the caller to fall back to the stock idle) on any of: no blendspace, no rider mesh, no
+	// skeleton, or the single-node instance not actually holding the blendspace afterwards.
+	//
+	// The pack's sequences are bound to the pack's OWN copy of Epic's SK_Mannequin, while the
+	// rider mesh uses the UE 5.7 template's copy -- two distinct assets with identical bone
+	// hierarchies. USkeleton::AddCompatibleSkeleton (a runtime UFUNCTION, not editor-only) is what
+	// lets one play on the other without an editor retarget step, and it is registered BOTH
+	// directions because which side the engine's compatibility check interrogates is an engine
+	// implementation detail this code should not be betting on.
+	bool TryStartRidingAnim();
+
+	// Pushes this tick's two blend parameters. No-op unless bRidingAnimActive. Separated from
+	// UpdatePoseFromHistory so the "what drives the animation" mapping -- the one genuinely new
+	// piece of physics-to-visual arithmetic in this actor -- reads as one function rather than as
+	// four lines buried in the pose interpolator.
+	void UpdateRidingAnimParams();
+
+	// Newest raw wheel rate, rad/s, straight off the wire -- drives the blendspace's forward axis
+	// via the wheel radius. Same newest-raw-sample rule as the ballast displacements below.
+	float LatestWheelRateRadS = 0.f;
+
+	// Blendspace axis ranges, read off the ASSET in TryStartRidingAnim rather than hardcoded.
+	// The pack authored these; this code has never assumed what they are, and logs them on start
+	// so the numbers appear in the Output Log instead of in a comment that could go stale.
+	FVector2D RidingAxisMin = FVector2D::ZeroVector;
+	FVector2D RidingAxisMax = FVector2D::ZeroVector;
+
+	// Throttle for the once-a-second blend-parameter trace (checkpoint C1). Per-tick logging of
+	// two floats at 60+ fps is how an Output Log becomes unreadable during the exact session it
+	// is needed for.
+	double LastRidingTraceLogTimeSeconds = 0.0;
 
 	bool bLatestSampleFallen = false;
 

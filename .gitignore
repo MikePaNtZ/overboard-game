@@ -52,5 +52,20 @@ Content/CityPark/
 # gracefully -- board still renders, no rider, logged loudly -- if this directory is absent.
 Content/Mannequins/
 
+# Content/MonoWheel_Board/ is the Fab pack "MonoWheel Board", licensed to Mike's Epic account.
+# Same reasoning as Content/CityPark/ above -- the Fab EULA grants use in projects, not
+# redistribution of the raw assets, and this repo is PUBLIC. Not re-litigated here.
+#
+# Only a 1.8 MB SUBSET is imported locally, not the 439 MB pack: the ten riding anim sequences,
+# the Riding_BS blendspace, and the pack's own SK_Mannequin skeleton asset (161 KB) that those
+# sequences are bound to. Deliberately NOT copied: the pack's AnimBPs (they pull their inputs
+# through a Blueprint interface and call ACharacter APIs this project's rider does not have --
+# we drive the blendspace from C++ instead), its board mesh, materials, textures, audio, maps,
+# and the 397 MB Demo/ folder. See docs/rider-riding-animation.md for the import command.
+#
+# `ABoardActor` degrades in three tiers if this is absent -- riding blendspace, then the stock
+# MM_Idle, then no rider at all -- so a clone without the pack still builds and still renders.
+Content/MonoWheel_Board/
+
 # macOS Finder noise.
 .DS_Store

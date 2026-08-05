@@ -1,5 +1,13 @@
 # The rider — a stand-in, not a person
 
+> **SUPERSEDED IN PART — an authored riding animation now exists.** This document describes the
+> stock standing idle, which is now the SECOND of three tiers and still exactly what you get
+> without the Fab pack. The riding stance, what drives it, and the two declared non-physical gains
+> it introduces are in **`docs/rider-riding-animation.md`** — read that as well as this. Sections
+> below that this invalidates are marked inline; everything else (the facing derivation, the
+> height constant, the licence reasoning, the honesty framing) still stands and is still the
+> reasoning the new work is built on.
+
 `ABoardActor` can draw the default UE mannequin ("Manny") standing on the deck when
 `bShowRider` is true (the default). It rides along with the board's position and rotation for
 free, because it is a child of the board's transform, and is nudged fore/aft and laterally by the
@@ -50,7 +58,11 @@ a visible human on screen makes that line MORE important to hold onto, not less.
 
 Consequences, stated plainly rather than left implicit:
 
-- **The pose is invented.** `ABoardActor` plays a stock idle animation
+- **The pose is invented.** *(Still true, and now true of a riding stance too — see
+  `docs/rider-riding-animation.md`. The "no stock animation offers a wider standing stance"
+  conclusion below was correct about STOCK content; the Fab MonoWheel Board pack authored one, so
+  the astride stance is no longer out of reach and no longer hand-authored by us.)*
+  `ABoardActor` plays a stock idle animation
   (`/Game/Mannequins/Anims/Unarmed/MM_Idle`) so Manny is not left in the default bind/T-pose,
   which would be the single most damaging thing in the launch footage — a T-posing rider reads as
   a bug, not a placeholder. That idle motion (subtle breathing/shifting) is **not simulated by
@@ -83,6 +95,11 @@ Consequences, stated plainly rather than left implicit:
 If an animation beyond a static idle is ever added, say so explicitly wherever this doc and the
 declaration live — per the standing instruction, that is a launch-blocking documentation change,
 not a footnote.
+
+**One has been added.** `docs/rider-riding-animation.md` is that change: an authored astride
+riding stance, pose-selected by two real simulated values through two declared non-physical gains.
+The `Playable Sim` channel declaration (overboard#163) needs its line before any footage using it
+is published — that is tracked as M6 in that document and is deliberately still open.
 
 ## Toggle
 
