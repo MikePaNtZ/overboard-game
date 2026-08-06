@@ -324,8 +324,12 @@ bool ABoardActor::TryStartRidingAnim()
 
 float ABoardActor::GetRiderBaseHeightCm() const
 {
+	// The root lift is a distance measured on the MESH, so it scales with the mesh. Without the
+	// RiderScale factor here, shrinking the rider by 15% would leave the component origin where it
+	// was while the feet rose 4.7 cm, and he would hover -- a scale knob that silently breaks the
+	// height fix is worse than no scale knob.
 	return bRidingAnimActive
-		? (kRiderDeckHeightCm - kRidingAnimRootLiftCm + RiderRidingHeightTrimCm)
+		? (kRiderDeckHeightCm - (kRidingAnimRootLiftCm * RiderScale) + RiderRidingHeightTrimCm)
 		: kRiderDeckHeightCm;
 }
 
@@ -340,6 +344,7 @@ void ABoardActor::UpdateRidingAnimParams()
 	// draggable in the Details panel mid-PIE. This is an unsettled experiment and the cost of
 	// re-setting a rotation each frame is nothing against the cost of a rebuild per attempt.
 	RiderMesh->SetRelativeRotation(FRotator(0.f, RiderRidingYawDeg, 0.f));
+	RiderMesh->SetRelativeScale3D(FVector(RiderScale));
 
 	UAnimSingleNodeInstance* const SingleNode = RiderMesh->GetSingleNodeInstance();
 	if (!SingleNode)
@@ -369,7 +374,12 @@ void ABoardActor::UpdateRidingAnimParams()
 	// keeps the -1 because it maps a MuJoCo displacement onto this actor's mirrored local Y (see
 	// mesh/README.md). Those two are different questions -- one is a coordinate convention, the
 	// other is an art convention -- and making them agree for tidiness would break one of them.
-	const float TurnNormalised = FMath::Clamp(LatestRiderLateralM / kRidingFullLeanLateralM, -1.f, 1.f);
+	// RidingMaxLeanFraction scales the whole response rather than clipping its top: proportional
+	// everywhere, no dead band, no kink at the limit. Applied here, before the axis swap, so it
+	// always governs the lateral-lean signal whichever blendspace axis that signal ends up on.
+	const float TurnNormalised =
+		FMath::Clamp(LatestRiderLateralM / kRidingFullLeanLateralM, -1.f, 1.f)
+		* FMath::Clamp(RidingMaxLeanFraction, 0.f, 1.f);
 
 	// Which axis is which is NOT assumed: the pack named them, and TryStartRidingAnim logged the
 	// names. Axis0 is the horizontal (Turn) axis and Axis1 the vertical (Forward) axis, which is
@@ -540,6 +550,7 @@ void ABoardActor::BeginPlay()
 		// opens the level without a host or a fake_sender attached.
 		RiderMesh->SetRelativeLocation(FVector(0.f, 0.f, GetRiderBaseHeightCm()));
 		RiderMesh->SetRelativeRotation(bRidingAnimActive ? FRotator(0.f, RiderRidingYawDeg, 0.f) : FRotator::ZeroRotator);
+		RiderMesh->SetRelativeScale3D(FVector(bRidingAnimActive ? RiderScale : 1.f));
 
 		if (bRidingAnimActive)
 		{

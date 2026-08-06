@@ -350,6 +350,34 @@ private:
 	UPROPERTY(EditAnywhere, Category = "Board|Rider")
 	float RiderRidingHeightTrimCm = 0.f;
 
+	// Uniform visual scale on the rider. 0.85 = 15% smaller, requested after the take-5 capture
+	// read as an oversized rider on an undersized board.
+	//
+	// PURELY COSMETIC and it has to stay that way: the rider avatar contributes no mass, no
+	// inertia and no dynamics, so its size cannot reach any physics value. But be clear about what
+	// this is compensating for. A 170 cm rider on the 0.70 m Pint SKIN looks too big largely
+	// because the skin is ~25% shorter than the 0.938 m Openwheel board MuJoCo actually simulates.
+	// Shrinking the rider makes the pair look right by moving FURTHER from the simulated geometry,
+	// not closer -- at 0.85 the rider is ~145 cm, a child's height against the real board. The
+	// alternative fix is bUsePintSkin=false, which restores the true proportions honestly.
+	// See docs/rider-riding-animation.md.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider", meta = (ClampMin = "0.5", ClampMax = "1.5"))
+	float RiderScale = 0.85f;
+
+	// Fraction of the pack's authored lean range the rider is allowed to reach at full command.
+	//
+	// The lean stays strictly PROPORTIONAL to the wire signal -- this scales the whole response,
+	// it does not clip the top of it, so there is no dead band and no kink. It exists because the
+	// pack authored its lean for a unicycle that banks hard, and against the modest yaw our carve
+	// actually achieves the full range read as a rider throwing themselves over far more than the
+	// turn justified.
+	//
+	// A THIRD DECLARED NON-PHYSICAL GAIN, on the same footing as the two in BoardActor.cpp: it
+	// changes how much authored pose a given real displacement buys. Declared in
+	// docs/rider-riding-animation.md.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float RidingMaxLeanFraction = 0.55f;
+
 	// Base height of the rider component above the actor origin, cm. Differs by tier: the riding
 	// animation carries its own ~31 cm root lift that the stock standing idle does not, so one
 	// shared constant cannot plant both poses. See kRidingAnimRootLiftCm.
