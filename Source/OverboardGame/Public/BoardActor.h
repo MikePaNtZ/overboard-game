@@ -405,22 +405,25 @@ private:
 	// Where the rider stands on the deck, cm, in the BOARD's local frame -- X fore/aft, Y across.
 	// Added on top of the real ballast displacement, which is untouched and still un-amplified.
 	//
-	// Y = -10.0, and it is DELIBERATELY OVERCOMPENSATED pending a visual check.
+	// Y = +8.0. POSITIVE. The direction was settled by deliberately overshooting to -10 and
+	// watching it get worse -- the heel sits on the -Y side, so the rider has to move +Y to pull
+	// it back over the deck.
 	//
-	// -3.0 was the measured ankle bias: the animation puts the ankles at board-local Y = +3.4 /
-	// +2.5, ~3 cm off the deck centreline. Cancelling that was free and needed no judgement, but
-	// it left significant heel overhang on right-hand turns -- 3 cm is simply too small to see
-	// against a ~23 cm deck, so it could not confirm even the DIRECTION was right.
+	// The earlier -3.0 was worse than useless, and the reason is worth keeping. The animation puts
+	// the ankles at board-local Y = +3.4 / +2.5, and I read that ~3 cm offset from the centreline
+	// as a defect to cancel. It is far more likely DELIBERATE: the pack biased its rider toward the
+	// toe side precisely so the heel would clear the deck. Cancelling it removed the artist's own
+	// fix for the exact problem being chased, then made it worse.
 	//
-	// -10 is roughly half the deck's half-width, chosen to be unmistakable rather than correct. If
-	// the overhang clears, the direction is confirmed and the value gets dialled back to whatever
-	// actually clears the heel. If it gets worse, the sign is wrong and flipping it is the fix.
-	// Either outcome is decisive, which a 3 cm nudge was never going to be.
+	// "Off-centre" is not the same as "wrong". A stance is not symmetric about the deck -- feet
+	// point one way, so heel and toe have different amounts of deck to spare, and the centreline
+	// is not where a rider stands.
 	//
-	// No value here fully solves heel overhang: a ~25 cm foot on a ~23 cm deck overhangs somewhere
-	// by construction. This buys back deck on the side that shows.
+	// +8 restores that bias and adds to it. No value fully solves heel overhang -- a foot roughly
+	// as long as the deck is wide overhangs somewhere by construction -- so this buys deck back on
+	// the side the chase camera actually sees.
 	UPROPERTY(EditAnywhere, Category = "Board|Rider")
-	FVector2D RiderRidingStanceOffsetCm = FVector2D(0.f, -10.0f);
+	FVector2D RiderRidingStanceOffsetCm = FVector2D(0.f, 8.0f);
 
 	// Raises the rider in proportion to how hard they are leaning, cm at FULL commanded lean.
 	// Still needed -- a static trim cannot track a lean-dependent dip -- but it CANNOT close the
