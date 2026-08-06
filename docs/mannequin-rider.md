@@ -1,5 +1,13 @@
 # The rider — a stand-in, not a person
 
+> **SUPERSEDED IN PART — an authored riding animation now exists.** This document describes the
+> stock standing idle, which is now the SECOND of three tiers and still exactly what you get
+> without the Fab pack. The riding stance, what drives it, and the two declared non-physical gains
+> it introduces are in **`docs/rider-riding-animation.md`** — read that as well as this. Sections
+> below that this invalidates are marked inline; everything else (the facing derivation, the
+> height constant, the licence reasoning, the honesty framing) still stands and is still the
+> reasoning the new work is built on.
+
 `ABoardActor` can draw the default UE mannequin ("Manny") standing on the deck when
 `bShowRider` is true (the default). It rides along with the board's position and rotation for
 free, because it is a child of the board's transform, and is nudged fore/aft and laterally by the
@@ -11,18 +19,44 @@ low deck does.
 
 ## You need the asset first — it is not in this repo, and it ships with the engine
 
-`Content/Mannequins/` is **gitignored and will never be committed.** It is Epic's UE 5.7 template
-mannequin content — the mesh, skeleton, materials, textures and animations — licensed under the
-UE EULA as template content, not licensed for redistribution in an arbitrary public repo, and this
-repo is public. Same reasoning as `Content/CityPark/` (see `docs/citypark-level.md`), not
+`Content/Characters/Mannequins/` is **gitignored and will never be committed.** It is Epic's UE 5.7
+template mannequin content — the mesh, skeleton, materials, textures and animations — licensed under
+the UE EULA as template content, not licensed for redistribution in an arbitrary public repo, and
+this repo is public. Same reasoning as `Content/CityPark/` (see `docs/citypark-level.md`), not
 re-litigated here. It is also ~126 MB, well past this estate's "never check binaries into git"
 rule on size alone.
 
 It ships with every UE 5.7 install, so there is nothing to download:
 
 ```
-rsync -a "/Users/Shared/Epic Games/UE_5.7/Templates/TemplateResources/High/Characters/Content/Mannequins/" Content/Mannequins/
+rsync -a "/Users/Shared/Epic Games/UE_5.7/Templates/TemplateResources/High/Characters/Content/Mannequins/" Content/Characters/Mannequins/
 ```
+
+### The destination path is load-bearing — this doc had it wrong until 2026-08-04
+
+**It must be `Content/Characters/Mannequins/`, not `Content/Mannequins/`.** The earlier version of
+this command dropped the `Characters/` level, and the consequence was invisible for several
+captures.
+
+Epic's template packages record their own object paths as `/Game/Characters/Mannequins/...`
+*inside the asset files*. Imported one level higher, the top-level assets still load happily by
+file path — `ConstructorHelpers::FObjectFinder` succeeds, `bRiderLoaded` goes true, the log
+reports a rider — but every **internal** reference dangles: `SKM_Manny_Simple`'s hard reference to
+its own `SK_Mannequin`, its material instances, its rigs.
+
+A skeletal mesh with a null skeleton **silently ignores `PlayAnimation`**. So the rider stood in
+**bind pose** through every capture, with default materials, while the Output Log said an idle
+animation was playing. Nothing failed loudly, because nothing failed — each individual step
+succeeded at exactly what it checked.
+
+This is very likely what the "corrected against real capture" section below is actually describing.
+"Facing down the road, **arms out like a snowboarder**" is a good description of an A-pose. The
+facing derivation that followed is sound reasoning and is retained, but it was reasoning about a
+symptom of this bug, and **the facing conclusion has not been re-confirmed against footage of an
+actually-posed rider.** Treat it as unverified until it has been.
+
+Found when the riding-animation work (`docs/rider-riding-animation.md`) asked the mesh for its
+skeleton in order to bind a blendspace to it, and got `null`.
 
 Without it, `bShowRider` fails gracefully: no rider is drawn, the board renders exactly as before,
 and the Output Log says so loudly (`ABoardActor: rider mesh/animation did not resolve...`). That
@@ -50,8 +84,12 @@ a visible human on screen makes that line MORE important to hold onto, not less.
 
 Consequences, stated plainly rather than left implicit:
 
-- **The pose is invented.** `ABoardActor` plays a stock idle animation
-  (`/Game/Mannequins/Anims/Unarmed/MM_Idle`) so Manny is not left in the default bind/T-pose,
+- **The pose is invented.** *(Still true, and now true of a riding stance too — see
+  `docs/rider-riding-animation.md`. The "no stock animation offers a wider standing stance"
+  conclusion below was correct about STOCK content; the Fab MonoWheel Board pack authored one, so
+  the astride stance is no longer out of reach and no longer hand-authored by us.)*
+  `ABoardActor` plays a stock idle animation
+  (`/Game/Characters/Mannequins/Anims/Unarmed/MM_Idle`) so Manny is not left in the default bind/T-pose,
   which would be the single most damaging thing in the launch footage — a T-posing rider reads as
   a bug, not a placeholder. That idle motion (subtle breathing/shifting) is **not simulated by
   MuJoCo in any way.** No articulated riding stance was authored — that needs the editor's
@@ -67,7 +105,7 @@ Consequences, stated plainly rather than left implicit:
   arms out like a snowboarder." See the code comment in `ABoardActor`'s constructor for the full
   derivation.) This is not a fully authored stance — it rotates the whole body; it does **not**
   spread his feet apart into an astride stance. The idle animation's own leg pose (feet together,
-  standing upright) is used as-is; no stock animation in `Content/Mannequins/Anims/` offers a
+  standing upright) is used as-is; no stock animation in `Content/Characters/Mannequins/Anims/` offers a
   wider standing stance (checked: idle/attack/walk/jog/jump only, and walk/jog are directional
   cycles, not a static wide pose), and a true wide, planted riding stance needs a custom pose
   authored in the editor — deliberately out of scope this pass, called out as low-priority
@@ -83,6 +121,11 @@ Consequences, stated plainly rather than left implicit:
 If an animation beyond a static idle is ever added, say so explicitly wherever this doc and the
 declaration live — per the standing instruction, that is a launch-blocking documentation change,
 not a footnote.
+
+**One has been added.** `docs/rider-riding-animation.md` is that change: an authored astride
+riding stance, pose-selected by two real simulated values through two declared non-physical gains.
+The `Playable Sim` channel declaration (overboard#163) needs its line before any footage using it
+is published — that is tracked as M6 in that document and is deliberately still open.
 
 ## Toggle
 

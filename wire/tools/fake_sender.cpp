@@ -24,6 +24,16 @@
 //                                to exercise the rider-offset rendering path without a real host
 //                                (which doesn't speak v2 yet either). Combine with other modes,
 //                                e.g. `fake_sender --rider --rotate`.
+//   fake_sender --carve         sweeps wheel rate and rider lateral displacement through their
+//                                full ranges (and past them, to exercise the clamps) so every
+//                                corner of the rider riding blendspace is reached. Use this, not
+//                                --rider, to check the riding animation: --rider holds a FIXED
+//                                displacement, so the turn axis never moves. ~24 s, self-labelling
+//                                per phase. The board also YAWS, BANKS and PITCHES through a
+//                                fabricated carve so the lean can be judged against a turning
+//                                board -- a plausible shape to make the animation legible, NOT a
+//                                trajectory MuJoCo would produce, and no claim may rest on it.
+//                                Overrides --rider's rider channel if both are given.
 //   fake_sender --authority-cliff
 //                               replays ADR-0011's MEASURED full-stick-from-rest cliff at 50Hz:
 //                                the loss-of-authority warning bit at sim_t 3.000s, envelope
@@ -110,6 +120,33 @@ namespace
 	void SetNoseUp(FBoardState& S, double PhiRad)   { S.Quat[0] = static_cast<float>(std::cos(PhiRad / 2.0)); S.Quat[1] = 0.f; S.Quat[2] = static_cast<float>(-std::sin(PhiRad / 2.0)); S.Quat[3] = 0.f; }
 	void SetYawLeft(FBoardState& S, double PhiRad)  { S.Quat[0] = static_cast<float>(std::cos(PhiRad / 2.0)); S.Quat[1] = 0.f; S.Quat[2] = 0.f; S.Quat[3] = static_cast<float>(std::sin(PhiRad / 2.0)); }
 	void SetRollRight(FBoardState& S, double PhiRad){ S.Quat[0] = static_cast<float>(std::cos(PhiRad / 2.0)); S.Quat[1] = static_cast<float>(std::sin(PhiRad / 2.0)); S.Quat[2] = 0.f; S.Quat[3] = 0.f; }
+
+	// Hamilton product, (w,x,y,z) -- the single-axis helpers above cannot express a banked turn,
+	// which needs yaw, roll and pitch at once. Order is yaw * roll * pitch: roll and pitch are
+	// applied in the board's own frame after it has been turned, which is what "banking into a
+	// turn" means.
+	void QuatMul(const double A[4], const double B[4], double Out[4])
+	{
+		Out[0] = A[0]*B[0] - A[1]*B[1] - A[2]*B[2] - A[3]*B[3];
+		Out[1] = A[0]*B[1] + A[1]*B[0] + A[2]*B[3] - A[3]*B[2];
+		Out[2] = A[0]*B[2] - A[1]*B[3] + A[2]*B[0] + A[3]*B[1];
+		Out[3] = A[0]*B[3] + A[1]*B[2] - A[2]*B[1] + A[3]*B[0];
+	}
+
+	// Same per-axis conventions as SetYawLeft / SetRollRight / SetNoseUp above, composed.
+	void SetBankedTurn(FBoardState& S, double YawRad, double RollRad, double PitchRad)
+	{
+		const double Yaw[4]   = { std::cos(YawRad/2.0),   0.0,                    0.0,                     std::sin(YawRad/2.0) };
+		const double Roll[4]  = { std::cos(RollRad/2.0),  std::sin(RollRad/2.0),  0.0,                     0.0 };
+		const double Pitch[4] = { std::cos(PitchRad/2.0), 0.0,                    -std::sin(PitchRad/2.0), 0.0 };
+		double YR[4], Q[4];
+		QuatMul(Yaw, Roll, YR);
+		QuatMul(YR, Pitch, Q);
+		S.Quat[0] = static_cast<float>(Q[0]);
+		S.Quat[1] = static_cast<float>(Q[1]);
+		S.Quat[2] = static_cast<float>(Q[2]);
+		S.Quat[3] = static_cast<float>(Q[3]);
+	}
 
 	// ---- --authority-cliff ------------------------------------------------------------------
 	//
@@ -221,6 +258,149 @@ namespace
 			std::printf("  WARNING: delivered at %.1f Hz, at or under the host's 100 ms staleness\n"
 			            "  cutoff. A run at this rate measures nothing (overboard#191).\n", RateHz);
 		}
+		close(Sock);
+	}
+
+	// ---- --carve ---------------------------------------------------------------------------
+	//
+	// Exercises every corner of the rider riding blendspace (overboard-game rider animation work).
+	// This mode exists because --rider holds a FIXED displacement, so with it the blendspace turn
+	// axis sits at one constant value and the rider never visibly moves -- the Left_2/3 and
+	// Right_2/3 poses would first appear in real footage, never having been seen.
+	//
+	// Deliberately sweeps PAST the client's declared full-lean gains (5.0 m/s, 0.04 m lateral) so
+	// the clamps at both ends get exercised too: an animation that keeps deforming past the axis
+	// limit is a mapping bug, and one that pops on reaching it is a blend bug. Neither is visible
+	// if the stimulus stays politely inside range.
+	//
+	// This is a TEST STIMULUS, not a simulation: the numbers are chosen to cover the input space,
+	// and no combination here is claimed to be a trajectory MuJoCo would produce.
+	void RunCarveSweep()
+	{
+		constexpr float kWheelRadiusM = 0.1454f; // matches BoardActor.cpp / mesh/README.md
+		constexpr double kPhaseSeconds[] = {6.0, 12.0, 4.0, 2.0};
+		const char* const kPhaseLabels[] = {
+			"accelerate 0 -> 6 m/s, straight (Idle -> Forward)",
+			"hold ~3 m/s, banked carve left <-> right x2 -- board turns, rider leans (Left/Right_1/2/3)",
+			"decelerate through zero to -2 m/s (Forward -> Idle -> Backward)",
+			"back to rest (Idle)",
+		};
+
+		sockaddr_in Dest;
+		int Sock = OpenSocketToHost(Dest);
+		if (Sock < 0) { return; }
+
+		const double Dt = kSendIntervalMs / 1000.0;
+		double T = 0.0;
+		double PosX = 0.0;
+		double PosY = 0.0;
+		double YawRad = 0.0;
+		double PrevSpeedMs = 0.0;
+		double WheelAngleRad = 0.0;
+		uint64_t Seq = 0;
+		int ReportedPhase = -1;
+
+		double TotalSeconds = 0.0;
+		for (double P : kPhaseSeconds) { TotalSeconds += P; }
+
+		while (T < TotalSeconds)
+		{
+			// Locate the phase and the elapsed time within it.
+			int Phase = 0;
+			double PhaseStart = 0.0;
+			while (Phase < 3 && T >= PhaseStart + kPhaseSeconds[Phase])
+			{
+				PhaseStart += kPhaseSeconds[Phase];
+				++Phase;
+			}
+			const double U = (T - PhaseStart) / kPhaseSeconds[Phase]; // 0..1 within the phase
+
+			if (Phase != ReportedPhase)
+			{
+				ReportedPhase = Phase;
+				std::printf("[fake_sender --carve] %s\n", kPhaseLabels[Phase]);
+				std::fflush(stdout);
+			}
+
+			double SpeedMs = 0.0;
+			double LateralM = 0.0;
+			switch (Phase)
+			{
+				case 0: SpeedMs = 6.0 * U; break;
+				case 1: SpeedMs = 3.0; LateralM = 0.055 * std::sin(U * 2.0 * 2.0 * M_PI); break;
+				case 2: SpeedMs = 6.0 - 8.0 * U; break;
+				default: SpeedMs = -2.0 + 2.0 * U; break;
+			}
+
+			// --- The board actually turns -----------------------------------------------------
+			//
+			// Earlier this mode drove the board dead straight and swept only the rider channel, to
+			// isolate the blendspace turn axis from board attitude. That isolation cost more than
+			// it bought: a rider leaning hard into a carve while the board tracks arrow-straight
+			// reads as broken even when the animation is perfect, so it could not answer the
+			// question C3 actually asks.
+			//
+			// FABRICATED, and labelled as such wherever it is described. This is a plausible
+			// carve shape chosen to make the animation judgeable, NOT a trajectory MuJoCo would
+			// produce. Nothing measured is claimed here and no control decision may be tuned from
+			// it. The renderer still computes no physics -- a test stimulus inventing a pose
+			// stream is exactly what a test stimulus is for.
+			//
+			// Yaw rate follows the same expression the CLIENT uses for its turn axis
+			// (-lateral/full), so the board turns the way the rider leans by construction rather
+			// than by coincidence. If it comes out mirrored on screen, this sign is the one place
+			// to flip -- and that would be a finding about the client's convention, not about
+			// this file.
+			const double LateralNorm = std::fmax(-1.0, std::fmin(1.0, -LateralM / 0.04));
+			// 0.25 rad/s (~14 deg/s), down from 0.8. At 0.8 the carve was unmistakable but swung
+			// the heading far enough that 12 s of it drove the board clean off the road into the
+			// embankment -- and the board has no collision by design, so it just kept going.
+			constexpr double kMaxYawRateRadS = 0.25;
+			constexpr double kMaxBankRad = 0.26;     // ~15 deg
+			YawRad += LateralNorm * kMaxYawRateRadS * Dt;
+			const double BankRad = LateralNorm * kMaxBankRad;
+
+			// Nose-down under acceleration, nose-up under braking -- from the ACCELERATION, not
+			// the speed, so a steady cruise sits level the way a real board does.
+			const double AccelMs2 = (SpeedMs - PrevSpeedMs) / Dt;
+			PrevSpeedMs = SpeedMs;
+			const double PitchRad = std::fmax(-0.20, std::fmin(0.20, -AccelMs2 * 0.02));
+
+			// THE BOARD'S NOSE IS ITS LOCAL -X. This is MuJoCo's convention for the plant model
+			// ("FORWARD IS -X" in overboard_onewheel.xml), carried through unchanged by
+			// MuJoCoToUnreal. The first version of this integrated +cos/+sin and so drove the board
+			// TAIL-FIRST down the road at positive wheel rate.
+			//
+			// That single sign produced both of the symptoms reported from the first capture, which
+			// is the same pair AOverboardCameraPawn's +180 comment already describes: the chase
+			// camera correctly parks behind the TAIL, so a board travelling tail-first has the
+			// camera ahead of it and appears to ride into the lens -- and a head-on view mirrors
+			// the horizontal axis, so a correct carve reads as leaning away from the turn.
+			//
+			// At yaw 0 the nose points along world -X, so the forward unit vector is
+			// (-cos(yaw), -sin(yaw)) and positive speed must DECREASE X.
+			PosX -= SpeedMs * std::cos(YawRad) * Dt;
+			PosY -= SpeedMs * std::sin(YawRad) * Dt;
+			WheelAngleRad += (SpeedMs / kWheelRadiusM) * Dt;
+
+			FBoardState State = BaseState(Seq++, T);
+			SetBankedTurn(State, YawRad, BankRad, PitchRad);
+			State.Pos[1] = static_cast<float>(PosY);
+			State.Pos[0] = static_cast<float>(PosX);
+			State.WheelRateRadS = static_cast<float>(SpeedMs / kWheelRadiusM);
+			State.WheelAngleRad = static_cast<float>(WheelAngleRad);
+			// Overwrite whatever --rider set: this mode owns the rider channel by construction,
+			// so `--carve --rider` is not a contradiction that silently produces a frozen sweep.
+			State.RiderLateralM = static_cast<float>(LateralM);
+			State.RiderForeAftM = static_cast<float>(0.03 * (SpeedMs / 6.0));
+			SendState(Sock, Dest, State);
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(kSendIntervalMs));
+			T += Dt;
+		}
+
+		std::printf("[fake_sender --carve] done -- %llu packets over %.1f s\n",
+			static_cast<unsigned long long>(Seq), TotalSeconds);
 		close(Sock);
 	}
 
@@ -365,6 +545,7 @@ int main(int argc, char** argv)
 	bool Rotate = false;
 	bool Burst = false;
 	bool AuthorityCliff = false;
+	bool Carve = false;
 	int Count = 50;
 
 	for (int i = 1; i < argc; ++i)
@@ -394,9 +575,17 @@ int main(int argc, char** argv)
 		{
 			AuthorityCliff = true;
 		}
+		else if (Arg == "--carve")
+		{
+			Carve = true;
+		}
 	}
 
-	if (AuthorityCliff)
+	if (Carve)
+	{
+		RunCarveSweep();
+	}
+	else if (AuthorityCliff)
 	{
 		RunAuthorityCliff();
 	}

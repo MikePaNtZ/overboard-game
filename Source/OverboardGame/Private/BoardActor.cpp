@@ -3,6 +3,10 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimSequence.h"
+#include "Animation/AnimSingleNodeInstance.h"
+#include "Animation/BlendSpace.h"
+#include "Animation/Skeleton.h"
+#include "Engine/SkeletalMesh.h"
 #include "ProceduralMeshComponent.h"
 #include "UObject/ConstructorHelpers.h"
 #include "CoordinateTransform.h"
@@ -21,6 +25,67 @@ namespace
 	// rider's height is set, specifically so the constructor's base pose and
 	// UpdatePoseFromHistory's per-tick offset cannot drift apart the way they briefly did here.
 	constexpr float kRiderDeckHeightCm = 8.3f;
+
+	// Wheel radius, metres -- the MuJoCo primitive cylinder the plant model actually simulates
+	// (145.4 mm; see mesh/README.md, same figure WheelMesh is built at). Turns the wire's
+	// wheel_rate_rad_s into ground speed. This one is NOT a tuning knob: it is a property of the
+	// simulated vehicle, and if it ever disagrees with the model it is a bug, not a preference.
+	constexpr float kWheelRadiusM = 0.1454f;
+
+	// --- DECLARED NON-PHYSICAL GAINS ------------------------------------------------------------
+	//
+	// These two constants are a new non-physical channel and are declared as one, per the standing
+	// rule in docs/mannequin-rider.md and the channel declaration at overboard#163. Read that rule
+	// before touching them: the fore/aft and lateral rider OFFSET is deliberately applied with no
+	// amplification at all, and these gains do NOT change that -- the offset code below is
+	// untouched. What they scale is only WHICH AUTHORED POSE the blendspace selects.
+	//
+	// Why a gain is unavoidable here: the blendspace's axes are in the pack author's units, chosen
+	// for their vehicle, and our signals are in SI units from MuJoCo. Something has to map one onto
+	// the other, and a mapping with no declared reference point is just an undeclared gain with
+	// extra steps. So both are stated as "the value at which the rider reaches FULL authored lean",
+	// which is a claim a reader can disagree with and re-tune, rather than a magic multiplier.
+	//
+	// Neither figure is measured -- they are legibility choices, and the honest thing is to say so.
+	// kRidingFullLeanSpeedMs is set well above the ~1.1 m/s the host currently starts at so normal
+	// riding does not sit pinned at the axis limit. kRidingFullLeanLateralM is the COO's stated
+	// "full lateral" ballast displacement, the same 4 cm figure fake_sender --rider uses.
+	constexpr float kRidingFullLeanSpeedMs = 5.0f;
+	constexpr float kRidingFullLeanLateralM = 0.04f;
+
+	// MEASURED, 2026-08-04, by the placement diagnostic in UpdateRidingAnimParams: with the rider
+	// component at kRiderDeckHeightCm, the riding animation's lowest foot sat 39.5 cm above the
+	// actor origin, i.e. 31.2 cm above the deck top it should be standing on.
+	//
+	// This is a property of the ANIMATION, not of our board, and that is why it cannot be folded
+	// into kRiderDeckHeightCm: the stock standing idle puts the mannequin's feet at the mesh
+	// origin, so sharing one constant would plant the riding pose correctly and bury the idle pose
+	// 31 cm underground. The two poses genuinely have different root-to-foot distances and need
+	// two numbers.
+	//
+	// It carries no information about the stance. An earlier comment read 31 cm as "a unicycle's
+	// pedal height"; it is simply where the pack placed the animation root relative to their own
+	// vehicle, and says nothing about how the rider stands. See the corrected note in
+	// docs/rider-riding-animation.md.
+	constexpr float kRidingAnimRootLiftCm = 31.2f;
+
+	// Maps a normalised [-1, 1] signal onto one authored blendspace axis.
+	//
+	// Handles both axis conventions the pack could plausibly have used, because this code reads
+	// the ranges off the asset at runtime rather than assuming them: a SIGNED axis (Min < 0, e.g.
+	// turn: full-left .. centre .. full-right) maps symmetrically about the midpoint, and an
+	// UNSIGNED axis (Min >= 0, e.g. speed: 0 .. max) maps the positive half only. Getting this
+	// wrong the other way would park a signed axis at its minimum and look like a stuck animation.
+	float MapNormalisedToAxis(float Normalised, float AxisMin, float AxisMax)
+	{
+		if (AxisMin < 0.f)
+		{
+			const float Mid = 0.5f * (AxisMin + AxisMax);
+			const float Half = 0.5f * (AxisMax - AxisMin);
+			return FMath::Clamp(Mid + Normalised * Half, AxisMin, AxisMax);
+		}
+		return FMath::Clamp(AxisMin + FMath::Clamp(Normalised, 0.f, 1.f) * (AxisMax - AxisMin), AxisMin, AxisMax);
+	}
 }
 
 ABoardActor::ABoardActor()
@@ -152,13 +217,335 @@ ABoardActor::ABoardActor()
 	RiderMesh->SetRelativeLocation(FVector(0.f, 0.f, kRiderDeckHeightCm));
 	RiderMesh->SetRelativeRotation(FRotator::ZeroRotator);
 
-	static ConstructorHelpers::FObjectFinder<USkeletalMesh> RiderMeshFinder(TEXT("/Game/Mannequins/Meshes/SKM_Manny_Simple.SKM_Manny_Simple"));
-	static ConstructorHelpers::FObjectFinder<UAnimSequence> RiderIdleAnimFinder(TEXT("/Game/Mannequins/Anims/Unarmed/MM_Idle.MM_Idle"));
+	// /Game/Characters/Mannequins/, NOT /Game/Mannequins/, and the extra directory level is
+	// load-bearing rather than cosmetic. Epic's template mannequin packages record their own
+	// object paths as /Game/Characters/Mannequins/... internally, so importing them one level
+	// higher leaves every INTERNAL reference dangling while the top-level asset still loads
+	// happily by file path. The visible result is a mesh that resolves here, passes the
+	// bRiderLoaded check, renders -- and has a NULL skeleton, because SKM_Manny_Simple's hard
+	// reference to its own SK_Mannequin cannot be found.
+	//
+	// A skeletal mesh with a null skeleton silently ignores PlayAnimation. That is how the rider
+	// stood in bind pose through every capture up to this point while the log cheerfully reported
+	// an idle animation playing, and it is very likely what the first footage note in
+	// docs/mannequin-rider.md was actually describing as "arms out like a snowboarder" -- an
+	// A-pose, not a facing error. The materials were dangling for the same reason.
+	static ConstructorHelpers::FObjectFinder<USkeletalMesh> RiderMeshFinder(TEXT("/Game/Characters/Mannequins/Meshes/SKM_Manny_Simple.SKM_Manny_Simple"));
+	static ConstructorHelpers::FObjectFinder<UAnimSequence> RiderIdleAnimFinder(TEXT("/Game/Characters/Mannequins/Anims/Unarmed/MM_Idle.MM_Idle"));
 	bRiderLoaded = RiderMeshFinder.Succeeded() && RiderIdleAnimFinder.Succeeded();
 	if (bRiderLoaded)
 	{
 		RiderMesh->SetSkeletalMesh(RiderMeshFinder.Object);
 		RiderIdleAnim = RiderIdleAnimFinder.Object; // PlayAnimation happens in BeginPlay, same as the mesh visibility below
+	}
+
+	// Riding blendspace from the Fab pack -- optional by construction. Content/MonoWheel_Board/ is
+	// gitignored (licence, same as Content/Characters/Mannequins/), so a fresh clone resolves nothing here and
+	// must still run: bRidingAnimLoaded false simply leaves the rider on the stock idle. Note this
+	// is a SOFT dependency in a way the rider mesh is not -- failing to find it is an expected
+	// state, not an error, and is logged as such in BeginPlay.
+	static ConstructorHelpers::FObjectFinder<UBlendSpace> RidingBlendSpaceFinder(
+		TEXT("/Game/MonoWheel_Board/Animations/UE5/MonoWheel_Board_Riding_BS.MonoWheel_Board_Riding_BS"));
+	bRidingAnimLoaded = RidingBlendSpaceFinder.Succeeded();
+	if (bRidingAnimLoaded)
+	{
+		RiderRidingBlendSpace = RidingBlendSpaceFinder.Object;
+	}
+}
+
+bool ABoardActor::TryStartRidingAnim()
+{
+	if (!RiderRidingBlendSpace || !RiderMesh)
+	{
+		return false;
+	}
+
+	USkeletalMesh* const MeshAsset = RiderMesh->GetSkeletalMeshAsset();
+	USkeleton* const MeshSkeleton = MeshAsset ? MeshAsset->GetSkeleton() : nullptr;
+	USkeleton* const AnimSkeleton = RiderRidingBlendSpace->GetSkeleton();
+	if (!MeshSkeleton || !AnimSkeleton)
+	{
+		// Distinguish the three failures explicitly. Collapsing them into one "something was null"
+		// line cost a diagnostic round-trip once already: a mesh that loads but whose SKELETON is
+		// null is a dangling-internal-reference symptom (wrong import path -- see the finder above)
+		// and looks nothing like a mesh that simply is not there, but they logged identically.
+		if (!MeshAsset)
+		{
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: riding animation skipped -- the rider component has NO skeletal mesh asset at all."));
+		}
+		else if (!MeshSkeleton)
+		{
+			UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor: riding animation skipped -- rider mesh '%s' loaded but its SKELETON IS NULL. That means its internal asset references are dangling, which almost always means the mannequin content was imported to the wrong path: it must be Content/Characters/Mannequins/ (the packages record themselves as /Game/Characters/Mannequins/...), NOT Content/Mannequins/. NOTE: this also means the stock idle is not playing either and the rider is in BIND POSE -- see docs/mannequin-rider.md."),
+				*MeshAsset->GetName());
+		}
+		else
+		{
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: riding animation skipped -- the riding blendspace has no skeleton."));
+		}
+		return false;
+	}
+
+	// Cross-register compatibility unless they are literally the same asset. See the header note:
+	// both directions, deliberately, because the engine's runtime compatibility check is not a
+	// contract this code should assume the direction of.
+	if (MeshSkeleton != AnimSkeleton)
+	{
+		MeshSkeleton->AddCompatibleSkeleton(AnimSkeleton);
+		AnimSkeleton->AddCompatibleSkeleton(MeshSkeleton);
+		UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: registered skeleton compatibility %s <-> %s for the riding animation."),
+			*MeshSkeleton->GetName(), *AnimSkeleton->GetName());
+	}
+
+	RiderMesh->PlayAnimation(RiderRidingBlendSpace, /*bLooping=*/true);
+
+	// VERIFY it took rather than assuming. PlayAnimation returns void and declines silently on a
+	// skeleton it will not accept -- and the silent-decline case is precisely a rider left in the
+	// bind pose, the one outcome docs/mannequin-rider.md calls the most damaging thing a
+	// placeholder rider can do. So the success of this function is defined by what the component
+	// is actually holding afterwards, not by having called the setter.
+	UAnimSingleNodeInstance* const SingleNode = RiderMesh->GetSingleNodeInstance();
+	if (!SingleNode || SingleNode->GetAnimationAsset() != RiderRidingBlendSpace)
+	{
+		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: riding blendspace did not bind to the rider mesh (skeletons %s / %s incompatible at runtime); falling back to the stock idle."),
+			*MeshSkeleton->GetName(), *AnimSkeleton->GetName());
+		return false;
+	}
+
+	// Axis ranges come from the asset, never from a hardcoded guess -- and go straight to the log
+	// so the authored numbers are visible in the session that needs them.
+	const FBlendParameter& AxisX = RiderRidingBlendSpace->GetBlendParameter(0);
+	const FBlendParameter& AxisY = RiderRidingBlendSpace->GetBlendParameter(1);
+	RidingAxisMin = FVector2D(AxisX.Min, AxisY.Min);
+	RidingAxisMax = FVector2D(AxisX.Max, AxisY.Max);
+	UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: riding blendspace bound. Axis0 '%s' [%.2f..%.2f], Axis1 '%s' [%.2f..%.2f]. Gains: full lean at %.2f m/s fore/aft, %.3f m lateral (DECLARED non-physical -- docs/rider-riding-animation.md)."),
+		*AxisX.DisplayName, AxisX.Min, AxisX.Max,
+		*AxisY.DisplayName, AxisY.Min, AxisY.Max,
+		kRidingFullLeanSpeedMs, kRidingFullLeanLateralM);
+	return true;
+}
+
+float ABoardActor::GetRiderBaseHeightCm() const
+{
+	// The root lift is a distance measured on the MESH, so it scales with the mesh. Without the
+	// RiderScale factor here, shrinking the rider by 15% would leave the component origin where it
+	// was while the feet rose 4.7 cm, and he would hover -- a scale knob that silently breaks the
+	// height fix is worse than no scale knob.
+	if (!bRidingAnimActive)
+	{
+		return kRiderDeckHeightCm;
+	}
+
+	// Lean-proportional lift, SIGNED. LastLeanFractionOfMax is the commanded lean in -1..+1, so
+	// this raises the rider going into the turn that buries the rear foot and lowers them going
+	// into the turn that lifts it. A magnitude-driven version pushed up in both directions and so
+	// could only ever fix one of them -- see the header note.
+	const float LeanLiftCm = RiderRidingLeanDipCompCm * LastLeanFractionOfMax;
+	return kRiderDeckHeightCm - (kRidingAnimRootLiftCm * RiderScale) + RiderRidingHeightTrimCm + LeanLiftCm;
+}
+
+void ABoardActor::UpdateRidingAnimParams()
+{
+	if (!bRidingAnimActive || !RiderMesh)
+	{
+		return;
+	}
+
+	// Applied every tick rather than once in BeginPlay, deliberately: it makes the stance knobs
+	// draggable in the Details panel mid-PIE. This is an unsettled experiment and the cost of
+	// re-setting a rotation each frame is nothing against the cost of a rebuild per attempt.
+	RiderMesh->SetRelativeRotation(FRotator(0.f, RiderRidingYawDeg, 0.f));
+	RiderMesh->SetRelativeScale3D(FVector(RiderScale));
+
+	UAnimSingleNodeInstance* const SingleNode = RiderMesh->GetSingleNodeInstance();
+	if (!SingleNode)
+	{
+		return;
+	}
+
+	// Ground speed from the wheel rate MuJoCo computed. Signed: reverse drives the backward pose,
+	// which is the whole reason the pack ships a Backward sequence.
+	const float SpeedMs = LatestWheelRateRadS * kWheelRadiusM;
+	const float ForwardNormalised = FMath::Clamp(SpeedMs / kRidingFullLeanSpeedMs, -1.f, 1.f);
+
+	// Turn comes from the REAL simulated ballast lateral displacement, not from the player's steer
+	// stick. Steering is already declared a non-physical game channel, so feeding the rider's lean
+	// from the stick would show intent rather than what the board did -- and the two differ exactly
+	// when it matters, e.g. a steer command the controller could not honour. The sign carries the
+	// same local-space Y-mirror convention as the offset code below and everything else attached to
+	// this actor (mesh/README.md).
+	//
+	// SIGN: positive here selects the pack's LEFT poses. Which way the pack authored Left_1/2/3 to
+	// lean is a property of the art, not something derivable from the wire convention -- so this
+	// sign can only be settled by watching it, and it was settled on 2026-08-06 once the board was
+	// finally travelling nose-first with the rider facing forward. Before that every observation
+	// of it came through the tail-first mirror and was worthless.
+	//
+	// It is deliberately NOT the same sign as the rider's lateral OFFSET a few lines below, which
+	// keeps the -1 because it maps a MuJoCo displacement onto this actor's mirrored local Y (see
+	// mesh/README.md). Those two are different questions -- one is a coordinate convention, the
+	// other is an art convention -- and making them agree for tidiness would break one of them.
+	// RidingMaxLeanFraction scales the whole response rather than clipping its top: proportional
+	// everywhere, no dead band, no kink at the limit. Applied here, before the axis swap, so it
+	// always governs the lateral-lean signal whichever blendspace axis that signal ends up on.
+	const float LeanFraction = FMath::Clamp(LatestRiderLateralM / kRidingFullLeanLateralM, -1.f, 1.f);
+	const float TurnNormalised = LeanFraction * FMath::Clamp(RidingMaxLeanFraction, 0.f, 1.f);
+
+	// Drives the signed lean-proportional lift in GetRiderBaseHeightCm. SIGNED, deliberately: the
+	// rear foot sinks leaning one way and rises leaning the other, so the compensation has to
+	// change sign with it rather than push up regardless.
+	// ONE-SIDED, clamped to non-negative. This is the third model for this term and the first that
+	// matches the actual failure.
+	//
+	// |lean| was wrong: it pushed UP in both turn directions, so it fixed the burying turn and
+	// worsened the lifting one.
+	//
+	// A symmetric signed lift was worse: it does not merely decline to help on the other side, it
+	// actively LOWERS the rider there. That is why both signed runs measured a low foot of -12 to
+	// -13.7 cm against the magnitude version's -7.6 -- 5 cm of deliberate downward push on one
+	// turn. Flipping the sign only chose which turn got the penalty, and put it on the one the
+	// camera sees.
+	//
+	// Clamped, the compensation raises the rider going into the turn that buries the rear foot and
+	// does nothing at all otherwise. It can no longer make any pose worse than doing nothing.
+	//
+	// The direction is NOT negated: with the negation the rear foot dug deeper on right-hand turns,
+	// so positive lean is the burying direction and positive lean is what earns the lift.
+	LastLeanFractionOfMax = FMath::Max(0.f, LeanFraction);
+	LeanSignForDiagnostic = LeanFraction; // unclamped, for the per-direction diagnostic only
+
+	// Which axis is which is NOT assumed: the pack named them, and TryStartRidingAnim logged the
+	// names. Axis0 is the horizontal (Turn) axis and Axis1 the vertical (Forward) axis, which is
+	// the blendspace convention and matches the names dumped from the asset.
+	//
+	// bSwapRidingAxes exchanges which signal reaches which axis -- see the header note. With the
+	// rider yawed 90 degrees to stand across the board, their body-forward axis IS our lateral
+	// axis and their body-lateral axis IS our direction of travel, so the drivers have to swap
+	// with them or the rider leans at right angles to what the board is doing.
+	const float TurnAxisDriver = bSwapRidingAxes ? ForwardNormalised : TurnNormalised;
+	const float ForwardAxisDriver = bSwapRidingAxes ? TurnNormalised : ForwardNormalised;
+
+	const float AxisXValue = MapNormalisedToAxis(TurnAxisDriver, RidingAxisMin.X, RidingAxisMax.X);
+	const float AxisYValue = MapNormalisedToAxis(ForwardAxisDriver, RidingAxisMin.Y, RidingAxisMax.Y);
+	SingleNode->SetBlendSpacePosition(FVector(AxisXValue, AxisYValue, 0.f));
+
+	// One-shot placement diagnostic. First real footage showed the rider and the board plainly not
+	// belonging to each other, and "looks about a foot too high" is not a number anyone can fix a
+	// constant with. Same convention TryBuildRealMesh already uses on the board geometry: measure
+	// it, print it, check the arithmetic -- rather than asking a human to judge a distance by eye
+	// in a perspective projection, which is exactly the judgement a screenshot is worst at.
+	//
+	// Deferred to the first tick with a posed skeleton rather than done in BeginPlay: bone
+	// transforms are meaningless until the animation has evaluated at least once, and reading them
+	// too early would report the bind pose while claiming to describe the riding pose.
+	// Running minimum of the lowest foot, tracked EVERY tick rather than sampled once.
+	//
+	// kRidingAnimRootLiftCm was measured from a single pose, and that is exactly why feet dive
+	// under the deck while turning: the blendspace's turn poses drop a foot lower than the centre
+	// pose it was measured from. One sample cannot see that; a running minimum over a --carve
+	// sweep can, and reports the trim needed to clear the worst case rather than the average one.
+	if (RiderMesh->GetNumBones() > 0)
+	{
+		const int32 FootLIdx = RiderMesh->GetBoneIndex(TEXT("foot_l"));
+		const int32 FootRIdx = RiderMesh->GetBoneIndex(TEXT("foot_r"));
+		if (FootLIdx != INDEX_NONE && FootRIdx != INDEX_NONE)
+		{
+			const FTransform ToActor = GetActorTransform();
+			const float LowestNow = FMath::Min(
+				ToActor.InverseTransformPosition(RiderMesh->GetBoneLocation(TEXT("foot_l"), EBoneSpaces::WorldSpace)).Z,
+				ToActor.InverseTransformPosition(RiderMesh->GetBoneLocation(TEXT("foot_r"), EBoneSpaces::WorldSpace)).Z);
+
+			// Report only on a meaningful new low, so a carve sweep prints a short descending
+			// series ending at the worst case instead of a line per frame.
+			const float HighestNow = FMath::Max(
+				ToActor.InverseTransformPosition(RiderMesh->GetBoneLocation(TEXT("foot_l"), EBoneSpaces::WorldSpace)).Z,
+				ToActor.InverseTransformPosition(RiderMesh->GetBoneLocation(TEXT("foot_r"), EBoneSpaces::WorldSpace)).Z);
+
+			// Per-direction minima. Only sampled near full lean, so the reading describes the pose
+			// that actually matters rather than being dragged toward neutral by the whole run.
+			if (LastLeanFractionOfMax > 0.35f && LowestNow < MinFootZLeanPosCm)
+			{
+				MinFootZLeanPosCm = LowestNow;
+			}
+			else if (LeanSignForDiagnostic < -0.35f && LowestNow < MinFootZLeanNegCm)
+			{
+				MinFootZLeanNegCm = LowestNow;
+			}
+
+			if (LowestNow < MinFootZObservedCm - 0.5f)
+			{
+				MinFootZObservedCm = LowestNow;
+				UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER FEET: new LOWEST foot %.1f cm (deck top %.1f cm) -> clearance %+.1f cm. BY DIRECTION: lean+ (lifted turn) %+.1f cm, lean- (unlifted turn) %+.1f cm."),
+					LowestNow, kRiderDeckHeightCm, LowestNow - kRiderDeckHeightCm,
+					(MinFootZLeanPosCm == TNumericLimits<float>::Max()) ? 0.f : MinFootZLeanPosCm - kRiderDeckHeightCm,
+					(MinFootZLeanNegCm == TNumericLimits<float>::Max()) ? 0.f : MinFootZLeanNegCm - kRiderDeckHeightCm);
+			}
+			// A foot ABOVE the deck is what reads as "the back foot comes off the board", and the
+			// minimum alone could never see it.
+			if (HighestNow > MaxFootZObservedCm + 0.5f)
+			{
+				MaxFootZObservedCm = HighestNow;
+				UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER FEET: new HIGHEST foot %.1f cm (deck top %.1f cm) -> %+.1f cm.%s"),
+					HighestNow, kRiderDeckHeightCm, HighestNow - kRiderDeckHeightCm,
+					(HighestNow - kRiderDeckHeightCm) > 3.f ? TEXT(" FOOT IS OFF THE DECK.") : TEXT(""));
+			}
+		}
+	}
+
+	// Re-arms whenever the yaw knob moves, so dragging it in the Details panel produces a fresh
+	// measurement per attempt instead of one stale reading from the first configuration tried.
+	if (!FMath::IsNearlyEqual(RiderRidingYawDeg, LastDiagnosticYawDeg))
+	{
+		LastDiagnosticYawDeg = RiderRidingYawDeg;
+		bLoggedRiderPlacementDiagnostic = false;
+		MinFootZObservedCm = TNumericLimits<float>::Max(); // else the previous yaw's worst case leaks in
+	}
+
+	if (!bLoggedRiderPlacementDiagnostic && RiderMesh->GetNumBones() > 0)
+	{
+		const int32 FootLIndex = RiderMesh->GetBoneIndex(TEXT("foot_l"));
+		const int32 FootRIndex = RiderMesh->GetBoneIndex(TEXT("foot_r"));
+		if (FootLIndex != INDEX_NONE && FootRIndex != INDEX_NONE)
+		{
+			bLoggedRiderPlacementDiagnostic = true;
+
+			// Everything in the ACTOR's local frame, because that is the frame kRiderDeckHeightCm
+			// is expressed in and therefore the only frame in which the fix is a single number.
+			const FTransform ActorToWorld = GetActorTransform();
+			const FVector FootLLocal = ActorToWorld.InverseTransformPosition(RiderMesh->GetBoneLocation(TEXT("foot_l"), EBoneSpaces::WorldSpace));
+			const FVector FootRLocal = ActorToWorld.InverseTransformPosition(RiderMesh->GetBoneLocation(TEXT("foot_r"), EBoneSpaces::WorldSpace));
+			const float LowestFootZ = FMath::Min(FootLLocal.Z, FootRLocal.Z);
+			const float FootSeparationY = FMath::Abs(FootLLocal.Y - FootRLocal.Y);
+
+			const FBoxSphereBounds RiderBounds = RiderMesh->CalcBounds(RiderMesh->GetComponentTransform());
+			const float RiderHeightCm = RiderBounds.BoxExtent.Z * 2.f;
+
+			const float FootSeparationX = FMath::Abs(FootLLocal.X - FootRLocal.X);
+
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT (yaw %.0f deg): lowest foot sits %.1f cm above the actor origin; deck top is %.1f cm. RESIDUAL ERROR = %+.1f cm (should now be ~0 -- kRidingAnimRootLiftCm = %.1f cm is already applied)."),
+				RiderRidingYawDeg, LowestFootZ, kRiderDeckHeightCm, LowestFootZ - kRiderDeckHeightCm, kRidingAnimRootLiftCm);
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT: rider height %.1f cm (expect ~180; a 2x error here would be a SCALE bug, not an offset bug). Board deck is 93.8 cm long, 23.2 cm wide."),
+				RiderHeightCm);
+			// Reports which way the feet are spread in THIS board's frame, and nothing more.
+			//
+			// It deliberately no longer labels a Y-dominant spread as a "unicycle stance". It was
+			// doing so, and that inference was wrong: a spread along Y only means the animation's
+			// frame is rotated relative to ours, which the yaw corrects. The stance question is
+			// answered by the MAGNITUDE (foot centres ~48 cm apart is a rider on a board, not on
+			// unicycle pedals), not by which axis it falls on before alignment.
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT: foot spread X (fore/aft) = %.1f cm, Y (lateral) = %.1f cm. WANT X-dominant -- feet fore and aft on the footpads. Y-dominant means the rider yaw has not aligned the animation's frame with this board's, NOT that the stance is wrong. foot_l (%.1f, %.1f, %.1f), foot_r (%.1f, %.1f, %.1f)."),
+				FootSeparationX, FootSeparationY,
+				FootLLocal.X, FootLLocal.Y, FootLLocal.Z, FootRLocal.X, FootRLocal.Y, FootRLocal.Z);
+		}
+	}
+
+	// Checkpoint C1: the numbers before the picture. Once a second, so the log stays readable.
+	const double Now = FPlatformTime::Seconds();
+	if (Now - LastRidingTraceLogTimeSeconds >= 1.0)
+	{
+		LastRidingTraceLogTimeSeconds = Now;
+		UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor riding: wheel %.2f rad/s -> %.2f m/s (fwd norm %.2f -> axis1 %.2f) | lateral %.3f m (turn norm %.2f -> axis0 %.2f)"),
+			LatestWheelRateRadS, SpeedMs, ForwardNormalised, AxisYValue,
+			LatestRiderLateralM, TurnNormalised, AxisXValue);
 	}
 }
 
@@ -197,15 +584,51 @@ void ABoardActor::BeginPlay()
 
 	// Rider stand-in -- see docs/mannequin-rider.md. All-or-nothing: a rider stuck in the
 	// default T-pose (mesh resolved, animation didn't, or vice versa) is worse than no rider.
+	// Three tiers, most-wanted first, each falling through to the next: authored riding stance ->
+	// stock standing idle -> no rider. Only the LAST tier is a degradation worth warning about;
+	// tier 2 is the documented behaviour of a clone without the (gitignored, licensed) Fab pack.
 	if (bShowRider && bRiderLoaded)
 	{
 		RiderMesh->SetVisibility(true, true);
-		RiderMesh->PlayAnimation(RiderIdleAnim, /*bLooping=*/true);
-		UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: rider visible, playing a stock idle animation (INVENTED pose, not simulated -- see docs/mannequin-rider.md)."));
+
+		bRidingAnimActive = (bUseRidingAnim && bRidingAnimLoaded) ? TryStartRidingAnim() : false;
+
+		// Apply the riding stance transform HERE, not only in the per-tick path.
+		//
+		// Everything that positions the rider used to live inside UpdatePoseFromHistory, which
+		// returns early until the first wire packet arrives. That left the rider sitting in the
+		// constructor's stock-idle transform -- yaw 0 and 31.2 cm too high -- for the whole
+		// interval between pressing Play and the first packet, which with no sender running is
+		// forever. Visible symptom: "the rider doesn't come up facing the right way until I run
+		// carve." The height was wrong the entire time too, just less obviously.
+		//
+		// The rest state has to be correct on its own, because it is the state anyone sees who
+		// opens the level without a host or a fake_sender attached.
+		// Stance offset included here too, not just in the per-tick path. Without it the rest state
+		// differs from every subsequent frame, and the placement diagnostic -- which fires on the
+		// first posed tick -- measured the un-offset pose and reported the bias as still present
+		// when it had in fact been corrected.
+		RiderMesh->SetRelativeLocation(FVector(RiderRidingStanceOffsetCm.X, RiderRidingStanceOffsetCm.Y, GetRiderBaseHeightCm()));
+		RiderMesh->SetRelativeRotation(bRidingAnimActive ? FRotator(0.f, RiderRidingYawDeg, 0.f) : FRotator::ZeroRotator);
+		RiderMesh->SetRelativeScale3D(FVector(bRidingAnimActive ? RiderScale : 1.f));
+
+		if (bRidingAnimActive)
+		{
+			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: rider visible, playing the AUTHORED RIDING STANCE (Fab MonoWheel Board pack). Every joint angle is the pack artist's invention -- the physics is still a rigid ballast with no articulation. Only the POSE SELECTION is driven by simulated values. See docs/rider-riding-animation.md."));
+		}
+		else
+		{
+			RiderMesh->PlayAnimation(RiderIdleAnim, /*bLooping=*/true);
+			if (bUseRidingAnim && !bRidingAnimLoaded)
+			{
+				UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: riding animation requested but Content/MonoWheel_Board/ is not imported locally (expected on a fresh clone -- it is gitignored, see docs/rider-riding-animation.md). Falling back to the stock idle."));
+			}
+			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: rider visible, playing a stock idle animation (INVENTED pose, not simulated -- see docs/mannequin-rider.md)."));
+		}
 	}
 	else if (bShowRider)
 	{
-		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: rider requested (bShowRider) but the mannequin mesh/animation did not resolve -- Content/Mannequins/ is most likely not copied in locally (see docs/mannequin-rider.md). Board renders without a rider."));
+		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: rider requested (bShowRider) but the mannequin mesh/animation did not resolve -- Content/Characters/Mannequins/ is most likely not copied in locally (see docs/mannequin-rider.md). Board renders without a rider."));
 	}
 
 	StateClient = MakeUnique<FBoardStateClient>();
@@ -281,15 +704,26 @@ void ABoardActor::UpdatePoseFromHistory()
 	// interpolation the way the world pose does.
 	LatestRiderForeAftM = History.Last().State.RiderForeAftM;
 	LatestRiderLateralM = History.Last().State.RiderLateralM;
+	LatestWheelRateRadS = History.Last().State.WheelRateRadS;
+
+	// Blend parameters BEFORE the offset below, so the two stay visibly independent: the offset is
+	// the honest un-amplified ballast displacement and always has been, while the blend parameters
+	// are the new declared-gain channel. They read the same source values and must not be confused
+	// for each other.
+	UpdateRidingAnimParams();
+
 	if (bShowRider && bRiderLoaded)
 	{
 		// mm/m -> cm and the same local-space Y-mirror convention as everything else attached to
 		// this actor (see mesh/README.md) -- these are LOCAL displacements in the board's own
 		// frame, not world positions, so MuJoCoToUnreal's world-pose transform does not apply
 		// here; the local-mirror rule does. NO amplification -- see docs/mannequin-rider.md.
-		const float OffsetXCm = LatestRiderForeAftM * 100.f;
-		const float OffsetYCm = -LatestRiderLateralM * 100.f;
-		RiderMesh->SetRelativeLocation(FVector(OffsetXCm, OffsetYCm, kRiderDeckHeightCm));
+		// Real ballast displacement, still with NO amplification. The stance offset is a separate,
+		// declared cosmetic term added on top -- it moves where the rider stands, it does not
+		// scale what the physics reported.
+		const float OffsetXCm = LatestRiderForeAftM * 100.f + RiderRidingStanceOffsetCm.X;
+		const float OffsetYCm = -LatestRiderLateralM * 100.f + RiderRidingStanceOffsetCm.Y;
+		RiderMesh->SetRelativeLocation(FVector(OffsetXCm, OffsetYCm, GetRiderBaseHeightCm()));
 	}
 
 	const double RenderTime = FPlatformTime::Seconds() - static_cast<double>(RenderDelaySeconds);

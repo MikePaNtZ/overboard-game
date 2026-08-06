@@ -21,6 +21,7 @@ class UStaticMeshComponent;
 class UProceduralMeshComponent;
 class USkeletalMeshComponent;
 class UAnimSequence;
+class UBlendSpace;
 
 UCLASS()
 class OVERBOARDGAME_API ABoardActor : public AActor
@@ -207,11 +208,108 @@ protected:
 	// Same all-or-nothing rule as the Pint skin and the Openwheel mesh: a rider stuck in the
 	// default bind/T-pose (no animation applied) is worse than no rider at all, so this is not a
 	// graceful degradation -- see docs/mannequin-rider.md for the (very likely) cause, missing
-	// Content/Mannequins/, and how to fix it.
+	// Content/Characters/Mannequins/, and how to fix it.
 	bool bRiderLoaded = false;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> RiderIdleAnim;
+
+	// --- Riding animation (Fab pack "MonoWheel Board") -----------------------------------------
+	//
+	// Replaces the stock standing idle with an authored ASTRIDE RIDING STANCE, blended by two
+	// values taken off the wire. This closes the "feet together, standing upright" gap
+	// docs/mannequin-rider.md called out as unfixable without authoring a custom pose -- the pack
+	// authored one, so nothing here is hand-animated.
+	//
+	// WHAT IS AND IS NOT SIMULATED, unchanged in spirit from the stock-idle case and restated
+	// because a moving rider invites the assumption that the motion means something: the PHYSICS
+	// still has a rigid ballast on two slide joints. No legs, no arms, no articulation, no balance
+	// of its own. Every joint angle you see is the pack artist's invention. What is real is only
+	// WHEN each pose is selected: the two blendspace axes are driven by wire values MuJoCo
+	// actually computed (wheel rate, ballast lateral displacement), through two DECLARED gain
+	// constants in BoardActor.cpp. The gains are a new non-physical channel and are declared as
+	// such per overboard#163 -- see docs/rider-riding-animation.md.
+	//
+	// Default TRUE on this branch so a verification run needs no editor fiddling. Whether it stays
+	// true on master is the merge decision, not this flag's.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider")
+	bool bUseRidingAnim = true;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UBlendSpace> RiderRidingBlendSpace;
+
+	// True if the blendspace asset resolved in the constructor. NOT the same as bRidingAnimActive:
+	// the asset can resolve and still fail to bind to the rider mesh (skeleton mismatch), which is
+	// exactly the failure this design has to survive gracefully rather than T-pose through.
+	bool bRidingAnimLoaded = false;
+
+	// True only once the blendspace has been VERIFIED to be the mesh's live animation asset --
+	// i.e. PlayAnimation was called AND the single-node instance actually took it. Set in
+	// TryStartRidingAnim, read every tick before pushing blend parameters. If false, the rider is
+	// on the stock idle (or absent) and no blend parameters are pushed at all.
+	bool bRidingAnimActive = false;
+
+	// --- Stance correction knobs: LIVE-EDITABLE EXPERIMENT, not settled values ------------------
+	//
+	// CORRECTED 2026-08-06. An earlier version of this comment claimed the pack animated an
+	// electric unicycle rather than a onewheel. That was WRONG, and the error is worth keeping
+	// here because the measurement looked conclusive.
+	//
+	// The diagnostic put the feet at board-local Y = +24.4 / -23.4 with X identical, and that was
+	// read as "side by side, therefore facing along the board, therefore a unicycle". But that only
+	// follows if the pack's animation frame shares THIS board's axis convention, and it does not --
+	// which is exactly why a 90 degree yaw fixes it. An axis-convention difference and a stance
+	// difference are indistinguishable in that measurement.
+	//
+	// The magnitude settles it the other way: 47.8 cm between foot centres is a onewheel stance.
+	// Unicycle pedals sit either side of the wheel and put the feet roughly 25-30 cm apart -- they
+	// are constrained by the wheel's width. Yawed onto our axes it measures 35.6 cm fore/aft along
+	// the deck, which is simply a rider standing on a board.
+	//
+	// So this is a onewheel animation in a rotated frame, and the yaw below is frame alignment,
+	// not a stance conversion.
+	//
+	// Both knobs below are applied every tick, so they can be dragged in the Details panel during
+	// PIE and judged immediately. NEITHER HAS BEEN CONFIRMED TO LOOK RIGHT -- the defaults are a
+	// reasoned first guess and this may not converge at all (see the honest note in
+	// docs/rider-riding-animation.md about the possibility that this pack simply does not fit a
+	// onewheel).
+	// +90. Both -90 and +90 put the feet on the footpads -- they are mirror images of each other,
+	// the regular/goofy choice -- so only one of them faces the rider the way the board travels.
+	//
+	// -90 was chosen by eye on 2026-08-04 and that observation is VOID: it was made while
+	// fake_sender --carve was driving the board tail-first, which put the chase camera ahead of
+	// the travel direction and mirrored the horizontal axis. Under a mirrored view the wrong
+	// member of a mirror-image pair is exactly what looks right. With the travel direction fixed,
+	// -90 left the rider facing backwards down the road.
+	//
+	// The lesson is worth more than the constant: a value confirmed by eye is only as trustworthy
+	// as the view it was confirmed in, and two of the three sign choices in this feature were
+	// picked while looking through the same mirror.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider")
+	float RiderRidingYawDeg = 90.f;
+
+	// Yaw alone fixes WHERE THE FEET LAND but breaks WHICH WAY THE RIDER LEANS, because the
+	// animation leans the body along its own facing. Turned 90 degrees, the pack's forward lean
+	// points across our board instead of at its nose.
+	//
+	// Swapping which wire signal drives which blendspace axis restores the geometry: after the
+	// yaw, the rider's body-forward axis is our board's lateral axis, and their body-lateral axis
+	// is our board's direction of travel. So board SPEED should drive the animation's turn/lean
+	// axis, and board LATERAL displacement should drive its forward/back axis.
+	//
+	// Geometrically coherent; whether it READS correctly is a different question, since the pack's
+	// turn poses likely carry steering-specific upper-body twist that may look wrong standing in
+	// for an acceleration lean. That is exactly what this toggle exists to let you find out.
+	// FALSE, and this is an empirical correction to my own reasoning. I argued the swap was
+	// geometrically necessary -- that a yawed rider would lean at right angles to the board. Play
+	// testing said otherwise: unswapped reads correctly and swapped does not. The geometric
+	// argument was about where the body's axes point; what actually governs how it reads is how
+	// the pack authored the poses, which no amount of reasoning from bone positions was going to
+	// tell me. Kept as a toggle because it costs nothing and the finding is worth being able to
+	// re-check.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider")
+	bool bSwapRidingAxes = false;
 
 private:
 	TUniquePtr<FBoardStateClient> StateClient;
@@ -234,6 +332,189 @@ private:
 	// applied), so TryBuildRealMesh can log and arithmetically check the whole assembly's size
 	// instead of asking a human to eyeball it on screen.
 	bool BuildPartFromStl(UProceduralMeshComponent* Component, const FString& StlBaseName, float ExtraYawDeg, FBox& InOutLocalBounds);
+
+	// Binds the riding blendspace to the rider mesh and confirms it took. Returns false (leaving
+	// the caller to fall back to the stock idle) on any of: no blendspace, no rider mesh, no
+	// skeleton, or the single-node instance not actually holding the blendspace afterwards.
+	//
+	// The pack's sequences are bound to the pack's OWN copy of Epic's SK_Mannequin, while the
+	// rider mesh uses the UE 5.7 template's copy -- two distinct assets with identical bone
+	// hierarchies. USkeleton::AddCompatibleSkeleton (a runtime UFUNCTION, not editor-only) is what
+	// lets one play on the other without an editor retarget step, and it is registered BOTH
+	// directions because which side the engine's compatibility check interrogates is an engine
+	// implementation detail this code should not be betting on.
+	bool TryStartRidingAnim();
+
+	// Pushes this tick's two blend parameters. No-op unless bRidingAnimActive. Separated from
+	// UpdatePoseFromHistory so the "what drives the animation" mapping -- the one genuinely new
+	// piece of physics-to-visual arithmetic in this actor -- reads as one function rather than as
+	// four lines buried in the pose interpolator.
+	void UpdateRidingAnimParams();
+
+	// Manual trim on top of the measured root lift, cm. Positive raises the rider.
+	//
+	// Exists because kRidingAnimRootLiftCm was measured from ONE pose (the centre of the
+	// blendspace) and the rider's lowest foot is not at the same height in every pose -- turning
+	// drops a foot through the deck. Rather than re-measure by hand per pose, the placement
+	// diagnostic now tracks the running MINIMUM foot height across a whole session, so a --carve
+	// run reports the true worst case and this trim can be set from it once.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider")
+	float RiderRidingHeightTrimCm = 0.f;
+
+	// Uniform visual scale on the rider. 0.746 is DERIVED, not dialled in by eye:
+	//
+	//     0.746 = Pint deck length (0.70 m) / Openwheel deck length (0.938 m)
+	//
+	// Scaling the rider by the same ratio the SKIN is undersized by makes the rider-to-board
+	// proportion on screen exactly match a real rider on the real board. A first pass used 0.85,
+	// which was a guess and left the rider visibly too big; the derived figure is what the eye was
+	// actually asking for. It also pulls the feet from ~40.6 cm apart to ~35.7 cm, which is what
+	// stops the rear foot hanging off the end of a 70 cm deck at full lean.
+	//
+	// PURELY COSMETIC and it has to stay that way: the rider avatar contributes no mass, no
+	// inertia and no dynamics, so its size cannot reach any physics value. But be clear about what
+	// this is compensating for. A 170 cm rider on the 0.70 m Pint SKIN looks too big largely
+	// because the skin is ~25% shorter than the 0.938 m Openwheel board MuJoCo actually simulates.
+	// Shrinking the rider makes the pair look right by moving FURTHER from the simulated geometry,
+	// not closer -- at 0.746 the rider is ~127 cm, a child's height against the real board.
+	//
+	// This was put side by side against bUsePintSkin=false with an unscaled rider, which is the
+	// honest alternative and needs no compensation at all. The Pint was chosen on looks, knowingly:
+	// footage from this client already carries its own provenance category, and nothing here can
+	// reach a physics value. The cost is real and is the one bUsePintSkin's own comment names --
+	// with a wrongly-proportioned chassis, "wrong asset scale" and "pose stream offset" become
+	// indistinguishable, so the free floats/sinks bug signal is gone. See
+	// docs/rider-riding-animation.md.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider", meta = (ClampMin = "0.5", ClampMax = "1.5"))
+	float RiderScale = 0.746f;
+
+	// Fraction of the pack's authored lean range the rider is allowed to reach at full command.
+	//
+	// The lean stays strictly PROPORTIONAL to the wire signal -- this scales the whole response,
+	// it does not clip the top of it, so there is no dead band and no kink. It exists because the
+	// pack authored its lean for a unicycle that banks hard, and against the modest yaw our carve
+	// actually achieves the full range read as a rider throwing themselves over far more than the
+	// turn justified.
+	//
+	// A THIRD DECLARED NON-PHYSICAL GAIN, on the same footing as the two in BoardActor.cpp: it
+	// changes how much authored pose a given real displacement buys. Declared in
+	// docs/rider-riding-animation.md.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float RidingMaxLeanFraction = 0.45f;
+
+	// Where the rider stands on the deck, cm, in the BOARD's local frame -- X fore/aft, Y across.
+	// Added on top of the real ballast displacement, which is untouched and still un-amplified.
+	//
+	// Y = +8.0. POSITIVE. The direction was settled by deliberately overshooting to -10 and
+	// watching it get worse -- the heel sits on the -Y side, so the rider has to move +Y to pull
+	// it back over the deck.
+	//
+	// The earlier -3.0 was worse than useless, and the reason is worth keeping. The animation puts
+	// the ankles at board-local Y = +3.4 / +2.5, and I read that ~3 cm offset from the centreline
+	// as a defect to cancel. It is far more likely DELIBERATE: the pack biased its rider toward the
+	// toe side precisely so the heel would clear the deck. Cancelling it removed the artist's own
+	// fix for the exact problem being chased, then made it worse.
+	//
+	// "Off-centre" is not the same as "wrong". A stance is not symmetric about the deck -- feet
+	// point one way, so heel and toe have different amounts of deck to spare, and the centreline
+	// is not where a rider stands.
+	//
+	// +5.5 restores that bias and adds to it (+8 overshot slightly). No value fully solves heel overhang -- a foot roughly
+	// as long as the deck is wide overhangs somewhere by construction -- so this buys deck back on
+	// the side the chase camera actually sees.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider")
+	FVector2D RiderRidingStanceOffsetCm = FVector2D(0.f, 5.5f);
+
+	// Raises the rider in proportion to how hard they are leaning, cm at FULL commanded lean.
+	// Still needed -- a static trim cannot track a lean-dependent dip -- but it CANNOT close the
+	// problem, and the first value chosen (7.0) misunderstood the problem's shape.
+	//
+	// In a lean pose the two feet DIVERGE: one drops below the deck while the other rises above it.
+	// Measured at 0.45 lean with 7.0 of lift: lowest foot -8.0 cm, highest +3.6 cm, a spread of
+	// 11.6 cm. Lifting the whole BODY moves both feet together, so it can only slide that spread up
+	// and down -- it can never shrink it. Closing it needs per-foot IK, which this pass skipped.
+	//
+	// SIGNED, as of 2026-08-06, and that is the fix -- earlier versions used |lean| and could never
+	// have worked.
+	//
+	// The rider does not dip both ways. Leaning one way drives the rear foot down into the deck;
+	// leaning the other lifts it off. A magnitude-driven lift pushes UP in both cases, so it helps
+	// one turn direction and actively worsens the other -- which is exactly what was reported: the
+	// foot hovering on one side early on, then driving into the tail mesh on right-hand turns once
+	// the lift was tuned down to stop the hovering. Two opposite complaints, one wrong model.
+	//
+	// A symmetric signed version was then tried and was WORSE than either: it does not merely
+	// decline to help on the other side, it actively LOWERS the rider there, which drove the rear
+	// foot deeper into the tail on exactly the turn the camera watches.
+	//
+	// So the term is ONE-SIDED: it raises the rider going into the burying turn and does nothing
+	// otherwise. It cannot make any pose worse than doing nothing, which is the property both
+	// earlier models lacked.
+	//
+	// 7.5 is set from the per-direction diagnostic, not by eye. At 5.0 it measured: lifted turn
+	// -3.4 cm, unlifted turn -8.6 cm -- confirming the lift lands on the right side and is worth
+	// very nearly its full value, but is simply too small. 7.5 should put the visible foot around
+	// -1 cm: still inside the deck by a hair, which is the safe side, since a foot buried in
+	// geometry reads as contact and a hovering one reads as broken.
+	//
+	// The unlifted turn stays near -8.6 cm by design. That side's lowest foot is the FRONT foot,
+	// which the chase camera cannot see, so spending anything to fix it would be spending on
+	// something invisible.
+	//
+	// Cosmetic. Moves the avatar only, which has no mass, inertia or dynamics.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider")
+	float RiderRidingLeanDipCompCm = 7.5f;
+
+	// Base height of the rider component above the actor origin, cm. Differs by tier: the riding
+	// animation carries its own ~31 cm root lift that the stock standing idle does not, so one
+	// shared constant cannot plant both poses. See kRidingAnimRootLiftCm.
+	float GetRiderBaseHeightCm() const;
+
+	// Newest raw wheel rate, rad/s, straight off the wire -- drives the blendspace's forward axis
+	// via the wheel radius. Same newest-raw-sample rule as the ballast displacements below.
+	float LatestWheelRateRadS = 0.f;
+
+	// Blendspace axis ranges, read off the ASSET in TryStartRidingAnim rather than hardcoded.
+	// The pack authored these; this code has never assumed what they are, and logs them on start
+	// so the numbers appear in the Output Log instead of in a comment that could go stale.
+	FVector2D RidingAxisMin = FVector2D::ZeroVector;
+	FVector2D RidingAxisMax = FVector2D::ZeroVector;
+
+	// Throttle for the once-a-second blend-parameter trace (checkpoint C1). Per-tick logging of
+	// two floats at 60+ fps is how an Output Log becomes unreadable during the exact session it
+	// is needed for.
+	double LastRidingTraceLogTimeSeconds = 0.0;
+
+	// One-shot guard for the rider placement measurement -- see UpdateRidingAnimParams. Fires on
+	// the first tick the skeleton is actually posed, not in BeginPlay, because bone transforms
+	// before the first animation evaluation describe the bind pose and would quietly lie.
+	bool bLoggedRiderPlacementDiagnostic = false;
+
+	// Yaw the placement diagnostic last reported against, so dragging RiderRidingYawDeg re-arms it.
+	float LastDiagnosticYawDeg = 0.f;
+
+	// Running minimum of the rider's lowest foot height, actor-local cm, across the whole PIE
+	// session. A single-pose measurement cannot see the turn poses that clip; this can.
+	float MinFootZObservedCm = TNumericLimits<float>::Max();
+
+	// ...and the HIGHEST. A foot floating above the deck is what reads as "the back foot comes off
+	// the board", and tracking only the minimum was blind to it.
+	float MaxFootZObservedCm = TNumericLimits<float>::Lowest();
+
+	// |commanded lean| as a 0..1 fraction of RidingMaxLeanFraction, updated each tick and read by
+	// GetRiderBaseHeightCm to drive the lean-proportional lift.
+	float LastLeanFractionOfMax = 0.f;
+
+	// Lowest foot seen while leaning each way, tracked SEPARATELY. A single session-wide minimum
+	// cannot say which turn direction it came from, so it could not tell a fixed burying turn from
+	// an unchanged one -- which is exactly the question every recent change has turned on, and the
+	// reason several of them needed a human to adjudicate what a log should have answered.
+	float MinFootZLeanPosCm = TNumericLimits<float>::Max();
+	float MinFootZLeanNegCm = TNumericLimits<float>::Max();
+
+	// Unclamped signed lean, kept only so the per-direction diagnostic can see the side the
+	// one-sided lift deliberately ignores.
+	float LeanSignForDiagnostic = 0.f;
 
 	bool bLatestSampleFallen = false;
 
