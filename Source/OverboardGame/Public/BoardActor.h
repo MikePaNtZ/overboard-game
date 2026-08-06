@@ -405,15 +405,22 @@ private:
 	// Where the rider stands on the deck, cm, in the BOARD's local frame -- X fore/aft, Y across.
 	// Added on top of the real ballast displacement, which is untouched and still un-amplified.
 	//
-	// Y = -3.0 is MEASURED, not chosen: the riding animation puts the ankles at board-local
-	// Y = +3.4 / +2.5, so the authored stance sits ~3 cm off the deck's centreline. That bias
-	// spends 3 cm of a deck only ~23 cm wide, and it is spent on the side the heel hangs over.
-	// Cancelling it is the cheapest part of the overhang fix and needs no judgement call.
+	// Y = -10.0, and it is DELIBERATELY OVERCOMPENSATED pending a visual check.
 	//
-	// It does NOT fully solve heel overhang and cannot: a ~25 cm foot on a ~23 cm deck overhangs
-	// somewhere by construction. The rest is what the lean-dip compensation below is for.
+	// -3.0 was the measured ankle bias: the animation puts the ankles at board-local Y = +3.4 /
+	// +2.5, ~3 cm off the deck centreline. Cancelling that was free and needed no judgement, but
+	// it left significant heel overhang on right-hand turns -- 3 cm is simply too small to see
+	// against a ~23 cm deck, so it could not confirm even the DIRECTION was right.
+	//
+	// -10 is roughly half the deck's half-width, chosen to be unmistakable rather than correct. If
+	// the overhang clears, the direction is confirmed and the value gets dialled back to whatever
+	// actually clears the heel. If it gets worse, the sign is wrong and flipping it is the fix.
+	// Either outcome is decisive, which a 3 cm nudge was never going to be.
+	//
+	// No value here fully solves heel overhang: a ~25 cm foot on a ~23 cm deck overhangs somewhere
+	// by construction. This buys back deck on the side that shows.
 	UPROPERTY(EditAnywhere, Category = "Board|Rider")
-	FVector2D RiderRidingStanceOffsetCm = FVector2D(0.f, -3.0f);
+	FVector2D RiderRidingStanceOffsetCm = FVector2D(0.f, -10.0f);
 
 	// Raises the rider in proportion to how hard they are leaning, cm at FULL commanded lean.
 	// Still needed -- a static trim cannot track a lean-dependent dip -- but it CANNOT close the
