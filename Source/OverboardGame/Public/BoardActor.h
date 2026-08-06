@@ -263,10 +263,20 @@ protected:
 	// reasoned first guess and this may not converge at all (see the honest note in
 	// docs/rider-riding-animation.md about the possibility that this pack simply does not fit a
 	// onewheel).
-	// -90, CONFIRMED BY EYE 2026-08-04. +90 and -90 both put the feet on the footpads -- they are
-	// mirror images, the regular/goofy choice -- and -90 is the one that looked right.
+	// +90. Both -90 and +90 put the feet on the footpads -- they are mirror images of each other,
+	// the regular/goofy choice -- so only one of them faces the rider the way the board travels.
+	//
+	// -90 was chosen by eye on 2026-08-04 and that observation is VOID: it was made while
+	// fake_sender --carve was driving the board tail-first, which put the chase camera ahead of
+	// the travel direction and mirrored the horizontal axis. Under a mirrored view the wrong
+	// member of a mirror-image pair is exactly what looks right. With the travel direction fixed,
+	// -90 left the rider facing backwards down the road.
+	//
+	// The lesson is worth more than the constant: a value confirmed by eye is only as trustworthy
+	// as the view it was confirmed in, and two of the three sign choices in this feature were
+	// picked while looking through the same mirror.
 	UPROPERTY(EditAnywhere, Category = "Board|Rider")
-	float RiderRidingYawDeg = -90.f;
+	float RiderRidingYawDeg = 90.f;
 
 	// Yaw alone fixes WHERE THE FEET LAND but breaks WHICH WAY THE RIDER LEANS, because the
 	// animation leans the body along its own facing. Turned 90 degrees, the pack's forward lean
