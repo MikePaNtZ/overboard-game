@@ -358,7 +358,18 @@ void ABoardActor::UpdateRidingAnimParams()
 	// when it matters, e.g. a steer command the controller could not honour. The sign carries the
 	// same local-space Y-mirror convention as the offset code below and everything else attached to
 	// this actor (mesh/README.md).
-	const float TurnNormalised = FMath::Clamp(-LatestRiderLateralM / kRidingFullLeanLateralM, -1.f, 1.f);
+	//
+	// SIGN: positive here selects the pack's LEFT poses. Which way the pack authored Left_1/2/3 to
+	// lean is a property of the art, not something derivable from the wire convention -- so this
+	// sign can only be settled by watching it, and it was settled on 2026-08-06 once the board was
+	// finally travelling nose-first with the rider facing forward. Before that every observation
+	// of it came through the tail-first mirror and was worthless.
+	//
+	// It is deliberately NOT the same sign as the rider's lateral OFFSET a few lines below, which
+	// keeps the -1 because it maps a MuJoCo displacement onto this actor's mirrored local Y (see
+	// mesh/README.md). Those two are different questions -- one is a coordinate convention, the
+	// other is an art convention -- and making them agree for tidiness would break one of them.
+	const float TurnNormalised = FMath::Clamp(LatestRiderLateralM / kRidingFullLeanLateralM, -1.f, 1.f);
 
 	// Which axis is which is NOT assumed: the pack named them, and TryStartRidingAnim logged the
 	// names. Axis0 is the horizontal (Turn) axis and Axis1 the vertical (Forward) axis, which is
