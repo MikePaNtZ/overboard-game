@@ -62,13 +62,19 @@ authored in another. The number was right; the frame it was interpreted in was a
       materials, since it was added** — while the log reported an idle animation playing. Content
       moved, both asset paths corrected, `docs/mannequin-rider.md` amended. See that document.
 - [x] **C0 — Verify: the asset tier resolved.** Tier 1 confirmed 2026-08-04: blendspace bound, axes `Turn` and `Forward` both `[-1..1]`.
-- [ ] **C1 — Verify: the numbers, before the picture.** *(Output Log, no PIE needed)*
+- [x] **C1 — Verify: the numbers, before the picture.** Passed on a live run: `wheel × 0.1454 ÷ 5.0`
+      matches the logged axis value exactly; turn axis sweeps ±1 through the clamp.
 - [~] **C2 — Verify: the stance is right.** *Partial.* Height fixed (measured +31.2 cm, now
       applied as `kRidingAnimRootLiftCm`); scale confirmed correct at 170.6 cm. **Stance failed** —
       the yaw is frame alignment (see the stance correction above). `RiderRidingYawDeg` = +90,
       `RiderScale` = 0.746, stance centred, lean capped.
-- [ ] **C3 — Verify: it moves, and moves correctly.** *(PIE, `--carve`)*
-- [ ] **C4 — Verify: against the real host.**
+- [x] **C3 — Verify: it moves, and moves correctly.** Signed off 2026-08-06 after 15 captures.
+      Three sign errors found and fixed on the way — see "The three sign errors" below.
+- [ ] **C4 — Verify: against the real host.** STILL OPEN. Everything to date is `fake_sender` only.
+- [ ] **Verify keyboard + gamepad input.** Untouched by this work, but never exercised during it —
+      every capture was sender-driven. Note commit `9286a87` fixed both being silently dark once.
+- [ ] **Re-check `bSwapRidingAxes`.** The one value still set from an observation made through the
+      tail-first mirror. Live toggle; one Play tests it.
 - [ ] **M6 — Declaration line + `docs/mannequin-rider.md` update.** Launch-blocking; do it only
       once C2/C3 have said the thing is worth keeping.
 
@@ -307,3 +313,52 @@ interrogates is an implementation detail this code should not bet on — and the
 skeleton it will not accept, and a silent decline is precisely a rider left in the bind pose. So
 `TryStartRidingAnim` succeeds only if the single-node instance is actually holding the blendspace
 afterwards.
+
+
+## The three sign errors, and what they cost
+
+Worth recording, because two of the three were not bugs in the code so much as bugs in how it was
+verified.
+
+| # | Symptom | Cause |
+|---|---|---|
+| 1 | Board rode into the lens | `--carve` integrated `+cos/+sin`; the nose is local &minus;X, so it drove **tail-first** |
+| 2 | Rider faced backwards | `-90` yaw chosen by eye **through** #1's mirrored view |
+| 3 | Lean opposite the turn | Genuine — the pack's authored lean convention, not derivable |
+
+Only #3 was real. #1 created a mirrored view and #2 was decided while looking through it, because
+**a head-on view mirrors the horizontal axis** — so a correct value looks wrong and its mirror image
+looks right. `AOverboardCameraPawn`'s `+180` comment had already predicted exactly this pair of
+symptoms from exactly this cause; it was rediscovered the hard way.
+
+**A value confirmed by eye is only as trustworthy as the view it was confirmed in.**
+
+Three further times a correct measurement was read through an unchecked assumption:
+
+- Foot spread measured in *our* frame, interpreted as if in the pack's → "unicycle stance". Wrong.
+- The animation's 3 cm ankle bias read as a defect to cancel. It was almost certainly the artist's
+  own fix for heel overhang; cancelling it *caused* the symptom being chased.
+- Session-wide min/max foot height used to answer "did the burying turn improve" — a question it
+  structurally could not answer, since the two extremes come from different instants and different
+  turn directions.
+
+The last one is the generalisable lesson: **several rounds of human review were spent adjudicating
+what a log should have reported.** A ten-line per-direction diagnostic — lowest foot while leaning
+each way, sampled near full lean — ended the guessing immediately and should have been built when
+the second contradictory report arrived, not the fifth.
+
+## Final tuned values
+
+| Property | Value | Basis |
+|---|---|---|
+| `bUseRidingAnim` | `true` | |
+| `RiderRidingYawDeg` | `+90` | Frame alignment |
+| `bSwapRidingAxes` | `false` | **Unverified** — set through the mirror |
+| `RiderScale` | `0.746` | Derived: 0.70 m Pint deck ÷ 0.938 m Openwheel deck |
+| `RidingMaxLeanFraction` | `0.45` | Judgement — lean was strong for the yaw achieved |
+| `RiderRidingStanceOffsetCm` | `(0, +5.5)` | Toe-side bias; direction settled by overshooting to &minus;10 |
+| `RiderRidingLeanDipCompCm` | `7.5` | One-sided; tuned from the per-direction diagnostic |
+
+Visible foot at peak lean: **&minus;2.6 cm** (clips the deck), from &minus;8.6 cm untreated.
+Run-to-run noise on that instrument is roughly &plusmn;2.5 cm, so further body-lift tuning would be
+chasing sampling variation. Closing the remainder needs per-foot IK.
