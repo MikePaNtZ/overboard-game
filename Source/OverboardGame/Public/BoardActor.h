@@ -251,12 +251,23 @@ protected:
 
 	// --- Stance correction knobs: LIVE-EDITABLE EXPERIMENT, not settled values ------------------
 	//
-	// Measured 2026-08-04 and confirmed by eye: the pack's riding stance is an ELECTRIC UNICYCLE
-	// stance, not a onewheel one. Its rider stands with both feet side by side on pedals either
-	// side of a central wheel, facing along the direction of travel. A onewheel rider stands the
-	// other way round -- feet fore and aft of the wheel, body square across the board. The
-	// diagnostic put the feet at board-local Y = +24.4 / -23.4 with X identical, which is the
-	// unicycle arrangement, hanging ~12 cm off each side of a 23.2 cm deck.
+	// CORRECTED 2026-08-06. An earlier version of this comment claimed the pack animated an
+	// electric unicycle rather than a onewheel. That was WRONG, and the error is worth keeping
+	// here because the measurement looked conclusive.
+	//
+	// The diagnostic put the feet at board-local Y = +24.4 / -23.4 with X identical, and that was
+	// read as "side by side, therefore facing along the board, therefore a unicycle". But that only
+	// follows if the pack's animation frame shares THIS board's axis convention, and it does not --
+	// which is exactly why a 90 degree yaw fixes it. An axis-convention difference and a stance
+	// difference are indistinguishable in that measurement.
+	//
+	// The magnitude settles it the other way: 47.8 cm between foot centres is a onewheel stance.
+	// Unicycle pedals sit either side of the wheel and put the feet roughly 25-30 cm apart -- they
+	// are constrained by the wheel's width. Yawed onto our axes it measures 35.6 cm fore/aft along
+	// the deck, which is simply a rider standing on a board.
+	//
+	// So this is a onewheel animation in a rotated frame, and the yaw below is frame alignment,
+	// not a stance conversion.
 	//
 	// Both knobs below are applied every tick, so they can be dragged in the Details panel during
 	// PIE and judged immediately. NEITHER HAS BEEN CONFIRMED TO LOOK RIGHT -- the defaults are a
@@ -413,14 +424,19 @@ private:
 	// 11.6 cm. Lifting the whole BODY moves both feet together, so it can only slide that spread up
 	// and down -- it can never shrink it. Closing it needs per-foot IK, which this pass skipped.
 	//
-	// So the value is not "compensate the dip", it is "choose which error you get". 3.4 puts the
-	// HIGH foot at roughly deck level and lets the low one bury itself ~11 cm into the deck, which
-	// is the right way round: a foot hidden inside geometry reads as contact, a foot hovering above
-	// it reads as broken -- and hovering is exactly what was reported.
+	// So the value is not "compensate the dip", it is "choose which error you get" -- and the two
+	// errors are not equally visible. The chase camera sits behind the board, so the BACK foot is
+	// the one on show; the front foot is largely occluded by the rider's body and the deck, and a
+	// foot sunk into geometry is invisible either way. That makes the tradeoff one-sided: hovering
+	// costs, sinking does not, and there is no reason to protect the front foot at all.
+	//
+	// 3.4 measured +0.3 cm on the high foot -- no hover, but sitting exactly on the boundary. 2.0
+	// buys ~1.4 cm of margin so no pose variation can push a foot back above the deck, at the only
+	// cost being a low foot buried deeper where nothing can see it.
 	//
 	// Cosmetic. Moves the avatar only, which has no mass, inertia or dynamics.
 	UPROPERTY(EditAnywhere, Category = "Board|Rider")
-	float RiderRidingLeanDipCompCm = 3.4f;
+	float RiderRidingLeanDipCompCm = 2.0f;
 
 	// Base height of the rider component above the actor origin, cm. Differs by tier: the riding
 	// animation carries its own ~31 cm root lift that the stock standing idle does not, so one

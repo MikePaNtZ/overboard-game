@@ -63,8 +63,10 @@ namespace
 	// 31 cm underground. The two poses genuinely have different root-to-foot distances and need
 	// two numbers.
 	//
-	// The size of it is the tell. 31 cm is not a tuning discrepancy, it is the pedal height of a
-	// self-balancing unicycle -- see the stance note in docs/rider-riding-animation.md.
+	// It carries no information about the stance. An earlier comment read 31 cm as "a unicycle's
+	// pedal height"; it is simply where the pack placed the animation root relative to their own
+	// vehicle, and says nothing about how the rider stands. See the corrected note in
+	// docs/rider-riding-animation.md.
 	constexpr float kRidingAnimRootLiftCm = 31.2f;
 
 	// Maps a normalised [-1, 1] signal onto one authored blendspace axis.
@@ -491,12 +493,14 @@ void ABoardActor::UpdateRidingAnimParams()
 				RiderRidingYawDeg, LowestFootZ, kRiderDeckHeightCm, LowestFootZ - kRiderDeckHeightCm, kRidingAnimRootLiftCm);
 			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT: rider height %.1f cm (expect ~180; a 2x error here would be a SCALE bug, not an offset bug). Board deck is 93.8 cm long, 23.2 cm wide."),
 				RiderHeightCm);
-			// CORRECTED TEST -- the earlier version of this line had the axes the wrong way round.
-			// A standing person's feet separate along their own LEFT-RIGHT axis, which is
-			// perpendicular to their facing. So feet spread in board-Y means the body faces along
-			// board-X (down the road, unicycle stance); feet spread in board-X means the body
-			// faces across the board (onewheel stance, what we want).
-			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT: foot spread X (fore/aft) = %.1f cm, Y (lateral) = %.1f cm. X-dominant = ONEWHEEL stance, feet on the footpads, body across the board -- WANTED. Y-dominant = UNICYCLE stance, feet side by side, body down the road -- WRONG for this vehicle. foot_l (%.1f, %.1f, %.1f), foot_r (%.1f, %.1f, %.1f)."),
+			// Reports which way the feet are spread in THIS board's frame, and nothing more.
+			//
+			// It deliberately no longer labels a Y-dominant spread as a "unicycle stance". It was
+			// doing so, and that inference was wrong: a spread along Y only means the animation's
+			// frame is rotated relative to ours, which the yaw corrects. The stance question is
+			// answered by the MAGNITUDE (foot centres ~48 cm apart is a rider on a board, not on
+			// unicycle pedals), not by which axis it falls on before alignment.
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER PLACEMENT: foot spread X (fore/aft) = %.1f cm, Y (lateral) = %.1f cm. WANT X-dominant -- feet fore and aft on the footpads. Y-dominant means the rider yaw has not aligned the animation's frame with this board's, NOT that the stance is wrong. foot_l (%.1f, %.1f, %.1f), foot_r (%.1f, %.1f, %.1f)."),
 				FootSeparationX, FootSeparationY,
 				FootLLocal.X, FootLLocal.Y, FootLLocal.Z, FootRLocal.X, FootRLocal.Y, FootRLocal.Z);
 		}
