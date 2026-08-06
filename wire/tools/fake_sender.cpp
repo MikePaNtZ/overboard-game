@@ -352,7 +352,10 @@ namespace
 			// to flip -- and that would be a finding about the client's convention, not about
 			// this file.
 			const double LateralNorm = std::fmax(-1.0, std::fmin(1.0, -LateralM / 0.04));
-			constexpr double kMaxYawRateRadS = 0.8;  // ~46 deg/s at full lean
+			// 0.25 rad/s (~14 deg/s), down from 0.8. At 0.8 the carve was unmistakable but swung
+			// the heading far enough that 12 s of it drove the board clean off the road into the
+			// embankment -- and the board has no collision by design, so it just kept going.
+			constexpr double kMaxYawRateRadS = 0.25;
 			constexpr double kMaxBankRad = 0.26;     // ~15 deg
 			YawRad += LateralNorm * kMaxYawRateRadS * Dt;
 			const double BankRad = LateralNorm * kMaxBankRad;
@@ -363,8 +366,21 @@ namespace
 			PrevSpeedMs = SpeedMs;
 			const double PitchRad = std::fmax(-0.20, std::fmin(0.20, -AccelMs2 * 0.02));
 
-			PosX += SpeedMs * std::cos(YawRad) * Dt;
-			PosY += SpeedMs * std::sin(YawRad) * Dt;
+			// THE BOARD'S NOSE IS ITS LOCAL -X. This is MuJoCo's convention for the plant model
+			// ("FORWARD IS -X" in overboard_onewheel.xml), carried through unchanged by
+			// MuJoCoToUnreal. The first version of this integrated +cos/+sin and so drove the board
+			// TAIL-FIRST down the road at positive wheel rate.
+			//
+			// That single sign produced both of the symptoms reported from the first capture, which
+			// is the same pair AOverboardCameraPawn's +180 comment already describes: the chase
+			// camera correctly parks behind the TAIL, so a board travelling tail-first has the
+			// camera ahead of it and appears to ride into the lens -- and a head-on view mirrors
+			// the horizontal axis, so a correct carve reads as leaning away from the turn.
+			//
+			// At yaw 0 the nose points along world -X, so the forward unit vector is
+			// (-cos(yaw), -sin(yaw)) and positive speed must DECREASE X.
+			PosX -= SpeedMs * std::cos(YawRad) * Dt;
+			PosY -= SpeedMs * std::sin(YawRad) * Dt;
 			WheelAngleRad += (SpeedMs / kWheelRadiusM) * Dt;
 
 			FBoardState State = BaseState(Seq++, T);
