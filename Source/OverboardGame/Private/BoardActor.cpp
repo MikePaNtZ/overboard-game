@@ -568,7 +568,11 @@ void ABoardActor::BeginPlay()
 		//
 		// The rest state has to be correct on its own, because it is the state anyone sees who
 		// opens the level without a host or a fake_sender attached.
-		RiderMesh->SetRelativeLocation(FVector(0.f, 0.f, GetRiderBaseHeightCm()));
+		// Stance offset included here too, not just in the per-tick path. Without it the rest state
+		// differs from every subsequent frame, and the placement diagnostic -- which fires on the
+		// first posed tick -- measured the un-offset pose and reported the bias as still present
+		// when it had in fact been corrected.
+		RiderMesh->SetRelativeLocation(FVector(RiderRidingStanceOffsetCm.X, RiderRidingStanceOffsetCm.Y, GetRiderBaseHeightCm()));
 		RiderMesh->SetRelativeRotation(bRidingAnimActive ? FRotator(0.f, RiderRidingYawDeg, 0.f) : FRotator::ZeroRotator);
 		RiderMesh->SetRelativeScale3D(FVector(bRidingAnimActive ? RiderScale : 1.f));
 

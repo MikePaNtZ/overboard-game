@@ -405,16 +405,22 @@ private:
 	FVector2D RiderRidingStanceOffsetCm = FVector2D(0.f, -3.0f);
 
 	// Raises the rider in proportion to how hard they are leaning, cm at FULL commanded lean.
+	// Still needed -- a static trim cannot track a lean-dependent dip -- but it CANNOT close the
+	// problem, and the first value chosen (7.0) misunderstood the problem's shape.
 	//
-	// This is the fix a static trim cannot be. The pack's turn poses drop a foot below where the
-	// neutral pose puts it -- measured at -8.7 cm at 0.55 lean -- so a constant big enough to keep
-	// the feet out of the deck through a turn would leave the rider floating that far above it at
-	// rest. Scaling the lift with lean magnitude plants the feet at BOTH ends.
+	// In a lean pose the two feet DIVERGE: one drops below the deck while the other rises above it.
+	// Measured at 0.45 lean with 7.0 of lift: lowest foot -8.0 cm, highest +3.6 cm, a spread of
+	// 11.6 cm. Lifting the whole BODY moves both feet together, so it can only slide that spread up
+	// and down -- it can never shrink it. Closing it needs per-foot IK, which this pass skipped.
 	//
-	// A cheap approximation of the foot IK this pass deliberately skipped. It is cosmetic: it moves
-	// the avatar only, and the avatar has no mass, inertia or dynamics.
+	// So the value is not "compensate the dip", it is "choose which error you get". 3.4 puts the
+	// HIGH foot at roughly deck level and lets the low one bury itself ~11 cm into the deck, which
+	// is the right way round: a foot hidden inside geometry reads as contact, a foot hovering above
+	// it reads as broken -- and hovering is exactly what was reported.
+	//
+	// Cosmetic. Moves the avatar only, which has no mass, inertia or dynamics.
 	UPROPERTY(EditAnywhere, Category = "Board|Rider")
-	float RiderRidingLeanDipCompCm = 7.0f;
+	float RiderRidingLeanDipCompCm = 3.4f;
 
 	// Base height of the rider component above the actor origin, cm. Differs by tier: the riding
 	// animation carries its own ~31 cm root lift that the stock standing idle does not, so one
