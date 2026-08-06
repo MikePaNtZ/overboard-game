@@ -443,17 +443,27 @@ private:
 	// foot hovering on one side early on, then driving into the tail mesh on right-hand turns once
 	// the lift was tuned down to stop the hovering. Two opposite complaints, one wrong model.
 	//
-	// Signed, the lift raises the rider going into the sinking turn and lowers them going into the
-	// rising one, so both directions land near the deck instead of trading one for the other.
+	// A symmetric signed version was then tried and was WORSE than either: it does not merely
+	// decline to help on the other side, it actively LOWERS the rider there, which drove the rear
+	// foot deeper into the tail on exactly the turn the camera watches.
 	//
-	// The SIGN below is not derivable -- it depends which way the pack authored its lean poses --
-	// but it is measurable without a human: with the sign right the logged foot extremes tighten
-	// toward each other, and with it wrong they spread further apart. See the check in the capture
-	// notes.
+	// So the term is ONE-SIDED: it raises the rider going into the burying turn and does nothing
+	// otherwise. It cannot make any pose worse than doing nothing, which is the property both
+	// earlier models lacked.
+	//
+	// 7.5 is set from the per-direction diagnostic, not by eye. At 5.0 it measured: lifted turn
+	// -3.4 cm, unlifted turn -8.6 cm -- confirming the lift lands on the right side and is worth
+	// very nearly its full value, but is simply too small. 7.5 should put the visible foot around
+	// -1 cm: still inside the deck by a hair, which is the safe side, since a foot buried in
+	// geometry reads as contact and a hovering one reads as broken.
+	//
+	// The unlifted turn stays near -8.6 cm by design. That side's lowest foot is the FRONT foot,
+	// which the chase camera cannot see, so spending anything to fix it would be spending on
+	// something invisible.
 	//
 	// Cosmetic. Moves the avatar only, which has no mass, inertia or dynamics.
 	UPROPERTY(EditAnywhere, Category = "Board|Rider")
-	float RiderRidingLeanDipCompCm = 5.0f;
+	float RiderRidingLeanDipCompCm = 7.5f;
 
 	// Base height of the rider component above the actor origin, cm. Differs by tier: the riding
 	// animation carries its own ~31 cm root lift that the stock standing idle does not, so one
@@ -494,6 +504,17 @@ private:
 	// |commanded lean| as a 0..1 fraction of RidingMaxLeanFraction, updated each tick and read by
 	// GetRiderBaseHeightCm to drive the lean-proportional lift.
 	float LastLeanFractionOfMax = 0.f;
+
+	// Lowest foot seen while leaning each way, tracked SEPARATELY. A single session-wide minimum
+	// cannot say which turn direction it came from, so it could not tell a fixed burying turn from
+	// an unchanged one -- which is exactly the question every recent change has turned on, and the
+	// reason several of them needed a human to adjudicate what a log should have answered.
+	float MinFootZLeanPosCm = TNumericLimits<float>::Max();
+	float MinFootZLeanNegCm = TNumericLimits<float>::Max();
+
+	// Unclamped signed lean, kept only so the per-direction diagnostic can see the side the
+	// one-sided lift deliberately ignores.
+	float LeanSignForDiagnostic = 0.f;
 
 	bool bLatestSampleFallen = false;
 

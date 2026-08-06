@@ -393,11 +393,25 @@ void ABoardActor::UpdateRidingAnimParams()
 	// Drives the signed lean-proportional lift in GetRiderBaseHeightCm. SIGNED, deliberately: the
 	// rear foot sinks leaning one way and rises leaning the other, so the compensation has to
 	// change sign with it rather than push up regardless.
-	// NEGATED, and the sign was settled by measurement rather than by eye. With
-	// LastLeanFractionOfMax = +LeanFraction the logged foot extremes went from -7.6/+1.4 (spread
-	// 9.0 cm) to -13.7/+2.6 (spread 16.3 cm) -- the compensation was pushing each foot further the
-	// way it was already going. Negated, it pulls them together instead.
-	LastLeanFractionOfMax = -LeanFraction;
+	// ONE-SIDED, clamped to non-negative. This is the third model for this term and the first that
+	// matches the actual failure.
+	//
+	// |lean| was wrong: it pushed UP in both turn directions, so it fixed the burying turn and
+	// worsened the lifting one.
+	//
+	// A symmetric signed lift was worse: it does not merely decline to help on the other side, it
+	// actively LOWERS the rider there. That is why both signed runs measured a low foot of -12 to
+	// -13.7 cm against the magnitude version's -7.6 -- 5 cm of deliberate downward push on one
+	// turn. Flipping the sign only chose which turn got the penalty, and put it on the one the
+	// camera sees.
+	//
+	// Clamped, the compensation raises the rider going into the turn that buries the rear foot and
+	// does nothing at all otherwise. It can no longer make any pose worse than doing nothing.
+	//
+	// The direction is NOT negated: with the negation the rear foot dug deeper on right-hand turns,
+	// so positive lean is the burying direction and positive lean is what earns the lift.
+	LastLeanFractionOfMax = FMath::Max(0.f, LeanFraction);
+	LeanSignForDiagnostic = LeanFraction; // unclamped, for the per-direction diagnostic only
 
 	// Which axis is which is NOT assumed: the pack named them, and TryStartRidingAnim logged the
 	// names. Axis0 is the horizontal (Turn) axis and Axis1 the vertical (Forward) axis, which is
@@ -446,12 +460,24 @@ void ABoardActor::UpdateRidingAnimParams()
 				ToActor.InverseTransformPosition(RiderMesh->GetBoneLocation(TEXT("foot_l"), EBoneSpaces::WorldSpace)).Z,
 				ToActor.InverseTransformPosition(RiderMesh->GetBoneLocation(TEXT("foot_r"), EBoneSpaces::WorldSpace)).Z);
 
+			// Per-direction minima. Only sampled near full lean, so the reading describes the pose
+			// that actually matters rather than being dragged toward neutral by the whole run.
+			if (LastLeanFractionOfMax > 0.35f && LowestNow < MinFootZLeanPosCm)
+			{
+				MinFootZLeanPosCm = LowestNow;
+			}
+			else if (LeanSignForDiagnostic < -0.35f && LowestNow < MinFootZLeanNegCm)
+			{
+				MinFootZLeanNegCm = LowestNow;
+			}
+
 			if (LowestNow < MinFootZObservedCm - 0.5f)
 			{
 				MinFootZObservedCm = LowestNow;
-				UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER FEET: new LOWEST foot %.1f cm (deck top %.1f cm) -> clearance %+.1f cm.%s"),
+				UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER FEET: new LOWEST foot %.1f cm (deck top %.1f cm) -> clearance %+.1f cm. BY DIRECTION: lean+ (lifted turn) %+.1f cm, lean- (unlifted turn) %+.1f cm."),
 					LowestNow, kRiderDeckHeightCm, LowestNow - kRiderDeckHeightCm,
-					(LowestNow - kRiderDeckHeightCm) < 0.f ? TEXT(" through the deck.") : TEXT(""));
+					(MinFootZLeanPosCm == TNumericLimits<float>::Max()) ? 0.f : MinFootZLeanPosCm - kRiderDeckHeightCm,
+					(MinFootZLeanNegCm == TNumericLimits<float>::Max()) ? 0.f : MinFootZLeanNegCm - kRiderDeckHeightCm);
 			}
 			// A foot ABOVE the deck is what reads as "the back foot comes off the board", and the
 			// minimum alone could never see it.
