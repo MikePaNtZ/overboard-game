@@ -389,7 +389,32 @@ private:
 	// changes how much authored pose a given real displacement buys. Declared in
 	// docs/rider-riding-animation.md.
 	UPROPERTY(EditAnywhere, Category = "Board|Rider", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float RidingMaxLeanFraction = 0.55f;
+	float RidingMaxLeanFraction = 0.45f;
+
+	// Where the rider stands on the deck, cm, in the BOARD's local frame -- X fore/aft, Y across.
+	// Added on top of the real ballast displacement, which is untouched and still un-amplified.
+	//
+	// Y = -3.0 is MEASURED, not chosen: the riding animation puts the ankles at board-local
+	// Y = +3.4 / +2.5, so the authored stance sits ~3 cm off the deck's centreline. That bias
+	// spends 3 cm of a deck only ~23 cm wide, and it is spent on the side the heel hangs over.
+	// Cancelling it is the cheapest part of the overhang fix and needs no judgement call.
+	//
+	// It does NOT fully solve heel overhang and cannot: a ~25 cm foot on a ~23 cm deck overhangs
+	// somewhere by construction. The rest is what the lean-dip compensation below is for.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider")
+	FVector2D RiderRidingStanceOffsetCm = FVector2D(0.f, -3.0f);
+
+	// Raises the rider in proportion to how hard they are leaning, cm at FULL commanded lean.
+	//
+	// This is the fix a static trim cannot be. The pack's turn poses drop a foot below where the
+	// neutral pose puts it -- measured at -8.7 cm at 0.55 lean -- so a constant big enough to keep
+	// the feet out of the deck through a turn would leave the rider floating that far above it at
+	// rest. Scaling the lift with lean magnitude plants the feet at BOTH ends.
+	//
+	// A cheap approximation of the foot IK this pass deliberately skipped. It is cosmetic: it moves
+	// the avatar only, and the avatar has no mass, inertia or dynamics.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider")
+	float RiderRidingLeanDipCompCm = 7.0f;
 
 	// Base height of the rider component above the actor origin, cm. Differs by tier: the riding
 	// animation carries its own ~31 cm root lift that the stock standing idle does not, so one
@@ -422,6 +447,14 @@ private:
 	// Running minimum of the rider's lowest foot height, actor-local cm, across the whole PIE
 	// session. A single-pose measurement cannot see the turn poses that clip; this can.
 	float MinFootZObservedCm = TNumericLimits<float>::Max();
+
+	// ...and the HIGHEST. A foot floating above the deck is what reads as "the back foot comes off
+	// the board", and tracking only the minimum was blind to it.
+	float MaxFootZObservedCm = TNumericLimits<float>::Lowest();
+
+	// |commanded lean| as a 0..1 fraction of RidingMaxLeanFraction, updated each tick and read by
+	// GetRiderBaseHeightCm to drive the lean-proportional lift.
+	float LastLeanFractionOfMax = 0.f;
 
 	bool bLatestSampleFallen = false;
 

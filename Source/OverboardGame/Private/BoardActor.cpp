@@ -328,9 +328,16 @@ float ABoardActor::GetRiderBaseHeightCm() const
 	// RiderScale factor here, shrinking the rider by 15% would leave the component origin where it
 	// was while the feet rose 4.7 cm, and he would hover -- a scale knob that silently breaks the
 	// height fix is worse than no scale knob.
-	return bRidingAnimActive
-		? (kRiderDeckHeightCm - (kRidingAnimRootLiftCm * RiderScale) + RiderRidingHeightTrimCm)
-		: kRiderDeckHeightCm;
+	if (!bRidingAnimActive)
+	{
+		return kRiderDeckHeightCm;
+	}
+
+	// Lean-proportional lift. LastLeanFractionOfMax is |commanded lean| as a 0..1 fraction of the
+	// configured maximum, so this is 0 at rest and RiderRidingLeanDipCompCm at full lean -- the
+	// feet stay on the deck at both ends instead of trading one for the other.
+	const float LeanLiftCm = RiderRidingLeanDipCompCm * LastLeanFractionOfMax;
+	return kRiderDeckHeightCm - (kRidingAnimRootLiftCm * RiderScale) + RiderRidingHeightTrimCm + LeanLiftCm;
 }
 
 void ABoardActor::UpdateRidingAnimParams()
@@ -377,9 +384,12 @@ void ABoardActor::UpdateRidingAnimParams()
 	// RidingMaxLeanFraction scales the whole response rather than clipping its top: proportional
 	// everywhere, no dead band, no kink at the limit. Applied here, before the axis swap, so it
 	// always governs the lateral-lean signal whichever blendspace axis that signal ends up on.
-	const float TurnNormalised =
-		FMath::Clamp(LatestRiderLateralM / kRidingFullLeanLateralM, -1.f, 1.f)
-		* FMath::Clamp(RidingMaxLeanFraction, 0.f, 1.f);
+	const float LeanFraction = FMath::Clamp(LatestRiderLateralM / kRidingFullLeanLateralM, -1.f, 1.f);
+	const float TurnNormalised = LeanFraction * FMath::Clamp(RidingMaxLeanFraction, 0.f, 1.f);
+
+	// Drives the lean-proportional lift in GetRiderBaseHeightCm. Magnitude only -- the rider dips
+	// leaning either way, so the lift must not cancel itself on one side.
+	LastLeanFractionOfMax = FMath::Abs(LeanFraction);
 
 	// Which axis is which is NOT assumed: the pack named them, and TryStartRidingAnim logged the
 	// names. Axis0 is the horizontal (Turn) axis and Axis1 the vertical (Forward) axis, which is
@@ -424,15 +434,25 @@ void ABoardActor::UpdateRidingAnimParams()
 
 			// Report only on a meaningful new low, so a carve sweep prints a short descending
 			// series ending at the worst case instead of a line per frame.
+			const float HighestNow = FMath::Max(
+				ToActor.InverseTransformPosition(RiderMesh->GetBoneLocation(TEXT("foot_l"), EBoneSpaces::WorldSpace)).Z,
+				ToActor.InverseTransformPosition(RiderMesh->GetBoneLocation(TEXT("foot_r"), EBoneSpaces::WorldSpace)).Z);
+
 			if (LowestNow < MinFootZObservedCm - 0.5f)
 			{
 				MinFootZObservedCm = LowestNow;
-				const float ClearanceCm = LowestNow - kRiderDeckHeightCm;
-				UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER FEET: new lowest foot %.1f cm (deck top %.1f cm) -> clearance %+.1f cm.%s"),
-					LowestNow, kRiderDeckHeightCm, ClearanceCm,
-					ClearanceCm < 0.f
-						? TEXT(" FOOT IS THROUGH THE DECK -- raise RiderRidingHeightTrimCm by at least this much.")
-						: TEXT(""));
+				UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER FEET: new LOWEST foot %.1f cm (deck top %.1f cm) -> clearance %+.1f cm.%s"),
+					LowestNow, kRiderDeckHeightCm, LowestNow - kRiderDeckHeightCm,
+					(LowestNow - kRiderDeckHeightCm) < 0.f ? TEXT(" through the deck.") : TEXT(""));
+			}
+			// A foot ABOVE the deck is what reads as "the back foot comes off the board", and the
+			// minimum alone could never see it.
+			if (HighestNow > MaxFootZObservedCm + 0.5f)
+			{
+				MaxFootZObservedCm = HighestNow;
+				UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RIDER FEET: new HIGHEST foot %.1f cm (deck top %.1f cm) -> %+.1f cm.%s"),
+					HighestNow, kRiderDeckHeightCm, HighestNow - kRiderDeckHeightCm,
+					(HighestNow - kRiderDeckHeightCm) > 3.f ? TEXT(" FOOT IS OFF THE DECK.") : TEXT(""));
 			}
 		}
 	}
@@ -658,8 +678,11 @@ void ABoardActor::UpdatePoseFromHistory()
 		// this actor (see mesh/README.md) -- these are LOCAL displacements in the board's own
 		// frame, not world positions, so MuJoCoToUnreal's world-pose transform does not apply
 		// here; the local-mirror rule does. NO amplification -- see docs/mannequin-rider.md.
-		const float OffsetXCm = LatestRiderForeAftM * 100.f;
-		const float OffsetYCm = -LatestRiderLateralM * 100.f;
+		// Real ballast displacement, still with NO amplification. The stance offset is a separate,
+		// declared cosmetic term added on top -- it moves where the rider stands, it does not
+		// scale what the physics reported.
+		const float OffsetXCm = LatestRiderForeAftM * 100.f + RiderRidingStanceOffsetCm.X;
+		const float OffsetYCm = -LatestRiderLateralM * 100.f + RiderRidingStanceOffsetCm.Y;
 		RiderMesh->SetRelativeLocation(FVector(OffsetXCm, OffsetYCm, GetRiderBaseHeightCm()));
 	}
 
