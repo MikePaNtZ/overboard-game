@@ -335,9 +335,10 @@ float ABoardActor::GetRiderBaseHeightCm() const
 		return kRiderDeckHeightCm;
 	}
 
-	// Lean-proportional lift. LastLeanFractionOfMax is |commanded lean| as a 0..1 fraction of the
-	// configured maximum, so this is 0 at rest and RiderRidingLeanDipCompCm at full lean -- the
-	// feet stay on the deck at both ends instead of trading one for the other.
+	// Lean-proportional lift, SIGNED. LastLeanFractionOfMax is the commanded lean in -1..+1, so
+	// this raises the rider going into the turn that buries the rear foot and lowers them going
+	// into the turn that lifts it. A magnitude-driven version pushed up in both directions and so
+	// could only ever fix one of them -- see the header note.
 	const float LeanLiftCm = RiderRidingLeanDipCompCm * LastLeanFractionOfMax;
 	return kRiderDeckHeightCm - (kRidingAnimRootLiftCm * RiderScale) + RiderRidingHeightTrimCm + LeanLiftCm;
 }
@@ -389,9 +390,14 @@ void ABoardActor::UpdateRidingAnimParams()
 	const float LeanFraction = FMath::Clamp(LatestRiderLateralM / kRidingFullLeanLateralM, -1.f, 1.f);
 	const float TurnNormalised = LeanFraction * FMath::Clamp(RidingMaxLeanFraction, 0.f, 1.f);
 
-	// Drives the lean-proportional lift in GetRiderBaseHeightCm. Magnitude only -- the rider dips
-	// leaning either way, so the lift must not cancel itself on one side.
-	LastLeanFractionOfMax = FMath::Abs(LeanFraction);
+	// Drives the signed lean-proportional lift in GetRiderBaseHeightCm. SIGNED, deliberately: the
+	// rear foot sinks leaning one way and rises leaning the other, so the compensation has to
+	// change sign with it rather than push up regardless.
+	// NEGATED, and the sign was settled by measurement rather than by eye. With
+	// LastLeanFractionOfMax = +LeanFraction the logged foot extremes went from -7.6/+1.4 (spread
+	// 9.0 cm) to -13.7/+2.6 (spread 16.3 cm) -- the compensation was pushing each foot further the
+	// way it was already going. Negated, it pulls them together instead.
+	LastLeanFractionOfMax = -LeanFraction;
 
 	// Which axis is which is NOT assumed: the pack named them, and TryStartRidingAnim logged the
 	// names. Axis0 is the horizontal (Turn) axis and Axis1 the vertical (Forward) axis, which is

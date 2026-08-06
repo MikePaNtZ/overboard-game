@@ -419,11 +419,11 @@ private:
 	// point one way, so heel and toe have different amounts of deck to spare, and the centreline
 	// is not where a rider stands.
 	//
-	// +8 restores that bias and adds to it. No value fully solves heel overhang -- a foot roughly
+	// +5.5 restores that bias and adds to it (+8 overshot slightly). No value fully solves heel overhang -- a foot roughly
 	// as long as the deck is wide overhangs somewhere by construction -- so this buys deck back on
 	// the side the chase camera actually sees.
 	UPROPERTY(EditAnywhere, Category = "Board|Rider")
-	FVector2D RiderRidingStanceOffsetCm = FVector2D(0.f, 8.0f);
+	FVector2D RiderRidingStanceOffsetCm = FVector2D(0.f, 5.5f);
 
 	// Raises the rider in proportion to how hard they are leaning, cm at FULL commanded lean.
 	// Still needed -- a static trim cannot track a lean-dependent dip -- but it CANNOT close the
@@ -434,19 +434,26 @@ private:
 	// 11.6 cm. Lifting the whole BODY moves both feet together, so it can only slide that spread up
 	// and down -- it can never shrink it. Closing it needs per-foot IK, which this pass skipped.
 	//
-	// So the value is not "compensate the dip", it is "choose which error you get" -- and the two
-	// errors are not equally visible. The chase camera sits behind the board, so the BACK foot is
-	// the one on show; the front foot is largely occluded by the rider's body and the deck, and a
-	// foot sunk into geometry is invisible either way. That makes the tradeoff one-sided: hovering
-	// costs, sinking does not, and there is no reason to protect the front foot at all.
+	// SIGNED, as of 2026-08-06, and that is the fix -- earlier versions used |lean| and could never
+	// have worked.
 	//
-	// 3.4 measured +0.3 cm on the high foot -- no hover, but sitting exactly on the boundary. 2.0
-	// buys ~1.4 cm of margin so no pose variation can push a foot back above the deck, at the only
-	// cost being a low foot buried deeper where nothing can see it.
+	// The rider does not dip both ways. Leaning one way drives the rear foot down into the deck;
+	// leaning the other lifts it off. A magnitude-driven lift pushes UP in both cases, so it helps
+	// one turn direction and actively worsens the other -- which is exactly what was reported: the
+	// foot hovering on one side early on, then driving into the tail mesh on right-hand turns once
+	// the lift was tuned down to stop the hovering. Two opposite complaints, one wrong model.
+	//
+	// Signed, the lift raises the rider going into the sinking turn and lowers them going into the
+	// rising one, so both directions land near the deck instead of trading one for the other.
+	//
+	// The SIGN below is not derivable -- it depends which way the pack authored its lean poses --
+	// but it is measurable without a human: with the sign right the logged foot extremes tighten
+	// toward each other, and with it wrong they spread further apart. See the check in the capture
+	// notes.
 	//
 	// Cosmetic. Moves the avatar only, which has no mass, inertia or dynamics.
 	UPROPERTY(EditAnywhere, Category = "Board|Rider")
-	float RiderRidingLeanDipCompCm = 2.0f;
+	float RiderRidingLeanDipCompCm = 5.0f;
 
 	// Base height of the rider component above the actor origin, cm. Differs by tier: the riding
 	// animation carries its own ~31 cm root lift that the stock standing idle does not, so one
