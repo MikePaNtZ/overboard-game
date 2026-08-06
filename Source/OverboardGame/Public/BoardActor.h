@@ -350,19 +350,32 @@ private:
 	UPROPERTY(EditAnywhere, Category = "Board|Rider")
 	float RiderRidingHeightTrimCm = 0.f;
 
-	// Uniform visual scale on the rider. 0.85 = 15% smaller, requested after the take-5 capture
-	// read as an oversized rider on an undersized board.
+	// Uniform visual scale on the rider. 0.746 is DERIVED, not dialled in by eye:
+	//
+	//     0.746 = Pint deck length (0.70 m) / Openwheel deck length (0.938 m)
+	//
+	// Scaling the rider by the same ratio the SKIN is undersized by makes the rider-to-board
+	// proportion on screen exactly match a real rider on the real board. A first pass used 0.85,
+	// which was a guess and left the rider visibly too big; the derived figure is what the eye was
+	// actually asking for. It also pulls the feet from ~40.6 cm apart to ~35.7 cm, which is what
+	// stops the rear foot hanging off the end of a 70 cm deck at full lean.
 	//
 	// PURELY COSMETIC and it has to stay that way: the rider avatar contributes no mass, no
 	// inertia and no dynamics, so its size cannot reach any physics value. But be clear about what
 	// this is compensating for. A 170 cm rider on the 0.70 m Pint SKIN looks too big largely
 	// because the skin is ~25% shorter than the 0.938 m Openwheel board MuJoCo actually simulates.
 	// Shrinking the rider makes the pair look right by moving FURTHER from the simulated geometry,
-	// not closer -- at 0.85 the rider is ~145 cm, a child's height against the real board. The
-	// alternative fix is bUsePintSkin=false, which restores the true proportions honestly.
-	// See docs/rider-riding-animation.md.
+	// not closer -- at 0.746 the rider is ~127 cm, a child's height against the real board.
+	//
+	// This was put side by side against bUsePintSkin=false with an unscaled rider, which is the
+	// honest alternative and needs no compensation at all. The Pint was chosen on looks, knowingly:
+	// footage from this client already carries its own provenance category, and nothing here can
+	// reach a physics value. The cost is real and is the one bUsePintSkin's own comment names --
+	// with a wrongly-proportioned chassis, "wrong asset scale" and "pose stream offset" become
+	// indistinguishable, so the free floats/sinks bug signal is gone. See
+	// docs/rider-riding-animation.md.
 	UPROPERTY(EditAnywhere, Category = "Board|Rider", meta = (ClampMin = "0.5", ClampMax = "1.5"))
-	float RiderScale = 0.85f;
+	float RiderScale = 0.746f;
 
 	// Fraction of the pack's authored lean range the rider is allowed to reach at full command.
 	//
