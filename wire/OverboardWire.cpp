@@ -116,9 +116,9 @@ namespace OverboardWire
 		const size_t ExpectedSize = GetStatePacketWireSize(SchemaVersion);
 		if (ExpectedSize == 0)
 		{
-			// Neither 1 nor 2 -- this is the actual "fail loudly" gate. A v1 packet is NOT this
-			// branch; see the header comment on why v1 is accepted, not an error.
-			OutError = "OBW1 schema_version " + std::to_string(SchemaVersion) + " is not 1 or 2 -- this build only understands v1/v2. Dropping packet.";
+			// Not 1, 2 or 3 -- this is the actual "fail loudly" gate. A v1/v2 packet is NOT
+			// this branch; see the header comment on why they are accepted, not errors.
+			OutError = "OBW1 schema_version " + std::to_string(SchemaVersion) + " is not 1, 2 or 3 -- this build only understands v1/v2/v3. Dropping packet.";
 			return false;
 		}
 		if (Len < ExpectedSize)
@@ -146,12 +146,24 @@ namespace OverboardWire
 		OutState.YawRad = GetF32(Buffer, 64);
 		OutState.MotorCurrentA = GetF32(Buffer, 68);
 
-		if (SchemaVersion == kStateSchemaVersionV2)
+		if (SchemaVersion >= kStateSchemaVersionV2)
 		{
 			OutState.RiderForeAftM = GetF32(Buffer, 72);
 			OutState.RiderLateralM = GetF32(Buffer, 76);
 		}
 		// else: v1 -- RiderForeAftM/RiderLateralM already default-initialised to 0 (neutral).
+
+		if (SchemaVersion >= kStateSchemaVersionV3)
+		{
+			OutState.LinVel[0] = GetF32(Buffer, 80);
+			OutState.LinVel[1] = GetF32(Buffer, 84);
+			OutState.LinVel[2] = GetF32(Buffer, 88);
+			OutState.AngVel[0] = GetF32(Buffer, 92);
+			OutState.AngVel[1] = GetF32(Buffer, 96);
+			OutState.AngVel[2] = GetF32(Buffer, 100);
+		}
+		// else: v1/v2 -- LinVel/AngVel stay zero. See the header: that is an ABSENCE, not a
+		// value, and the host never sets PhysicsHandoff on a packet that lacks them.
 
 		return true;
 	}
@@ -175,10 +187,19 @@ namespace OverboardWire
 		PutF32(Buffer, 60, State.PitchRad);
 		PutF32(Buffer, 64, State.YawRad);
 		PutF32(Buffer, 68, State.MotorCurrentA);
-		if (State.SchemaVersion == kStateSchemaVersionV2)
+		if (State.SchemaVersion >= kStateSchemaVersionV2)
 		{
 			PutF32(Buffer, 72, State.RiderForeAftM);
 			PutF32(Buffer, 76, State.RiderLateralM);
+		}
+		if (State.SchemaVersion >= kStateSchemaVersionV3)
+		{
+			PutF32(Buffer, 80, State.LinVel[0]);
+			PutF32(Buffer, 84, State.LinVel[1]);
+			PutF32(Buffer, 88, State.LinVel[2]);
+			PutF32(Buffer, 92, State.AngVel[0]);
+			PutF32(Buffer, 96, State.AngVel[1]);
+			PutF32(Buffer, 100, State.AngVel[2]);
 		}
 	}
 
