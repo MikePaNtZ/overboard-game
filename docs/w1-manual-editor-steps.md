@@ -17,6 +17,16 @@ an unconditional startup impulse in the host that hasn't been gated off yet. **T
 current state of the host, not a bug in this client and not a handedness error.** Don't chase it,
 don't file it against this repo — it's already tracked on the Controls side.
 
+**FLAGGED FOR THE NEXT PASS, not resolved here.** overboard-game#28's whole point is that nothing
+should move before a player presses start, which sounds like it should retire this warning. Two
+things checked from the game side, neither confident enough to delete the note above:
+`crates/sim-host` already gates its OWN startup kick behind `--startup-kick` (off by default,
+issue #169) independently of #28, so this note may already be describing a stale mechanism rather
+than the one #28 removes; and #28's engage-sequence work had not landed on the controls side as of
+this pass (`feat/controls/engage-sequence` had no commits ahead of its branch point). Re-verify
+against a real host once that work ships, and only then delete or rewrite this warning — don't
+carry it forward from this note without re-checking.
+
 **Control model, so the stick makes sense:** the outer velocity loop is OFF. The board does NOT
 station-keep — there's no term pulling it back to rest. **Fore/aft is a lean command, not a
 speed command:** push the stick forward to lean and accelerate, pull back to decelerate and then
@@ -231,6 +241,43 @@ and passed, but worth re-confirming after any transform-adjacent change).
    real host (nothing in this repo can trigger a `Fallen` flag standalone) — if the board falls
    and does *not* visibly reset, check that log line fired at all before assuming the host
    ignored the Reset flag.
+
+8. **Engage/disengage + stationary yaw-aim (new, overboard-game#28, UNVERIFIED against a real
+   host — the controls-side engage-sequence work had not landed as of this pass).** What this
+   client does, precisely, so a first-time reader can tell right from wrong within a minute:
+
+   - **Press Space or gamepad A.** This is the "press start" binding, and it is not new plumbing —
+     it is the same `IA_Arm` binding wired since #162. What's new is what it's *for*.
+   - **A blue "DISENGAGED — press SPACE or GAMEPAD A to ride" banner, bottom-centre.** Deliberately
+     calm-coloured and NOT pulsing, unlike the red loss-of-authority banner near the top of the
+     screen — the two must never be confused, and this one is a normal mode, not a fault.
+   - **Stick/keys that already steer while riding now also aim while parked.** Right stick / A-D /
+     Left-Right — the exact same input as `weight_shift_lateral`/riding `steer` — is what the
+     engage-sequence work is expected to read as a stationary pivot command once it lands
+     host-side. This client does not rotate anything itself either way (ADR-0009): it sends the
+     same shaped value it always has, and renders whatever pose comes back.
+
+   **What you can actually check today, with no controls-side engage-sequence yet:**
+   - The blue banner's presence/absence directly mirrors `ABoardActor::IsEngaged()`, which mirrors
+     `StateOut::flags`'s `Armed` bit (see `Source/OverboardGame/Public/EngageWireMapping.h`).
+     Against a REAL host on `master` as of this pass, that bit is set unconditionally every tick,
+     so **expect the banner to never appear** — that is the client correctly rendering "always
+     engaged," not a bug in this feature. Confirm it with `fake_sender`: any run that does NOT set
+     `EStateFlags::Armed` on a packet should show the banner; one that does should not.
+   - Output Log: `ABoardActor: engage state changed to ENGAGED/DISENGAGED` and `engage banner:
+     state changed to ...` on every real transition (not spammed every frame) — if you toggle the
+     `Armed` bit with a modified `fake_sender`/`wire-probe` run and see neither line, that's the
+     bug to chase, not the banner rendering.
+
+   **What would indicate a real defect, not just "the host hasn't shipped the feature yet":** the
+   banner flickering on/off every frame against a steady host signal (missing hysteresis — this
+   client deliberately has none here, since unlike the authority warning there is no lead time to
+   protect, so a flicker means the SIGNAL is dithering, worth reporting upstream); the board
+   visibly rotating in place without any packet showing a changing `yaw_rad`/`quat` (this client
+   computing yaw itself, which would be the ADR-0009 violation this feature was explicitly built
+   to avoid); or riding-turn (stick input while moving and engaged) going dead — check
+   `SendInputPacket`'s `steer` computation is still unconditional before assuming a real host-side
+   regression.
 
 None of the above changes the wire contract or the transform math — it's "look at the running
 editor and confirm what the standalone tests already proved numerically," plus the two visual

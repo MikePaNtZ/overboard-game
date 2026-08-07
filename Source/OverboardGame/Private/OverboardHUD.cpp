@@ -22,8 +22,15 @@ namespace
 
 	const TCHAR* kTerrainTagTitle = TEXT("TERRAIN UNVERIFIED");
 
+	// overboard-game#28. Deliberately calm wording -- this is a normal mode, not a fault -- and
+	// deliberately not phrased as an outcome, same "machinery, not a claim" rule as the authority
+	// banner: it says what input engages the board, not anything about what will happen next.
+	const TCHAR* kEngageBannerTitle = TEXT("DISENGAGED");
+	const TCHAR* kEngageBannerDetail = TEXT("press SPACE or GAMEPAD A to ride");
+
 	constexpr float kBannerHeightPx = 96.f;
 	constexpr float kTerrainTagHeightPx = 34.f;
+	constexpr float kEngageBannerHeightPx = 80.f;
 }
 
 AOverboardHUD::AOverboardHUD()
@@ -91,6 +98,26 @@ void AOverboardHUD::DrawHUD()
 	if (!Board)
 	{
 		return;
+	}
+
+	// overboard-game#28. Drawn/logged before the authority-warning banner below on purpose: the
+	// two are mutually exclusive in practice (the authority warning implies the board is moving,
+	// which implies engaged), but resolving that by ORDER here rather than by adding a runtime
+	// guard keeps this simple and keeps the loss-of-authority banner's own logic -- which the ADR
+	// leans on for lead time -- untouched.
+	{
+		const bool bEngagedNow = Board->IsEngaged();
+		if (bEngagedNow != bWasEngagedLastFrame)
+		{
+			UE_LOG(LogOverboardHUD, Log, TEXT("engage banner: state changed to %s"),
+				bEngagedNow ? TEXT("ENGAGED") : TEXT("DISENGAGED"));
+		}
+		bWasEngagedLastFrame = bEngagedNow;
+
+		if (!bEngagedNow)
+		{
+			DrawEngageBanner();
+		}
 	}
 
 	const bool bWarningNow = Board->IsAuthorityWarning();
@@ -225,4 +252,32 @@ void AOverboardHUD::DrawTerrainTag()
 
 	DrawRect(FLinearColor(0.35f, 0.22f, 0.f, 0.8f), X - 8.f, Y - 6.f, TW + 16.f, TH + 12.f);
 	DrawText(Text, FLinearColor(1.f, 0.85f, 0.4f, 1.f), X, Y, GEngine->GetMediumFont(), 1.0f);
+}
+
+void AOverboardHUD::DrawEngageBanner()
+{
+	// overboard-game#28. Bottom-centre, not top-centre: the authority banner already owns top-
+	// centre and disengaged is not urgent enough to compete for the same real estate a player is
+	// trained to glance at for danger. Steady blue, no pulse -- unlike DrawAuthorityBanner, this
+	// is a mode the board sits in for as long as nobody has pressed start, not a fleeting event
+	// that needs motion to get noticed, and a calm colour is deliberately the opposite of the red
+	// authority banner so the two can never be confused for each other, including by someone who
+	// glances at a screenshot without reading either line of text.
+	const float W = Canvas->SizeX;
+	const float H = Canvas->SizeY;
+	const float BarY = H * 0.8f;
+
+	DrawRect(FLinearColor(0.f, 0.18f, 0.35f, 0.85f), 0.f, BarY, W, kEngageBannerHeightPx);
+	DrawRect(FLinearColor(0.3f, 0.7f, 1.f, 1.f), 0.f, BarY, W, 3.f);
+	DrawRect(FLinearColor(0.3f, 0.7f, 1.f, 1.f), 0.f, BarY + kEngageBannerHeightPx - 3.f, W, 3.f);
+
+	float TitleW = 0.f, TitleH = 0.f;
+	GetTextSize(kEngageBannerTitle, TitleW, TitleH, GEngine->GetLargeFont(), 1.6f);
+	DrawText(kEngageBannerTitle, FLinearColor::White, (W - TitleW) * 0.5f, BarY + 12.f,
+		GEngine->GetLargeFont(), 1.6f);
+
+	float DetailW = 0.f, DetailH = 0.f;
+	GetTextSize(kEngageBannerDetail, DetailW, DetailH, GEngine->GetMediumFont(), 1.0f);
+	DrawText(kEngageBannerDetail, FLinearColor(0.85f, 0.95f, 1.f, 1.f), (W - DetailW) * 0.5f,
+		BarY + 12.f + TitleH + 4.f, GEngine->GetMediumFont(), 1.0f);
 }

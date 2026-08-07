@@ -39,6 +39,20 @@
 // SendInputPacket ramps toward whatever the mapped value is (see SmoothedForeAft etc. and
 // KeyboardRampSpeed below) rather than sending a snap to full lean -- gamepad input already
 // arrives gradually, so the same ramp is a no-op for it in practice.
+//
+// ENGAGE/DISENGAGE + STATIONARY YAW-AIM (overboard-game#28):
+//
+//   IA_Arm already IS the "press start / engage" binding -- Space and gamepad A were mapped to
+//   it since #162, before this feature existed. Nothing new to bind: pressing it sends
+//   OverboardWire::EInputFlags::Arm, exactly as before; whether that actually engages the motor is
+//   entirely `sim-host`'s call (this class never predicts it -- see EngageWireMapping.h).
+//
+//   The right-stick-X / A-D / Left-Right axis that already drives `steer` for riding turn now
+//   ALSO carries the stationary yaw-aim command while the board is disengaged -- SendInputPacket
+//   sends the identical shaped value either way, unconditionally, and it is entirely `sim-host`'s
+//   job to decide which meaning `steer` carries at a given instant (engaged/moving -> riding turn;
+//   disengaged -> pivot in place). See EngageWireMapping.h for why that is safe and why gating the
+//   SEND here would either be a no-op or would regress riding turn.
 #pragma once
 
 #include "CoreMinimal.h"

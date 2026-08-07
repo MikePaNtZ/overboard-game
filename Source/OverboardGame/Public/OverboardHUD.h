@@ -79,6 +79,7 @@ private:
 
 	void DrawAuthorityBanner(float Alpha);
 	void DrawTerrainTag();
+	void DrawEngageBanner();
 
 	/// Resolves this level's name and looks it up in the table generated from the terrain
 	/// declarations. When the level's drivable surface has not been measured against the
@@ -112,4 +113,13 @@ private:
 
 	bool bTerrainUnverified = false;
 	FString TerrainLevelName;
+
+	// overboard-game#28: engage/disengage surfacing. Deliberately styled UNLIKE the authority
+	// banner above -- calm colour, no pulse, no hysteresis -- because disengaged is a normal,
+	// expected mode (parked, waiting for a start press), not an urgent event, and per the issue's
+	// own ask must not read as a crash. `ABoardActor::IsEngaged()` is the newest raw sample, same
+	// as every other flag this HUD reads, so the banner appears/disappears on the same tick the
+	// state actually changes -- including the auto-disengage-on-stop transition, which is exactly
+	// the moment this banner exists to make read as intentional rather than as a failure.
+	bool bWasEngagedLastFrame = true; // assume engaged before the first sample, so no spurious log
 };

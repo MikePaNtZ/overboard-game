@@ -62,6 +62,22 @@ public:
 	// end-to-end lead as a measured number, not the host-side figure quoted forward.
 	double GetAuthorityWarningArrivalTimeSeconds() const { return AuthorityWarningArrivalTimeSeconds; }
 
+	// True while the board reports ENGAGED (overboard-game#28: explicit rider start/stop and
+	// stationary yaw-aiming). Newest RAW sample, same rule as IsFallen()/IsAuthorityWarning() --
+	// drives AOverboardHUD's engage/disengage banner directly off this, on the tick the state
+	// actually changes, not one render-delay later.
+	//
+	// NOT read by AOverboardPlayerController::SendInputPacket -- see that function's own comment
+	// on `Packet.Steer` for why the send stays unconditional and `sim-host` is what decides
+	// whether `steer` means riding-turn or stationary yaw-aim at any given instant.
+	//
+	// See EngageWireMapping.h for exactly which wire bit this reads and an important, honest
+	// caveat: a real host sets that bit unconditionally today, before the controls-side
+	// engage-sequence work lands, so this currently reads "always engaged" against a real host.
+	// That is the correct thing for this client to render -- rendering "disengaged" against a host
+	// that has no disengage state yet would be exactly the local prediction ADR-0009 forbids.
+	bool IsEngaged() const { return bLatestSampleEngaged; }
+
 	// Where MuJoCo's world origin lands in UE world space, in centimetres.
 	//
 	// The wire carries an ABSOLUTE position and UpdatePoseFromHistory applies it with
@@ -242,6 +258,11 @@ private:
 	// own hold is what keeps the banner up past the signal, not a lingering value here.
 	bool bLatestSampleAuthorityWarning = false;
 	double AuthorityWarningArrivalTimeSeconds = 0.0;
+
+	// See IsEngaged(). Defaults false (disengaged) before anything has been received -- the same
+	// "do not guess" posture UpdatePoseFromHistory already takes with an empty history, and the
+	// safe default for a feature whose whole point is not to assume engagement.
+	bool bLatestSampleEngaged = false;
 
 	// Newest raw rider ballast displacement, metres, MuJoCo frame -- same "newest sample, not
 	// the interpolated render pose" reasoning as bLatestSampleFallen. 0 on a v1 packet, which is

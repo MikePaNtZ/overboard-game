@@ -6,6 +6,7 @@
 #include "ProceduralMeshComponent.h"
 #include "UObject/ConstructorHelpers.h"
 #include "CoordinateTransform.h"
+#include "EngageWireMapping.h"
 #include "StlLoader.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/Paths.h"
@@ -273,6 +274,21 @@ void ABoardActor::UpdatePoseFromHistory()
 			AuthorityWarningArrivalTimeSeconds = 0.0;
 		}
 		bLatestSampleAuthorityWarning = bWarningNow;
+	}
+
+	// overboard-game#28: engaged/disengaged. See IsEngaged() and EngageWireMapping.h for which
+	// wire bit this is and the caveat that a real host sets it unconditionally today. Logged on
+	// change, not every tick, so an auto-disengage-on-stop shows up once in the Output Log as an
+	// intentional transition rather than needing to be read off a graph.
+	{
+		const bool bEngagedNow =
+			(History.Last().State.Flags & OverboardEngageWire::kEngagedStateFlag) != 0;
+		if (bEngagedNow != bLatestSampleEngaged)
+		{
+			UE_LOG(LogTemp, Log, TEXT("ABoardActor: engage state changed to %s"),
+				bEngagedNow ? TEXT("ENGAGED") : TEXT("DISENGAGED"));
+		}
+		bLatestSampleEngaged = bEngagedNow;
 	}
 
 	// Real simulated ballast displacement (wire v2; a v1 packet leaves these at 0, the documented

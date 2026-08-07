@@ -12,6 +12,7 @@
 #include "SocketSubsystem.h"
 #include "IPAddress.h"
 #include "OverboardWire.h"
+#include "EngageWireMapping.h"
 #include "OverboardGameMode.h"
 #include "BoardActor.h"
 #include "Logging/LogMacros.h"
@@ -296,12 +297,24 @@ void AOverboardPlayerController::SendInputPacket()
 	Packet.Seq = SendSeq++; // monotonic for the life of the socket, regardless of arm/reset state
 	const bool bSendReset = bResetHeld || bAutoResetPending;
 	bAutoResetPending = false; // one-shot: consumed the instant it's sent, never held
-	Packet.Flags = (bArmHeld ? OverboardWire::EInputFlags::Arm : 0) | (bSendReset ? OverboardWire::EInputFlags::Reset : 0);
+	// bArmHeld is the "press start / engage" request (overboard-game#28) -- see
+	// EngageWireMapping.h::kEngageRequestInputFlag for which bit this is and why it is a reuse,
+	// not a new one.
+	Packet.Flags = (bArmHeld ? OverboardEngageWire::kEngageRequestInputFlag : 0) | (bSendReset ? OverboardWire::EInputFlags::Reset : 0);
 	// Ramped (Smoothed*, not Current* -- see KeyboardRampSpeed), then deadzone + curve shape,
 	// then clamp is the final, unconditional step before the wire -- do not rely on the host to
 	// sanitise, even though it does (#162 W2 dispatch).
 	Packet.WeightShiftForeAft = FMath::Clamp(ShapeAxis(SmoothedForeAft), -1.f, 1.f);
 	Packet.WeightShiftLateral = FMath::Clamp(ShapeAxis(SmoothedLateral), -1.f, 1.f);
+
+	// overboard-game#28: unconditional, same as before this feature -- and deliberately so. This
+	// same value is `steer`'s ordinary riding-turn command while ABoardActor::IsEngaged() is true
+	// (unchanged; a live, separately-tuned feature -- must not regress), and becomes the
+	// stationary yaw-aim command once the board reports disengaged, per EngageWireMapping.h's
+	// kYawAimSharesSteerField. Which of the two `steer` means at any instant is decided entirely
+	// by `sim-host` (engaged/moving vs. disengaged), not by this class -- gating the SEND on
+	// IsEngaged() here would either be a no-op (same value, same field) or would zero riding-turn
+	// while engaged, which is the regression, not the fix.
 	Packet.Steer = FMath::Clamp(ShapeAxis(SmoothedSteer), -1.f, 1.f); // NON-PHYSICAL
 
 	uint8 Buf[OverboardWire::kInputPacketWireSize];
