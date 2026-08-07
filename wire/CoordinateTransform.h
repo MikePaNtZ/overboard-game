@@ -29,4 +29,27 @@ namespace OverboardWire
 	// a commanded pure yaw before trusting this for anything beyond "it compiles": a handedness
 	// bug looks exactly like correct motion mirrored, which is easy to miss on a symmetric box.
 	FUeTransform MuJoCoToUnreal(const float PosM[3], const float QuatWXYZ[4]);
+
+	// A velocity pair already converted into Unreal's convention, for the ADR-0012 physics
+	// handoff: centimetres/second and DEGREES/second (UE's physics API takes degrees).
+	struct FUeVelocity
+	{
+		float LinCmS[3] = {0.f, 0.f, 0.f};
+		float AngDegS[3] = {0.f, 0.f, 0.f};
+	};
+
+	// Converts raw MuJoCo world-frame velocities (m/s and rad/s, Z-up, RIGHT-handed) into
+	// Unreal's convention. ADR-0012; same "one place only" rule as MuJoCoToUnreal.
+	//
+	// LINEAR velocity is a polar vector and mirrors exactly like position does: negate Y, scale
+	// metres to centimetres.
+	//
+	// ANGULAR velocity is an AXIAL (pseudo)vector, and this is the part that is easy to get
+	// wrong. Under a reflection an axial vector picks up an extra sign flip relative to a polar
+	// one, so mirroring Y negates the OTHER two components instead: (wx, wy, wz) ->
+	// (-wx, +wy, -wz). That is not a separate convention invented here -- it is exactly the rule
+	// MuJoCoToUnreal already applies to the quaternion, whose (x, y, z) are the components of
+	// its rotation axis, which is the same axial direction w points along. If the two disagreed,
+	// a handed-over board would spin the opposite way to the orientation it was handed over in.
+	FUeVelocity MuJoCoVelocityToUnreal(const float LinVelMS[3], const float AngVelRadS[3]);
 }

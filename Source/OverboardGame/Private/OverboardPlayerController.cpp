@@ -261,7 +261,23 @@ void AOverboardPlayerController::CheckForAutoResetOnFall()
 		return; // board not spawned yet -- nothing to check
 	}
 
+	// ADR-0012: never auto-reset out of a physics handoff.
+	//
+	// A handoff almost always coincides with FALLEN, so without this the rising edge below would
+	// fire Reset on the very next tick, the host would clear its latch, and the crash would end
+	// roughly one frame after it began -- the player would see the board twitch and respawn
+	// rather than tumble. Reset during a handoff is the PLAYER's call, and bResetHeld still
+	// carries it: this suppresses the automatic one only.
+	//
+	// bWasFallenLastTick is still tracked through the handoff so that clearing it does not
+	// immediately re-trigger on an edge that was never serviced.
 	const bool bIsFallenNow = Board->IsFallen();
+	if (Board->IsPhysicsHandoff())
+	{
+		bWasFallenLastTick = bIsFallenNow;
+		return;
+	}
+
 	if (bIsFallenNow && !bWasFallenLastTick)
 	{
 		// Rising edge only -- fires once per fall, not held for as long as Fallen stays set.

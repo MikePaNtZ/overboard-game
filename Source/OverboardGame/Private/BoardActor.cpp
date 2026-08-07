@@ -2,6 +2,8 @@
 
 #include "Components/StaticMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/BoxComponent.h"
+#include "PhysicsEngine/PhysicsAsset.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimSingleNodeInstance.h"
 #include "Animation/BlendSpace.h"
@@ -25,6 +27,19 @@ namespace
 	// rider's height is set, specifically so the constructor's base pose and
 	// UpdatePoseFromHistory's per-tick offset cannot drift apart the way they briefly did here.
 	constexpr float kRiderDeckHeightCm = 8.3f;
+
+	// ADR-0012 rider ragdoll. UE5 mannequin skeleton bone names -- "pelvis" is the ragdoll root
+	// (everything below it simulates), "spine_03" is the upper chest, chosen as the impulse
+	// point because an impulse through the centre of mass slides the rider forward standing bolt
+	// upright instead of pitching them over the nose.
+	const FName kRiderRagdollRootBone(TEXT("pelvis"));
+	const FName kRiderImpulseBone(TEXT("spine_03"));
+	// Impulse = floor + per-(cm/s) * board speed, in UE impulse units (kg*cm/s). The floor keeps
+	// a low-speed topple from looking like the rider simply melts; the speed term is what makes
+	// a fast strike throw them further than a slow one, which is the whole reason the wire
+	// carries a velocity at all.
+	constexpr float kRiderPitchImpulsePerCmS = 12.0f;
+	constexpr float kRiderPitchImpulseFloor = 4000.0f;
 
 	// Wheel radius, metres -- the MuJoCo primitive cylinder the plant model actually simulates
 	// (145.4 mm; see mesh/README.md, same figure WheelMesh is built at). Turns the wire's
@@ -94,8 +109,27 @@ ABoardActor::ABoardActor()
 
 	// Identity-scale actor root. BoxMesh and MeshAssemblyRoot attach here as SIBLINGS -- see the
 	// header comment on SceneRoot for the scale bug this exists to prevent from recurring.
+	// ADR-0012: the actor is rooted on a collision box so that a physics handoff can simulate
+	// the WHOLE board rather than one child component. Inert and weightless until a handoff --
+	// THE RULE at the top of this file holds unchanged until then. See the header on why this
+	// is a UBoxComponent and deliberately not BoxMesh.
+	PhysicsBody = CreateDefaultSubobject<UBoxComponent>(TEXT("PhysicsBody"));
+	RootComponent = PhysicsBody;
+	// Half-extents, centimetres, from the real bumper-to-bumper mesh bounds (x +-0.469 m,
+	// y +-0.116 m) and the 0.1454 m wheel radius -- not eyeballed.
+	PhysicsBody->SetBoxExtent(FVector(47.f, 12.f, 15.f));
+	PhysicsBody->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	PhysicsBody->SetCollisionResponseToAllChannels(ECR_Ignore);
+	PhysicsBody->SetSimulatePhysics(false);
+	PhysicsBody->SetEnableGravity(false);
+	PhysicsBody->SetMobility(EComponentMobility::Movable);
+	PhysicsBody->SetHiddenInGame(true);
+	// Rider-scale, matching overboard_rider.xml's 83 kg total so the crash carries the momentum
+	// the strike was computed with rather than a default UE mass.
+	PhysicsBody->SetMassOverrideInKg(NAME_None, 83.f, true);
+
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
-	RootComponent = SceneRoot;
+	SceneRoot->SetupAttachment(PhysicsBody);
 
 	BoxMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("BoxMesh"));
 	BoxMesh->SetupAttachment(SceneRoot);
@@ -651,7 +685,183 @@ void ABoardActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void ABoardActor::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+
+	// ADR-0012: once physics authority is ours, the wire's pose is a frozen snapshot of the
+	// strike and driving the actor from it would fight Unreal's own integration -- the board
+	// would jitter between the crash it is simulating and the instant it started. Read the
+	// packet ONLY to notice the latch clearing.
+	if (bPhysicsHandoffActive)
+	{
+		PollForHandoffRelease();
+		return;
+	}
 	UpdatePoseFromHistory();
+}
+
+void ABoardActor::PollForHandoffRelease()
+{
+	if (!StateClient.IsValid())
+	{
+		return;
+	}
+	TArray<FTimestampedBoardState> History;
+	StateClient->GetHistorySnapshot(History);
+	if (History.Num() == 0)
+	{
+		return;
+	}
+	const bool bHandoffNow =
+		(History.Last().State.Flags & OverboardWire::EStateFlags::PhysicsHandoff) != 0;
+	if (!bHandoffNow)
+	{
+		EndPhysicsHandoff();
+	}
+}
+
+void ABoardActor::BeginPhysicsHandoff(const OverboardWire::FBoardState& State)
+{
+	if (bPhysicsHandoffActive)
+	{
+		return;
+	}
+	bPhysicsHandoffActive = true;
+
+	// The pose is applied from the wire ONE LAST TIME before physics takes over, so the
+	// simulation starts from exactly where the board was drawn rather than from wherever the
+	// render-delayed interpolation had reached. Uses the same origin-yaw-then-translate order
+	// UpdatePoseFromHistory documents; getting that order wrong swings the board around the
+	// level origin on a several-hundred-metre lever arm.
+	const OverboardWire::FUeTransform Ue = OverboardWire::MuJoCoToUnreal(State.Pos, State.Quat);
+	const FQuat OriginYaw(FRotator(0.f, WorldOriginYawDeg, 0.f));
+	SetActorLocation(OriginYaw.RotateVector(FVector(Ue.PosCm[0], Ue.PosCm[1], Ue.PosCm[2])) + WorldOriginOffsetCm);
+	SetActorRotation(OriginYaw * FQuat(Ue.QuatWXYZ[1], Ue.QuatWXYZ[2], Ue.QuatWXYZ[3], Ue.QuatWXYZ[0]));
+
+	// Velocities go through CoordinateTransform like everything else, then through the SAME
+	// origin yaw as the pose. Skipping the yaw here would launch the board along the level's
+	// axes instead of its own heading -- a bug that looks like "the crash goes the wrong way"
+	// and is very hard to read off a screenshot.
+	const OverboardWire::FUeVelocity Vel = OverboardWire::MuJoCoVelocityToUnreal(State.LinVel, State.AngVel);
+	const FVector LinCmS = OriginYaw.RotateVector(FVector(Vel.LinCmS[0], Vel.LinCmS[1], Vel.LinCmS[2]));
+	const FVector AngDegS = OriginYaw.RotateVector(FVector(Vel.AngDegS[0], Vel.AngDegS[1], Vel.AngDegS[2]));
+
+	UPrimitiveComponent* Sim = GetSimulatedBodyComponent();
+	if (!Sim)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("ABoardActor: ADR-0012 handoff arrived but no component could be simulated -- "
+				 "the board will freeze rather than crash. Check mesh load in BeginPlay."));
+		return;
+	}
+
+	// Collision must go on BEFORE physics: a body that starts simulating with collision still
+	// disabled falls straight through City Park's road.
+	Sim->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	Sim->SetCollisionResponseToAllChannels(ECR_Block);
+	Sim->SetEnableGravity(true);
+	Sim->SetSimulatePhysics(true);
+	Sim->SetPhysicsLinearVelocity(LinCmS);
+	Sim->SetPhysicsAngularVelocityInDegrees(AngDegS);
+
+	UE_LOG(LogTemp, Log,
+		TEXT("ABoardActor: ADR-0012 physics handoff -- Unreal owns the board. "
+			 "seeded lin=(%.1f,%.1f,%.1f) cm/s ang=(%.1f,%.1f,%.1f) deg/s"),
+		LinCmS.X, LinCmS.Y, LinCmS.Z, AngDegS.X, AngDegS.Y, AngDegS.Z);
+
+	OnPhysicsHandoffBegan(LinCmS);
+}
+
+UPrimitiveComponent* ABoardActor::GetSimulatedBodyComponent() const
+{
+	return PhysicsBody;
+}
+
+void ABoardActor::OnPhysicsHandoffBegan(const FVector& BoardLinearVelocityCmS)
+{
+	if (!RiderMesh || !bRiderLoaded || !bShowRider)
+	{
+		return;
+	}
+
+	// A skeletal mesh with no physics asset silently ignores SetSimulatePhysics -- it does not
+	// warn, it just keeps playing the animation. That would present as "the ragdoll feature does
+	// not work" with nothing in the log, so it is checked and said out loud instead.
+	if (!RiderMesh->GetPhysicsAsset())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("ABoardActor: rider has no physics asset, so it cannot ragdoll -- the board will "
+				 "crash with the rider still posed on it. Assign a PhysicsAsset to the rider "
+				 "skeletal mesh to enable ADR-0012's rider fall."));
+		return;
+	}
+
+	// Detach first: a ragdoll still parented to the board is dragged by the board's own tumble
+	// and reads as the rider being welded to the deck through the crash.
+	RiderMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	RiderMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	RiderMesh->SetCollisionResponseToAllChannels(ECR_Block);
+	RiderMesh->SetCollisionProfileName(TEXT("Ragdoll"));
+	RiderMesh->SetEnableGravity(true);
+	RiderMesh->SetAllBodiesBelowSimulatePhysics(kRiderRagdollRootBone, true, /*bIncludeSelf=*/true);
+
+	// Inherit the board's velocity, then add a forward pitch over the nose. Without the
+	// inherited part the rider drops straight down while the board slides out from under them,
+	// which reads as the rider being deleted rather than thrown.
+	RiderMesh->SetAllPhysicsLinearVelocity(BoardLinearVelocityCmS);
+
+	// Sized FROM the strike rather than dialled in: the faster the board was going, the harder
+	// the rider goes over the front. Applied at the chest so it produces rotation over the nose
+	// and not just translation -- an impulse through the centre of mass would slide the rider
+	// forward standing bolt upright.
+	const float SpeedCmS = BoardLinearVelocityCmS.Size();
+	const FVector Forward = SpeedCmS > KINDA_SMALL_NUMBER
+		? BoardLinearVelocityCmS / SpeedCmS
+		: GetActorForwardVector();
+	const float ImpulseMagnitude = kRiderPitchImpulsePerCmS * SpeedCmS + kRiderPitchImpulseFloor;
+	RiderMesh->AddImpulse(Forward * ImpulseMagnitude, kRiderImpulseBone, /*bVelChange=*/false);
+
+	UE_LOG(LogTemp, Log,
+		TEXT("ABoardActor: rider ragdolled, board speed %.1f cm/s, pitch impulse %.0f at bone '%s'."),
+		SpeedCmS, ImpulseMagnitude, *kRiderImpulseBone.ToString());
+}
+
+void ABoardActor::OnPhysicsHandoffEnded()
+{
+	if (!RiderMesh || !bRiderLoaded)
+	{
+		return;
+	}
+	// Back onto the deck, re-posed, exactly as BeginPlay left it.
+	RiderMesh->SetAllBodiesSimulatePhysics(false);
+	RiderMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	RiderMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+	RiderMesh->SetEnableGravity(false);
+	RiderMesh->AttachToComponent(SceneRoot, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+	RiderMesh->SetRelativeLocation(FVector(0.f, 0.f, kRiderDeckHeightCm));
+	RiderMesh->SetRelativeRotation(FRotator::ZeroRotator);
+	if (RiderIdleAnim)
+	{
+		RiderMesh->PlayAnimation(RiderIdleAnim, /*bLooping=*/true);
+	}
+}
+
+void ABoardActor::EndPhysicsHandoff()
+{
+	if (!bPhysicsHandoffActive)
+	{
+		return;
+	}
+	bPhysicsHandoffActive = false;
+
+	// Back to kinematic wire-follow, exactly as the constructor left things. THE RULE at the top
+	// of BoardActor.h resumes holding the moment this returns.
+	if (UPrimitiveComponent* Sim = GetSimulatedBodyComponent())
+	{
+		Sim->SetSimulatePhysics(false);
+		Sim->SetEnableGravity(false);
+		Sim->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+	OnPhysicsHandoffEnded();
+	UE_LOG(LogTemp, Log, TEXT("ABoardActor: ADR-0012 handoff cleared -- MuJoCo owns the board again."));
 }
 
 void ABoardActor::UpdatePoseFromHistory()
@@ -675,6 +885,21 @@ void ABoardActor::UpdatePoseFromHistory()
 
 	// Newest raw sample, not the interpolated render pose -- see IsFallen()'s comment on why.
 	bLatestSampleFallen = (History.Last().State.Flags & OverboardWire::EStateFlags::Fallen) != 0;
+
+	// ADR-0012. THE ONLY PLACE THE TAKEOVER IS TRIGGERED. It is gated on the wire's bit and
+	// nothing else -- never on IsFallen(), never on the pose looking wrong. The authority
+	// decision belongs to the host; two engines integrating the same board is precisely what the
+	// latch exists to prevent.
+	//
+	// Newest raw sample again, and here that matters for a reason the other flags do not have:
+	// waiting a render delay to take over would let the board keep drawing the host's frozen
+	// snapshot for RenderDelaySeconds after the strike, which reads on screen as the board
+	// stopping dead before it crashes.
+	if ((History.Last().State.Flags & OverboardWire::EStateFlags::PhysicsHandoff) != 0)
+	{
+		BeginPhysicsHandoff(History.Last().State);
+		return; // authority is Unreal's from here; do not also drive the pose from the wire
+	}
 
 	// ADR-0011 exit criterion (c), condition 3 -- see IsAuthorityWarning(). Same newest-raw-
 	// sample rule, and here it is load-bearing rather than merely consistent: the ADR is relying
