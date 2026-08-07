@@ -41,10 +41,14 @@ namespace OverboardWire
 	// rider_lateral_m (8 bytes). Both are accepted on decode -- see header comment above.
 	constexpr uint16_t kStateSchemaVersionV1 = 1;
 	constexpr uint16_t kStateSchemaVersionV2 = 2;
-	constexpr uint16_t kStateSchemaVersionLatest = kStateSchemaVersionV2; // what this repo encodes by default (tests, fake_sender)
+	// v3 (ADR-0012): appends lin_vel[3] and ang_vel[3] -- the physics-authority handoff needs a
+	// velocity to seed Unreal's simulation with, and v2 carried none.
+	constexpr uint16_t kStateSchemaVersionV3 = 3;
+	constexpr uint16_t kStateSchemaVersionLatest = kStateSchemaVersionV3; // what this repo encodes by default (tests, fake_sender)
 
 	constexpr size_t kStatePacketWireSizeV1 = 72; // see field table below
 	constexpr size_t kStatePacketWireSizeV2 = 80; // v1 + rider_fore_aft_m + rider_lateral_m
+	constexpr size_t kStatePacketWireSizeV3 = 104; // v2 + lin_vel[3] + ang_vel[3]
 	constexpr size_t kInputPacketWireSize = 28;
 
 	// Returns the exact wire size for a given state schema_version, or 0 if the version isn't
@@ -53,6 +57,7 @@ namespace OverboardWire
 	{
 		return SchemaVersion == kStateSchemaVersionV1 ? kStatePacketWireSizeV1
 			: SchemaVersion == kStateSchemaVersionV2 ? kStatePacketWireSizeV2
+			: SchemaVersion == kStateSchemaVersionV3 ? kStatePacketWireSizeV3
 			: 0;
 	}
 
@@ -90,6 +95,25 @@ namespace OverboardWire
 		/// `schema_version`. A v1 or v2 packet from a host that does not set it decodes
 		/// identically to before.
 		constexpr uint16_t AuthorityWarning = 1u << 3;
+
+		/// ADR-0012 physics-authority handoff. Set from the cycle the host declares a
+		/// terminating event (bumper contact above threshold, or tilt past 35 deg from
+		/// vertical) onward, and cleared ONLY by the input `reset` bit.
+		///
+		/// While it is set the host has STOPPED PROPAGATING the board: `Pos`, `Quat`,
+		/// `LinVel` and `AngVel` are frozen at their strike-cycle values and repeat on
+		/// every packet, and this client owns the board's motion until reset.
+		///
+		/// It is a LEVEL, not an edge, and that is deliberate -- a one-shot edge could be
+		/// dropped by the UDP wire and leave this client following a board MuJoCo had
+		/// already stopped simulating. A client that misses the announcing packet takes
+		/// over on the next one.
+		///
+		/// **This client must never simulate on inference.** Taking over because the board
+		/// "looks fallen" is forbidden by ADR-0012: the authority decision belongs to the
+		/// host, and two engines integrating the same board is the failure the latch exists
+		/// to prevent.
+		constexpr uint16_t PhysicsHandoff = 1u << 4;
 	}
 
 	// Input packet flags (bit0 arm, bit1 reset)
@@ -118,6 +142,9 @@ namespace OverboardWire
 	// rider_fore_aft_m f32       72      4      v2   actual ballast fore/aft displacement, metres, signed
 	// rider_lateral_m  f32       76      4      v2   actual ballast lateral displacement, metres, signed
 	//                                    80 total (v2)
+	// lin_vel          float[3]  80      12     v3   world frame, m/s, raw MuJoCo (Z-up, right-handed)
+	// ang_vel          float[3]  92      12     v3   world frame, rad/s, raw MuJoCo, right-hand rule
+	//                                    104 total (v3)
 	struct FBoardState
 	{
 		uint32_t Magic = kStateMagic;
@@ -136,10 +163,20 @@ namespace OverboardWire
 		// real, meaningful value here (centred stance), not a sentinel for "missing".
 		float RiderForeAftM = 0.f;
 		float RiderLateralM = 0.f;
+		// v3 only (ADR-0012). On a v1/v2 packet these stay at 0 -- "no velocity data". Unlike
+		// the rider fields, zero here is NOT a meaningful physical value, it is an absence:
+		// a handoff seeded from a v2 packet would start the crash from rest. The host only
+		// ever sets PhysicsHandoff on a v3 packet, so the two cannot come apart.
+		//
+		// RAW MuJoCo world frame, both of them -- metres/second and radians/second, Z-up and
+		// right-handed, exactly as Pos and Quat are. Convert through CoordinateTransform and
+		// nowhere else.
+		float LinVel[3] = {0.f, 0.f, 0.f};
+		float AngVel[3] = {0.f, 0.f, 0.f};
 	};
 
 	// Decodes a raw OBW1 packet. Returns false and fills OutError on any failure: short buffer,
-	// bad magic, or a schema_version that is neither 1 nor 2. Never partially trusts a mismatched
+	// bad magic, or a schema_version that is not 1, 2 or 3. Never partially trusts a mismatched
 	// packet -- on failure OutState is left at default values and must not be used. This is the
 	// "fail loudly, never misparse a float" gate from the wire spec: callers must log OutError
 	// and drop the packet rather than proceed. A v1 packet is NOT a failure -- OutState.Magic/
@@ -148,7 +185,7 @@ namespace OverboardWire
 	bool DecodeBoardState(const uint8_t* Buffer, size_t Len, FBoardState& OutState, std::string& OutError);
 
 	// Encodes into Buffer, which must be at least GetStatePacketWireSize(State.SchemaVersion)
-	// bytes -- 72 for v1, 80 for v2. Exists mainly so tests and the fake sender tool can produce
+	// bytes -- 72 for v1, 80 for v2, 104 for v3. Exists mainly so tests and the fake sender tool can produce
 	// real OBW1 bytes without duplicating the layout. Encoding an unrecognised SchemaVersion is a
 	// caller bug (there is no "OutError" here to fail loudly into); it writes v1-shaped bytes
 	// with that version number, which will then correctly fail loudly on decode.

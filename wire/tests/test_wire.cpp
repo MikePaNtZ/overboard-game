@@ -88,7 +88,13 @@ namespace
 	{
 		std::printf("Test_DecodeValidStatePacketV2\n");
 
-		FBoardState In; // SchemaVersion defaults to kStateSchemaVersionLatest (2)
+		// EXPLICIT, not defaulted. This used to read "SchemaVersion defaults to
+		// kStateSchemaVersionLatest (2)" -- and when ADR-0012 moved Latest to 3, this test and
+		// three of its neighbours silently began encoding 104 bytes into an 80-byte stack
+		// array. A test that names the version it is testing cannot be moved by a bump
+		// somewhere else.
+		FBoardState In;
+		In.SchemaVersion = kStateSchemaVersionV2;
 		Check(In.SchemaVersion == kStateSchemaVersionV2, "FBoardState defaults to v2");
 		In.Flags = EStateFlags::Armed | EStateFlags::Valid;
 		In.Seq = 99;
@@ -129,6 +135,8 @@ namespace
 		Check((EStateFlags::AuthorityWarning & EStateFlags::Fallen) == 0, "must not collide with Fallen");
 
 		FBoardState In;
+		In.SchemaVersion = kStateSchemaVersionV2; // explicit -- see Test_DecodeValidStatePacketV2
+		
 		In.Flags = EStateFlags::Armed | EStateFlags::Valid | EStateFlags::AuthorityWarning;
 		uint8_t Buf[kStatePacketWireSizeV2];
 		EncodeBoardState(In, Buf);
@@ -149,6 +157,8 @@ namespace
 		// always did, with the bit clear -- backward compatible in both directions, which is why
 		// this needed no schema bump (the same call sim-host made for INPUT_FLAG_KICK).
 		FBoardState In;
+		In.SchemaVersion = kStateSchemaVersionV2; // explicit -- see Test_DecodeValidStatePacketV2
+		
 		In.Flags = EStateFlags::Armed | EStateFlags::Valid;
 		uint8_t Buf[kStatePacketWireSizeV2];
 		EncodeBoardState(In, Buf);
@@ -174,6 +184,8 @@ namespace
 	{
 		std::printf("Test_DecodeRejectsBadMagic\n");
 		FBoardState In;
+		In.SchemaVersion = kStateSchemaVersionV2; // explicit -- see Test_DecodeValidStatePacketV2
+		
 		uint8_t Buf[kStatePacketWireSizeV2];
 		EncodeBoardState(In, Buf);
 		Buf[0] = 0x00; // corrupt magic
@@ -190,14 +202,21 @@ namespace
 	{
 		std::printf("Test_DecodeRejectsUnknownSchemaVersion\n");
 		FBoardState In;
-		In.SchemaVersion = 3; // neither 1 nor 2 -- this build must not guess
-		uint8_t Buf[kStatePacketWireSizeV1]; // Encode only writes v1-shaped bytes for a non-v2 version
+		// 4, not 3: v3 became REAL with ADR-0012, and this test previously used 3 as its
+		// example of an unknown version. Left alone it did not merely fail -- EncodeBoardState
+		// writes according to SchemaVersion, so a now-valid v3 encode put 104 bytes into a
+		// 72-byte array and smashed the stack. That is the identical mistake the comment in
+		// Test_DecodeRejectsShortV2Buffer below was written to warn about, recurring the first
+		// time a version was added. The buffer is sized for the largest version this build
+		// knows so bumping the wire again cannot reintroduce it.
+		In.SchemaVersion = 4; // not 1, 2 or 3 -- this build must not guess
+		uint8_t Buf[kStatePacketWireSizeV3] = {0};
 		EncodeBoardState(In, Buf);
 
 		FBoardState Out;
 		std::string Err;
 		bool Ok = DecodeBoardState(Buf, sizeof(Buf), Out, Err);
-		Check(!Ok, "decode must fail on schema_version 3 (only 1 and 2 are understood)");
+		Check(!Ok, "decode must fail on schema_version 4 (only 1, 2 and 3 are understood)");
 		Check(Err.find("schema_version") != std::string::npos, "error should mention schema_version");
 	}
 
@@ -234,6 +253,101 @@ namespace
 		bool Ok = DecodeBoardState(Buf, kStatePacketWireSizeV1, Out, Err);
 		Check(!Ok, "decode must fail on a v2 packet truncated to v1 length, not read past the buffer");
 		Check(!Err.empty(), "error message set on short v2 buffer");
+	}
+
+	// ADR-0012: v3 carries the velocities the physics handoff seeds Unreal with.
+	void Test_DecodeValidStatePacketV3()
+	{
+		std::printf("Test_DecodeValidStatePacketV3\n");
+		FBoardState In;
+		In.SchemaVersion = kStateSchemaVersionV3;
+		In.Flags = EStateFlags::Armed | EStateFlags::Valid | EStateFlags::PhysicsHandoff;
+		In.Seq = 4242;
+		In.SimTimeS = 12.25;
+		In.Pos[0] = 1.5f; In.Pos[1] = -2.25f; In.Pos[2] = 0.125f;
+		In.RiderForeAftM = 0.021f;
+		In.RiderLateralM = -0.013f;
+		In.LinVel[0] = 5.5f;  In.LinVel[1] = -0.25f; In.LinVel[2] = 0.125f;
+		In.AngVel[0] = 0.75f; In.AngVel[1] = -1.5f;  In.AngVel[2] = 2.25f;
+
+		uint8_t Buf[kStatePacketWireSizeV3] = {0};
+		EncodeBoardState(In, Buf);
+
+		FBoardState Out;
+		std::string Err;
+		Check(DecodeBoardState(Buf, sizeof(Buf), Out, Err), "v3 packet must decode");
+		Check(Out.SchemaVersion == kStateSchemaVersionV3, "schema_version round-trips as 3");
+		Check((Out.Flags & EStateFlags::PhysicsHandoff) != 0, "PhysicsHandoff bit round-trips");
+		Check(Out.LinVel[0] == 5.5f && Out.LinVel[1] == -0.25f && Out.LinVel[2] == 0.125f, "LinVel round-trips");
+		Check(Out.AngVel[0] == 0.75f && Out.AngVel[1] == -1.5f && Out.AngVel[2] == 2.25f, "AngVel round-trips");
+		Check(Out.RiderForeAftM == 0.021f, "v2 fields still round-trip on a v3 packet");
+	}
+
+	// ADR-0012's named enforcement. The SAME fixed packet is asserted byte-for-byte in
+	// `crates/sim-host/src/wire.rs::state_out_known_answer_bytes`. If the two encoders ever
+	// disagree, one of these two tests goes red -- rather than the disagreement surfacing as a
+	// board that tumbles in the wrong direction on screen. Every value is exactly representable
+	// in f32/f64, so this asserts layout, not a rounding mode.
+	void Test_V3KnownAnswerBytesMatchTheRustEncoder()
+	{
+		std::printf("Test_V3KnownAnswerBytesMatchTheRustEncoder\n");
+		FBoardState In;
+		In.SchemaVersion = kStateSchemaVersionV3;
+		In.Flags = EStateFlags::Armed | EStateFlags::Valid;
+		In.Seq = 42;
+		In.SimTimeS = 1.5;
+		In.Pos[0] = 1.0f; In.Pos[1] = 2.0f; In.Pos[2] = 3.0f;
+		In.Quat[0] = 1.0f; In.Quat[1] = 0.0f; In.Quat[2] = 0.0f; In.Quat[3] = 0.0f;
+		In.WheelAngleRad = 0.1f;
+		In.WheelRateRadS = 0.2f;
+		In.PitchRad = -0.05f;
+		In.YawRad = 0.3f;
+		In.MotorCurrentA = 4.5f;
+		In.RiderForeAftM = 0.021f;
+		In.RiderLateralM = -0.013f;
+		In.LinVel[0] = 5.5f;  In.LinVel[1] = -0.25f; In.LinVel[2] = 0.125f;
+		In.AngVel[0] = 0.75f; In.AngVel[1] = -1.5f;  In.AngVel[2] = 2.25f;
+
+		uint8_t B[kStatePacketWireSizeV3] = {0};
+		EncodeBoardState(In, B);
+
+		auto U32At = [&](size_t Off) { uint32_t V; std::memcpy(&V, B + Off, 4); return V; };
+		auto F32At = [&](size_t Off) { float V; std::memcpy(&V, B + Off, 4); return V; };
+
+		Check(U32At(0) == 0x4F425731u, "magic 'OBW1' @0");
+		Check(B[4] == 3 && B[5] == 0, "schema_version = 3 @4, little-endian");
+		Check(B[6] == 0x03 && B[7] == 0x00, "flags armed|valid @6");
+		Check(F32At(24) == 1.0f, "pos.x @24");
+		Check(F32At(36) == 1.0f, "quat.w @36");
+		Check(F32At(68) == 4.5f, "motor_current_a @68");
+		Check(F32At(72) == 0.021f, "rider_fore_aft_m @72");
+		Check(F32At(80) == 5.5f, "lin_vel.x @80 -- the v3 append point");
+		Check(F32At(92) == 0.75f, "ang_vel.x @92");
+		Check(F32At(100) == 2.25f, "ang_vel.z @100");
+		Check(sizeof(B) == 104, "v3 wire size is 104");
+	}
+
+	// Backward compatibility is load-bearing in BOTH directions: whichever side ships its bump
+	// first must not freeze the other (ADR-0010's rule, carried forward by ADR-0012).
+	void Test_V2PacketStillDecodesAfterTheV3Bump()
+	{
+		std::printf("Test_V2PacketStillDecodesAfterTheV3Bump\n");
+		FBoardState In;
+		In.SchemaVersion = kStateSchemaVersionV2;
+		In.RiderForeAftM = 0.031f;
+		In.LinVel[0] = 99.0f; // must NOT be written -- v2 has no room for it
+
+		uint8_t Buf[kStatePacketWireSizeV2] = {0};
+		EncodeBoardState(In, Buf);
+
+		FBoardState Out;
+		std::string Err;
+		Check(DecodeBoardState(Buf, sizeof(Buf), Out, Err), "a v2 packet must still decode after the v3 bump");
+		Check(Out.RiderForeAftM == 0.031f, "v2 rider field still decodes");
+		Check(Out.LinVel[0] == 0.f && Out.AngVel[2] == 0.f,
+			"a v2 packet leaves LinVel/AngVel at zero -- an ABSENCE, and the host never sets "
+			"PhysicsHandoff on a packet that lacks them");
+		Check((Out.Flags & EStateFlags::PhysicsHandoff) == 0, "no handoff on a v2 packet");
 	}
 
 	void Test_InputPacketRoundTrip()
@@ -395,6 +509,9 @@ int main()
 {
 	Test_DecodeValidStatePacketV1();
 	Test_DecodeValidStatePacketV2();
+	Test_DecodeValidStatePacketV3();
+	Test_V3KnownAnswerBytesMatchTheRustEncoder();
+	Test_V2PacketStillDecodesAfterTheV3Bump();
 	Test_AuthorityWarningFlagRoundTrips();
 	Test_AuthorityWarningAbsentOnAHostThatDoesNotSetIt();
 	Test_DecodeRejectsBadMagic();

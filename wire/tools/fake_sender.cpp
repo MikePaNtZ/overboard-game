@@ -87,10 +87,16 @@ namespace
 
 	void SendState(int Sock, const sockaddr_in& Dest, const FBoardState& State)
 	{
-		uint8_t Buf[kStatePacketWireSizeV2]; // BaseState() defaults to v2 (kStateSchemaVersionLatest)
+		// Sized for the LARGEST version this build knows, and sent at the size the packet's
+		// own schema_version calls for. It used to be hardcoded to the v2 size with a comment
+		// noting that BaseState() happened to default to v2 -- so when ADR-0012 moved
+		// kStateSchemaVersionLatest to 3, this wrote 104 bytes into an 80-byte stack array.
+		// Deriving both from the version cannot be broken by the next bump.
+		uint8_t Buf[kStatePacketWireSizeV3];
+		const size_t WireSize = GetStatePacketWireSize(State.SchemaVersion);
 		EncodeBoardState(State, Buf);
-		ssize_t Sent = sendto(Sock, Buf, sizeof(Buf), 0, reinterpret_cast<const sockaddr*>(&Dest), sizeof(Dest));
-		if (Sent != static_cast<ssize_t>(sizeof(Buf)))
+		ssize_t Sent = sendto(Sock, Buf, WireSize, 0, reinterpret_cast<const sockaddr*>(&Dest), sizeof(Dest));
+		if (Sent != static_cast<ssize_t>(WireSize))
 		{
 			std::perror("sendto");
 		}
@@ -462,12 +468,13 @@ namespace
 		if (Sock < 0) { return; }
 
 		FBoardState State = BaseState(0, 0.0);
-		uint8_t Buf[kStatePacketWireSizeV2]; // BaseState() defaults to v2 (kStateSchemaVersionLatest)
+		uint8_t Buf[kStatePacketWireSizeV3]; // see SendState on why this is not the v2 size
+		const size_t WireSize = GetStatePacketWireSize(State.SchemaVersion);
 		EncodeBoardState(State, Buf);
 		Buf[0] = 0xDE; // corrupt the magic byte
 		std::printf("sending 1 corrupt-magic packet\n");
-		ssize_t Sent = sendto(Sock, Buf, sizeof(Buf), 0, reinterpret_cast<sockaddr*>(&Dest), sizeof(Dest));
-		if (Sent != static_cast<ssize_t>(sizeof(Buf)))
+		ssize_t Sent = sendto(Sock, Buf, WireSize, 0, reinterpret_cast<sockaddr*>(&Dest), sizeof(Dest));
+		if (Sent != static_cast<ssize_t>(WireSize))
 		{
 			std::perror("sendto");
 		}
