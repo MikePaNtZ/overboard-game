@@ -17,6 +17,7 @@
 #include "BoardStateClient.h"
 #include "BoardActor.generated.h"
 
+class UBoxComponent;
 class UStaticMeshComponent;
 class UProceduralMeshComponent;
 class USkeletalMeshComponent;
@@ -56,6 +57,17 @@ public:
 	// cycle and sends it to stderr and its trace CSV rather than to the wire -- see
 	// EStateFlags::AuthorityWarning for the gap and what has been requested to close it.
 	bool IsAuthorityWarning() const { return bLatestSampleAuthorityWarning; }
+
+	// True while the host has handed physics authority to this client -- ADR-0012. From the
+	// moment this goes true, MuJoCo has STOPPED PROPAGATING the board: it repeats the
+	// strike-cycle pose on every packet, and this actor's motion is Unreal's own simulation
+	// rather than the wire's.
+	//
+	// AOverboardPlayerController reads this to suppress its reset-on-fall. That suppression is
+	// not a nicety: a handoff almost always coincides with FALLEN, so without it the controller
+	// would fire Reset on the very next tick, the host would clear the latch, and the crash
+	// would end roughly one frame after it began.
+	bool IsPhysicsHandoff() const { return bPhysicsHandoffActive; }
 
 	// FPlatformTime::Seconds() at which the packet that raised the CURRENT warning was received
 	// off the socket. 0 if no warning is active. Exists so AOverboardHUD can measure and log the
@@ -517,6 +529,40 @@ private:
 	float LeanSignForDiagnostic = 0.f;
 
 	bool bLatestSampleFallen = false;
+
+	// ADR-0012 physics-authority handoff. `bPhysicsHandoffActive` mirrors the wire's LEVEL bit
+	// (not an edge -- a dropped packet must not strand this client), and the two Begin/End
+	// helpers are the ONLY places this actor's components ever change simulation mode.
+	//
+	// THE ONE CALL SITE RULE: ADR-0012 makes "the client may not simulate on inference"
+	// convention rather than a machine check, on the grounds that a reviewer can see what gates
+	// the takeover if there is exactly one place to look. This is that place. Do not add a
+	// second trigger -- in particular, never start simulating because IsFallen() is true.
+	bool bPhysicsHandoffActive = false;
+	void BeginPhysicsHandoff(const OverboardWire::FBoardState& State);
+	void EndPhysicsHandoff();
+	// While authority is ours, the only thing still read off the wire is whether it has been
+	// given back. Runs INSTEAD of UpdatePoseFromHistory, not alongside it.
+	void PollForHandoffRelease();
+	UPrimitiveComponent* GetSimulatedBodyComponent() const;
+	// Rider ragdoll, split out so the board takeover above stays readable and so a missing
+	// physics asset degrades to "board crashes, rider stays posed" rather than to nothing.
+	void OnPhysicsHandoffBegan(const FVector& BoardLinearVelocityCmS);
+	void OnPhysicsHandoffEnded();
+
+	// The simulated body, and the actor's ROOT.
+	//
+	// It is a UBoxComponent rather than BoxMesh because BoxMesh carries a cosmetic
+	// (0.7, 0.25, 0.08) scale that this file's SceneRoot comment says in as many words must
+	// never propagate anywhere else -- rooting the actor on it would propagate that scale to
+	// every attached component, which is the exact bug that comment exists to prevent from
+	// recurring. A box COMPONENT is sized by extent, not by scale, so it carries none.
+	//
+	// Physics has to move the ACTOR, not one child of it, or the visual assembly stays behind
+	// while a single component tumbles away. Simulating the root is what makes the whole board
+	// move together.
+	UPROPERTY()
+	UBoxComponent* PhysicsBody = nullptr;
 
 	// See IsAuthorityWarning(). Reset to false (and the timestamp to 0) the moment the signal
 	// clears, so a stale arrival time can never be reported against a later event -- the HUD's

@@ -350,6 +350,47 @@ namespace
 		Check((Out.Flags & EStateFlags::PhysicsHandoff) == 0, "no handoff on a v2 packet");
 	}
 
+	// ADR-0012. The property that matters is CONSISTENCY WITH THE ORIENTATION CONVENTION: a
+	// rotation about MuJoCo's +Y must come out as a rotation about UE's +Y (the mirrored axis
+	// keeps its sign), and rotations about X and Z must flip -- matching what MuJoCoToUnreal
+	// already does to the quaternion's axis components. If these two disagreed, a handed-over
+	// board would spin the opposite way to the orientation it was handed over in.
+	void Test_VelocityTransformMatchesTheOrientationConvention()
+	{
+		std::printf("Test_VelocityTransformMatchesTheOrientationConvention\n");
+
+		const float Lin[3] = {1.0f, 2.0f, 3.0f};
+		const float Zero[3] = {0.f, 0.f, 0.f};
+		FUeVelocity V = MuJoCoVelocityToUnreal(Lin, Zero);
+		Check(NearlyEqual(V.LinCmS[0], 100.0), "linear X: m/s -> cm/s, unmirrored");
+		Check(NearlyEqual(V.LinCmS[1], -200.0), "linear Y is MIRRORED (right- to left-handed)");
+		Check(NearlyEqual(V.LinCmS[2], 300.0), "linear Z: m/s -> cm/s, unmirrored");
+
+		const float AboutX[3] = {1.f, 0.f, 0.f};
+		const float AboutY[3] = {0.f, 1.f, 0.f};
+		const float AboutZ[3] = {0.f, 0.f, 1.f};
+		V = MuJoCoVelocityToUnreal(Zero, AboutX);
+		Check(NearlyEqual(V.AngDegS[0], -57.29577951308232), "angular X flips sign, rad/s -> deg/s");
+		V = MuJoCoVelocityToUnreal(Zero, AboutY);
+		Check(NearlyEqual(V.AngDegS[1], 57.29577951308232), "angular Y KEEPS its sign -- it is the mirrored axis");
+		V = MuJoCoVelocityToUnreal(Zero, AboutZ);
+		Check(NearlyEqual(V.AngDegS[2], -57.29577951308232), "angular Z flips sign");
+
+		// The tie to the POSE convention, asserted rather than left to a comment: a small
+		// rotation about each MuJoCo axis must come out of MuJoCoToUnreal with the same sign
+		// behaviour the velocity transform just gave that axis.
+		const float Pos[3] = {0.f, 0.f, 0.f};
+		const float QuatAboutX[4] = {0.99f, 0.1f, 0.f, 0.f}; // w, x, y, z
+		const float QuatAboutY[4] = {0.99f, 0.f, 0.1f, 0.f};
+		const float QuatAboutZ[4] = {0.99f, 0.f, 0.f, 0.1f};
+		FUeTransform T = MuJoCoToUnreal(Pos, QuatAboutX);
+		Check(T.QuatWXYZ[1] < 0.f, "quat X flips -- same sign rule as angular X");
+		T = MuJoCoToUnreal(Pos, QuatAboutY);
+		Check(T.QuatWXYZ[2] > 0.f, "quat Y keeps sign -- same rule as angular Y");
+		T = MuJoCoToUnreal(Pos, QuatAboutZ);
+		Check(T.QuatWXYZ[3] < 0.f, "quat Z flips -- same sign rule as angular Z");
+	}
+
 	void Test_InputPacketRoundTrip()
 	{
 		std::printf("Test_InputPacketRoundTrip\n");
@@ -512,6 +553,7 @@ int main()
 	Test_DecodeValidStatePacketV3();
 	Test_V3KnownAnswerBytesMatchTheRustEncoder();
 	Test_V2PacketStillDecodesAfterTheV3Bump();
+	Test_VelocityTransformMatchesTheOrientationConvention();
 	Test_AuthorityWarningFlagRoundTrips();
 	Test_AuthorityWarningAbsentOnAHostThatDoesNotSetIt();
 	Test_DecodeRejectsBadMagic();
