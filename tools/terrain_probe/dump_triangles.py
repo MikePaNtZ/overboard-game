@@ -21,6 +21,7 @@
 
 import json
 import os
+import struct
 import sys
 import time
 
@@ -51,11 +52,18 @@ MAP_PACKAGE_PATH = "/Game/Maps/OB_City"
 # rasterises grass blades and leaf litter AS THE GROUND -- the road and its kerbs end up buried
 # under vegetation. Three symptoms all trace back to this one cause:
 #
-#   * the centre-post datum check failing at 4.326 mm -- that is a LEAF over the spawn point,
-#     not a transform error, which is what it was first assumed to be;
-#   * 39.041% of posts coming out as holes -- the gaps between foliage clumps;
+#   * 39.041% of posts coming out as holes -- the gaps between foliage clumps. With foliage
+#     filtered out that figure is 71.907%, which is the honest measure of how little of this
+#     map is hard surface at all;
 #   * a cross-section of the road that reads as noise, in which the real kerbs (measured at
-#     y = +-4.5 m, ~0.21 m high) are invisible.
+#     y = +-4.5 m, ~0.21 m high) are invisible -- locating them at all needed a filter on
+#     triangle AREA to see past the grass, and getting that wrong put the ADR-0012 kerb on a
+#     building wall (overboard#248).
+#
+# NOT one of the symptoms: the centre-post datum reading 4.326 mm. That was first blamed on a
+# leaf over the spawn point, and it is not -- the value is IDENTICAL with foliage filtered out,
+# from a measured (not hole-filled) post. It is simply where the road surface is relative to a
+# hand-placed PlayerStart. See DATUM_TOLERANCE_M in rasterize_hfield.py.
 #
 # A heightmap is a model of the surface you RIDE ON. Grass is not that surface -- a board does
 # not ride on top of a blade of grass -- so this is a correctness filter, not an optimisation,
@@ -78,7 +86,7 @@ HARD_SURFACE_KEEP = [
 # exactly the "thin thing on top of the real surface" failure this filter exists to prevent.
 HARD_SURFACE_DROP = [
     "Decal",
-    "SM_Leak",
+    "Leak",  # SM_LeakDecal*, and SM_MergedLeaks01 -- see below
 ]
 
 # Centre of the probe region, UE world space, centimetres. This is OB_BoardOrigin's XY
@@ -107,6 +115,10 @@ MIN_EXPECTED_ACTORS = 50
 OUT_DIR = "/Users/mike/projects/overboard-game/Saved/TerrainProbe"
 TRIANGLES_BIN_PATH = os.path.join(OUT_DIR, "triangles_f32.bin")
 MANIFEST_PATH = os.path.join(OUT_DIR, "dump_manifest.json")
+# One uint16 per triangle, same order as TRIANGLES_BIN_PATH, indexing "mesh_index_order" in the
+# manifest. Exists so a defect visible in the rasterised surface can be ATTRIBUTED to the asset
+# that caused it instead of guessed at -- the 25.4 mm road overlays cost a lot of guessing.
+MESH_IDS_BIN_PATH = os.path.join(OUT_DIR, "triangle_mesh_ids_u16.bin")
 # ============================================================================================
 
 
@@ -293,6 +305,9 @@ def main():
     ism_instances_visited = 0
 
     out_f = open(TRIANGLES_BIN_PATH, "wb")
+    ids_f = open(MESH_IDS_BIN_PATH, "wb")
+    mesh_index_order = []
+    mesh_index_of = {}
     try:
         for actor in all_actors:
             actors_visited += 1
@@ -346,8 +361,13 @@ def main():
                         if kept:
                             total_kept += kept
                             actor_contributed = True
-                            per_mesh_kept[mesh.get_path_name()] = (
-                                per_mesh_kept.get(mesh.get_path_name(), 0) + kept
+                            mp = mesh.get_path_name()
+                            per_mesh_kept[mp] = per_mesh_kept.get(mp, 0) + kept
+                            if mp not in mesh_index_of:
+                                mesh_index_of[mp] = len(mesh_index_order)
+                                mesh_index_order.append(mp)
+                            ids_f.write(
+                                struct.pack("<H", mesh_index_of[mp]) * kept
                             )
                 else:
                     try:
@@ -370,9 +390,12 @@ def main():
                     if kept:
                         total_kept += kept
                         actor_contributed = True
-                        per_mesh_kept[mesh.get_path_name()] = (
-                            per_mesh_kept.get(mesh.get_path_name(), 0) + kept
-                        )
+                        mp = mesh.get_path_name()
+                        per_mesh_kept[mp] = per_mesh_kept.get(mp, 0) + kept
+                        if mp not in mesh_index_of:
+                            mesh_index_of[mp] = len(mesh_index_order)
+                            mesh_index_order.append(mp)
+                        ids_f.write(struct.pack("<H", mesh_index_of[mp]) * kept)
 
             if actor_contributed:
                 actors_kept += 1
@@ -382,6 +405,7 @@ def main():
                     % (actors_visited, len(all_actors), total_kept))
     finally:
         out_f.close()
+    ids_f.close()
 
     elapsed = time.time() - t_start
     log("Done: %d actors visited, %d kept, %d components visited, %d ISM instances visited, "
@@ -410,6 +434,8 @@ def main():
         "components_visited": components_visited,
         "ism_instances_visited": ism_instances_visited,
         "total_triangles_kept": total_kept,
+        "mesh_index_order": mesh_index_order,
+        "triangle_mesh_ids_bin": MESH_IDS_BIN_PATH,
         "per_mesh_asset_triangles_kept": per_mesh_kept,
         "mesh_extraction_failures": cache.extraction_failures,
         "elapsed_seconds": elapsed,

@@ -55,6 +55,74 @@ GRID_HALF_EXTENT_M = CENTER_INDEX * GRID_SPACING_M  # 50.05 m; full span 100.1 m
 
 # Facets steeper than this contribute no area to a top-down max-Z raster (walls/kerb faces).
 NEAR_VERTICAL_SLOPE_DEG = 88.0
+
+# How far the rasterised surface at the board origin may sit from z=0 before this script
+# refuses to write an hfield.
+#
+# THIS IS A TRANSFORM SANITY ANCHOR, NOT AN ACCEPTANCE LIMIT. It is not terrain/TerrainLimits.h
+# and the "never widen a limit to make a level pass" rule there does not transfer -- that rule
+# governs what the CONTROLLER is asked to survive; this governs whether the UE->MuJoCo maths is
+# right. The two fail completely differently: a wrong transform is off by METRES (a cm/m unit
+# error is 100x, an axis swap relocates the datum, a yaw error grows with distance), so any
+# threshold from millimetres to tens of centimetres catches it equally well.
+#
+# It was 2 mm, and the first two full runs both failed it at 4.326 mm. That value is NOT an
+# error: it is identical with foliage in the dump and with foliage filtered out, and the centre
+# post is a measured post rather than a hole-filled one both times. It is simply where the road
+# surface is -- OB_BoardOrigin is a hand-placed PlayerStart, and 4.3 mm is the precision of
+# placing one against authored road geometry by eye.
+#
+# 50 mm is 10x the observed offset, and still 2.4x below the smallest thing this heightmap
+# exists to represent (the ~0.12 m kerbs at y = +-4.5 m) and orders of magnitude below any
+# transform error. The measured value is logged on every run, passing or failing, so a drift
+# from 4 mm toward 50 mm is visible rather than silently tolerated.
+DATUM_TOLERANCE_M = 0.05
+
+# ---- Overlay (decal) rejection -------------------------------------------------------------
+# A top-down max-Z raster cannot tell a KERB from a DECAL: both are just "something higher than
+# the road". City Park's road carries marking/stain geometry modelled EXACTLY 25.4 mm (one inch)
+# proud of the tarmac -- two strips either side of the centreline, straddling the spawn point.
+# Rasterised as terrain that is a 25 mm kerb the board must ride over, which is 25x what the
+# controller survives (terrain/README.md). Measured: the board slid sideways off them and fell
+# within 13 s under GENTLE input, having been stable indefinitely on a flat plane.
+#
+# The discriminator is HEIGHT, and it is a good one here because the two are an order of
+# magnitude apart: the real kerbs are ~0.12-0.21 m, the overlays are 0.0254 m. Where a post has
+# a surface below its max by LESS than DECAL_MAX_DROP_M, the upper one is treated as an overlay
+# and the lower one becomes the ridable surface; a larger gap is a real step and the upper
+# surface is kept.
+#
+# THIS DELIBERATELY DISCARDS REAL SUB-5CM DETAIL, which needs saying plainly rather than hiding
+# inside a threshold. It is defensible only because of what this artifact IS: a model of the
+# surface the board RIDES, not a faithful copy of the art. Sub-50 mm steps are already far
+# outside the authored-world envelope (0.25 mm step limit), so preserving them would encode
+# detail no controller is required to survive at the price of an unridable road. Raise
+# DECAL_MAX_DROP_M and real kerbs start being eaten -- the ~0.12 m kerbs at y = +-4.5 m are the
+# nearest real feature, so anything at or above 0.10 m is unsafe.
+#
+# DEFAULT: 0.0, i.e. OFF. Tried at 0.05 and it made the surface WORSE, not better. It lowered
+# 156,603 posts by a median 23.9 mm -- the right posts -- but a decal's edge posts often have no
+# road surface beneath them to fall back to, so those stayed high and became fresh cliffs: the
+# worst adjacent step at the spawn point went from 19.8 mm to 39.5 mm, across-road p99 from
+# 16.8 mm to 25.9 mm, and the +y kerb was flattened outright. Left in, defaulted off, because
+# the IDEA is right and the artifact is fixable (treat an overlay post with nothing beneath it
+# as a hole and let dilation fill it from its lowered neighbours) -- but shipping a smoother
+# that eats kerbs to fix a ride problem is the wrong trade, and the finding below matters more.
+#
+# THE FINDING. The 25.4 mm ridges are not a decal mesh that could simply be excluded: mesh-id
+# tagging attributes both them and the road around them to the SAME asset,
+# MergeMeshes/SM_MergedRoad02. They are modelled into the road. So City Park's road genuinely
+# contains ~25 mm steps, and ADR-0011's authored-world envelope puts the survivable step at
+# 0.25 mm with ~1 mm survived at the controller's calmest. The real road is two orders of
+# magnitude outside what the controller survives.
+#
+# That is not a rasteriser bug to smooth away. It is exactly the condition-2 question --
+# "the authored world is constrained to what the controller survives" -- answered with a
+# measurement for the first time, and it belongs in front of the ADR rather than under a
+# threshold in this file.
+DECAL_MAX_DROP_M = 0.0
+# Samples within this of the first-pass surface count as the SAME surface, not one below it.
+DECAL_EPSILON_M = 0.0005
 # ============================================================================================
 
 
@@ -130,7 +198,7 @@ def assert_datum(a, t):
 # ---------------------------------------------------------------------------------------------
 # Rasterization
 # ---------------------------------------------------------------------------------------------
-def rasterize(triangles_mj):
+def rasterize(triangles_mj, ceiling=None):
     """triangles_mj: (N,3,3) array [triangle, vertex, xyz] in MuJoCo metres.
     Returns (height, covered) both shape (GRID_POSTS_PER_AXIS, GRID_POSTS_PER_AXIS), where
     height[iy, ix] is the elevation (m) at (x_m[ix], y_m[iy]) -- row index runs along +Y, column
@@ -203,6 +271,11 @@ def rasterize(triangles_mj):
 
         block_h = height[iy_lo:iy_hi + 1, ix_lo:ix_hi + 1]
         z_masked = np.where(mask, z, -np.inf)
+        if ceiling is not None:
+            # Second pass (see reject_overlay_surfaces): ignore anything at or above the first
+            # pass's surface, so what accumulates is the HIGHEST SURFACE STRICTLY BELOW it.
+            block_ceil = ceiling[iy_lo:iy_hi + 1, ix_lo:ix_hi + 1]
+            z_masked = np.where(z_masked < block_ceil - DECAL_EPSILON_M, z_masked, -np.inf)
         height[iy_lo:iy_hi + 1, ix_lo:ix_hi + 1] = np.maximum(block_h, z_masked)
         covered[iy_lo:iy_hi + 1, ix_lo:ix_hi + 1] |= mask
         n_rasterized += 1
@@ -216,6 +289,28 @@ def rasterize(triangles_mj):
         % (n_rasterized, n_skipped_vertical, n_skipped_offgrid, n_skipped_degenerate,
            time.time() - t_start))
     return height, covered, axis_m
+
+
+def reject_overlay_surfaces(triangles_mj, height, covered):
+    """Replace a post's surface with the one below it when the drop is small enough to be an
+    overlay rather than a real step. See DECAL_MAX_DROP_M for why this exists and what it
+    costs."""
+    log("Overlay-rejection pass: looking for surfaces within %.0f mm below the max-Z surface ..."
+        % (DECAL_MAX_DROP_M * 1000.0))
+    below, below_covered, _axis = rasterize(triangles_mj, ceiling=height)
+
+    drop = height - below
+    is_overlay = covered & below_covered & (drop > DECAL_EPSILON_M) & (drop <= DECAL_MAX_DROP_M)
+    n = int(is_overlay.sum())
+    if n:
+        log("Overlay-rejection: lowered %d posts (%.3f%% of covered) by median %.1f mm, "
+            "max %.1f mm."
+            % (n, 100.0 * n / max(int(covered.sum()), 1),
+               float(np.median(drop[is_overlay]) * 1000.0),
+               float(drop[is_overlay].max() * 1000.0)))
+    else:
+        log("Overlay-rejection: no overlay surfaces found.")
+    return np.where(is_overlay, below, height)
 
 
 def fill_holes(height, covered):
@@ -395,6 +490,7 @@ def main():
     log("Rasterizing onto a %d x %d grid, spacing %.3f m, half-extent %.4f m ..."
         % (GRID_POSTS_PER_AXIS, GRID_POSTS_PER_AXIS, GRID_SPACING_M, GRID_HALF_EXTENT_M))
     height, covered, axis_m = rasterize(triangles_mj)
+    height = reject_overlay_surfaces(triangles_mj, height, covered)
 
     filled, hole_mask = fill_holes(height, covered)
     np.save(HOLES_NPY_PATH, hole_mask)
@@ -403,23 +499,22 @@ def main():
     centre_z = float(filled[CENTER_INDEX, CENTER_INDEX])
     log("Centre post (index %d,%d, x=%.6f y=%.6f) measured elevation: %.6f m"
         % (CENTER_INDEX, CENTER_INDEX, axis_m[CENTER_INDEX], axis_m[CENTER_INDEX], centre_z))
-    if abs(centre_z) > 0.002:
+    if abs(centre_z) > DATUM_TOLERANCE_M:
         was_hole = bool(hole_mask[CENTER_INDEX, CENTER_INDEX])
         raise AssertionError(
             "Centre-post datum FAILED: measured elevation at the board origin is %.6f m, "
-            "outside the 2 mm tolerance. Aborting -- this is the transform sanity anchor.\n"
+            "outside the %.0f mm tolerance. Aborting -- this is the transform sanity anchor.\n"
             "  centre post was a HOLE before fill: %s\n"
             "\n"
-            "  BEFORE SUSPECTING THE TRANSFORM, check what is being rasterised. This check\n"
-            "  failed at 4.326 mm on the first full run, and the cause was NOT the transform:\n"
-            "  the dump was 94%% foliage by triangle count, and a top-down max-Z raster takes\n"
-            "  a dry leaf over the spawn point as the ground. dump_triangles.py now applies\n"
-            "  HARD_SURFACE_KEEP for exactly this reason -- if that filter is disabled or the\n"
-            "  dump predates it, this failure is expected and the fix is to re-dump, not to\n"
-            "  widen the tolerance. A real transform error shows up in METRES, not millimetres."
-            % (centre_z, "yes -- this value came from dilation, not measurement" if was_hole else "no")
+            "  This anchor catches a WRONG TRANSFORM, and a wrong transform is off by METRES:\n"
+            "  a cm/m unit error is 100x, an axis swap puts the datum somewhere else entirely,\n"
+            "  a yaw error grows with distance from the origin. If this reads a few millimetres\n"
+            "  out, the transform is fine and something else is being measured.\n"
+            "  If it reads a large value, check the transform first."
+            % (centre_z, DATUM_TOLERANCE_M * 1000.0,
+               "yes -- this value came from dilation, not measurement" if was_hole else "no")
         )
-    log("Centre-post datum PASSED (< 2 mm).")
+    log("Centre-post datum PASSED (%.6f m, tolerance %.0f mm)." % (centre_z, DATUM_TOLERANCE_M * 1000.0))
 
     np.save(HEIGHT_NPY_PATH, filled.astype(np.float32))
     write_hfield_binary(HFIELD_BIN_PATH, filled.astype(np.float32))
