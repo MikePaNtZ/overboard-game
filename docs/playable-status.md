@@ -19,6 +19,9 @@ The only coupling is the UDP wire. Nothing in this branch computes a board quant
 | Rumble (bits 5/6, fall jolt) | Built, not felt yet | Mac path uses Core Haptics directly (see below) |
 | HUD cues (warning, fall prompt) | Built, interim | replaced by the shared HUD spec next |
 | Camera cycle (Options / C) | Built | chase → close → high |
+| OB_CityHill, default map | Works | built by `tools/city/build_city.sh` (verify PASS, worst tyre gap 7.8 mm); opens headless |
+| Game elements | Built | 11 elements load and draw on OB_CityHill; scoring not yet ridden |
+| Latency | Measured | see below |
 
 ## Controls (PS5 DualSense)
 
@@ -35,11 +38,43 @@ Keyboard: W/S lean, A/D steer, Left Shift tail brake, Space arm, R reset, C came
 Only the keyboard path is ramped (`KeyboardRampSpeed` 3.0). The old code ramped the pad too,
 which added about 0.33 s of lag.
 
-## Launch (today)
+## Launch
 
-1. `~/projects/overboard-game-play/tools/play/run_sim.sh`
-2. Open `~/projects/overboard-game-play/OverboardGame.uproject` in UE 5.7.
-3. Open the level and press Play. Press Cross to arm.
+1. Connect the DualSense (USB-C, or Bluetooth: hold PS + Create, then pair).
+2. `~/projects/overboard-game-play/tools/play/play.sh` — it starts sim-host, opens the editor on
+   OB_CityHill, and stops sim-host when the editor closes. `--game` opens the game window only.
+3. Press Play (editor), then Cross (or Space) to arm.
+
+## Game elements (OB_CityHill)
+
+Layout: `tools/play/elements/city_hill.json` (from `tools/play/gen_elements.py`). Read-only: the
+actor reads the newest board sample and flags; it has no collision and no force.
+
+| Element | Where (s from course start) | Rule | Points |
+|---|---|---|---|
+| START gate | 14 m | starts the timer | — |
+| Slalom flags ×5 | 26–66 m, y = ±1.8 m | pass each flag on its outer side | 100 each |
+| Stop box | 85–92 m | stop (< 0.3 m/s) inside; tail down (pitch > 0.25 rad) adds a bonus | 300 + 200 |
+| Slow zone | 95–110 m | stay under 3 m/s | +200 clean, −100 too fast |
+| SPLIT gate | 102 m | split time | — |
+| No-buzz climb | 114–166 m | no rider warning (bits 5/6) on the 12 % climb | 300 |
+| FINISH gate | 172 m | stops the timer | 500 |
+
+## Latency (2026-10-04, this Mac)
+
+| Segment | Value | How |
+|---|---|---|
+| Pad → packet sent | ≤ 1 frame (~17 ms at 60 fps) | Enhanced Input and the send run in the same frame |
+| Input → sim → state back | 4–13 ms (median ~9 ms) | `tools/play/latency_probe.py`, kick bit |
+| State packet gap | p99 15.3 ms, max 20.9 ms | same probe; sim-host sends in bursts |
+| Board actor render delay | 25 ms (was 50 ms) | `ABoardActor::RenderDelaySeconds` |
+| Render + display | ~1–2 frames | estimate |
+| **Stick to screen** | **~75 ms estimate** | over the 50 ms target |
+
+Missed sim deadlines: sim-host misses about 70 % of its 2 ms deadlines on this Mac under load
+(`--stats-path`: 14 936 of 20 943 ticks in one run, jitter p99 12.2 ms). The mean rate holds at
+500 Hz, so the physics is right, but the packets come in bursts. A real-time thread class for the
+sim loop (request to c4) would let the render delay go toward 10 ms.
 
 ## Contract assumptions
 
@@ -67,10 +102,11 @@ which added about 0.33 s of lag.
 
 ## Open faults and next
 
-- The San Francisco street level is `OB_CityHill` (c5). It is not on master yet.
-  `OB_City` on master is the older City Park level and does not match the city_hill ground.
+- OB_CityHill needs gitignored City Sample art in `Content/` (docs/city-level.md lists the
+  folders). Known render-track state: plain facades, dress shoes on the rider.
 - c4: the deployed balance law cannot hold speed on grades above about 5 %. A fix is in work.
   Until it lands, the 15 % street feels wrong. Do not tune around it in the game.
 - sim-host misses many 2 ms deadlines on this Mac under load (about 70 %); the mean rate holds
   at 500 Hz, but packets arrive in bursts (p99 gap about 15 ms).
-- Next: the shared HUD spec, the game elements on the street, latency measurement, ride check.
+- Rumble is built but not yet felt on a real DualSense.
+- Next: the shared HUD spec (in progress), the game HUD panel (time, score, toasts), ride check.
