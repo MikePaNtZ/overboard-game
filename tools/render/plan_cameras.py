@@ -89,6 +89,15 @@ SHOTS_FOLLOW = [
          chest_cm=105.0, shake=0.04, still=12.0, dist=(0.0, 0.0), height=(0.0, 0.0), side=(0.0, 0.0)),
 ]
 
+# A side follow (--shots side): the same rail, no back distance, the camera beside the board at knee
+# height, aimed at the board and the rider's hips. For runs where the board's PITCH is the story
+# (a nose strike, a tail-down stop): from behind, pitch does not read.
+SHOTS_SIDE = [
+    dict(name="F1_follow", t0=0.6, t1=-0.6, rate=1.0, focal=28.0, fstop=5.6, follow=True,
+         rail_sigma=1.4, rail_dist=0.0, f_height=75.0, f_side=380.0, look_ahead=300.0, aim_mix=0.9,
+         chest_cm=70.0, shake=0.02, still=12.0, dist=(0.0, 0.0), height=(0.0, 0.0), side=(0.0, 0.0)),
+]
+
 # Footprint radius (m, scale 1) and height (cm, scale 1) of each scatter kind, as in gen_course.FOOT.
 # Used to keep the trail cameras out of the dressing. Aspens also get a crown (radius 3 m from 4 m up).
 FOOT = dict(aspen_01=0.4, aspen_02=0.3, aspen_03=1.0, aspen_04=0.55, hazel_01=2.4, hazel_02=0.9, hazel_03=0.7,
@@ -175,7 +184,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("npz")
     ap.add_argument("out")
-    ap.add_argument("--shots", default="carve", help="carve (OB_Carve, default) or trail (OB_Trail)")
+    ap.add_argument("--shots", default="carve", help="carve (OB_Carve, default), trail (OB_Trail), follow or side (one shot over the whole track)")
     ap.add_argument("--origin-cm", default=None, help="x,y,z of the MuJoCo origin in UE (default: OB_Carve's)")
     ap.add_argument("--origin-yaw", type=float, default=None)
     a = ap.parse_args()
@@ -184,6 +193,9 @@ def main():
         ORIGIN_CM = np.array([float(v) for v in a.origin_cm.split(",")])
     if a.origin_yaw is not None:
         ORIGIN_YAW_DEG = a.origin_yaw
+    if a.shots == "side":
+        a.shots = "follow"
+        SHOTS_FOLLOW[:] = SHOTS_SIDE
     if a.shots == "follow":
         SHOTS = SHOTS_FOLLOW
         # OB_FOLLOW_TAIL: seconds trimmed from the track end (default 0.6); 0 keeps a clip that ends
@@ -307,7 +319,7 @@ def main():
                     f = (s_cm - arc[i - 1]) / max(arc[i] - arc[i - 1], 1e-6)
                     return r[i - 1] + (r[i] - r[i - 1]) * f
                 behind = on_rail(ab - sh["rail_dist"])
-                tang = rb - behind
+                tang = on_rail(ab + 50.0) - on_rail(ab - 50.0)   # the rail direction at the board
                 tang[2] = 0.0
                 tang /= max(np.linalg.norm(tang), 1e-6)
                 right = np.array([tang[1], -tang[0], 0.0])  # UE is left-handed: +Y is right of +X
