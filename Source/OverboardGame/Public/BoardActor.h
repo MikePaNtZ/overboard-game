@@ -134,12 +134,13 @@ protected:
 	// known pose (still not extrapolation, just a stall). Tune once the host's real send rate
 	// (500 Hz control loop) is confirmed.
 	//
-	// Measured 2026-10-04 on the Mac (tools/play/latency_probe.py, x7 plant, city_hill): sim-host
-	// sends at 500 Hz mean, but in bursts -- packet gap p99 15.3 ms, max 20.9 ms. 25 ms covers
-	// the measured max with ~4 ms margin; a rarer gap holds the last pose for one frame. The old 50 ms used the
-	// whole 50 ms stick-to-screen budget of live play. Live path only; replay has its own clock.
+	// Measured 2026-10-04 on the Mac (tools/play/latency_probe.py, x7 plant, city_hill), with
+	// sim-host's real-time loop thread (controls 880a2b2): 0 missed deadlines, packet gap p99
+	// 5.6 ms, max 8.4 ms. 12 ms covers the measured max with ~3.6 ms margin; a rarer gap holds the
+	// last pose for one frame. Before that fix the gaps reached 21 ms and this was 50 ms, which
+	// alone used the whole 50 ms stick-to-screen budget. Live path only; replay has its own clock.
 	UPROPERTY(EditAnywhere, Category = "Board|Networking")
-	float RenderDelaySeconds = 0.025f;
+	float RenderDelaySeconds = 0.012f;
 
 	// --- Offline replay (render path) ---------------------------------------------------------
 	//

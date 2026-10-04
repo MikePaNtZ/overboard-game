@@ -62,51 +62,26 @@ actor reads the newest board sample and flags; it has no collision and no force.
 
 ## Latency (2026-10-04, this Mac)
 
+With sim-host's real-time loop thread (controls 880a2b2):
+
 | Segment | Value | How |
 |---|---|---|
-| Pad → packet sent | ≤ 1 frame (~17 ms at 60 fps) | Enhanced Input and the send run in the same frame |
-| Input → sim → state back | 4–13 ms (median ~9 ms) | `tools/play/latency_probe.py`, kick bit |
-| State packet gap | p99 15.3 ms, max 20.9 ms | same probe; sim-host sends in bursts |
-| Board actor render delay | 25 ms (was 50 ms) | `ABoardActor::RenderDelaySeconds` |
-| Render + display | ~1–2 frames | estimate |
-| **Stick to screen** | **~75 ms estimate** | over the 50 ms target |
+| Pad → packet sent | ≤ 1 frame (~17 ms at 60 fps, ~8 ms at 120 fps) | Enhanced Input and the send run in the same frame |
+| Input → sim → state back | 4.5–9.8 ms (median 6.4 ms) | `tools/play/latency_probe.py`, kick bit |
+| State packet gap | p99 5.6 ms, max 8.4 ms | same probe |
+| Board actor render delay | 12 ms (was 50 ms) | `ABoardActor::RenderDelaySeconds` |
+| Render + display | ~1–2 frames | estimate; not measured (needs a camera on the screen) |
+| **Stick to screen** | **~60 ms at 60 fps, ~40 ms at 120 fps (estimate)** | the 50 ms target needs 120 fps |
 
-Missed sim deadlines: sim-host misses about 70 % of its 2 ms deadlines on this Mac under load
-(`--stats-path`: 14 936 of 20 943 ticks in one run, jitter p99 12.2 ms). The mean rate holds at
-500 Hz, so the physics is right, but the packets come in bursts. A real-time thread class for the
-sim loop (request to c4) would let the render delay go toward 10 ms.
-
-## Contract assumptions
-
-- StateOut v3, 104 bytes, on 127.0.0.1:9601. InputIn v1, 28 bytes, to 127.0.0.1:9602.
-- StateOut flags: bit 0 armed, 1 valid, 2 fallen, 3 legacy authority warning (never set),
-  4 handoff latch (cleared only by the input reset bit), 5 rider warning pulsed, 6 rider warning
-  solid (never both; set only with `--authority-margin warn|limit`).
-- `weight_shift_lateral` is sent as 0. Under `--lean-steer` the rider model sets the lateral
-  ballast from `steer` (controls track, c4).
-- sim-host zeroes an input older than 100 ms. The game sends one packet per frame.
-- After a strike, bit 4 latches and Unreal owns the board (ADR-0012 ragdoll). The game does not
-  auto-reset during a handoff; the player presses Circle.
-- The PlayerStart is the MuJoCo origin, not the spawn point (c5). The sim spawns the board at
-  x = 88 m (course s = 2 m; s = 90 − x).
-- sim-host command and flags: `tools/play/run_sim.sh` (confirmed with c4). It needs sim-host
-  from `feat/controls/downhill-carve` at db8dfbc or later.
-
-## Mac facts
-
-- UE 5.7 reads a DualSense through Apple's GameController framework (`GCDualSenseGamepad`).
-  Options = Apple `buttonMenu` = `Gamepad_Special_Right`.
-- UE 5.7's Mac force feedback is an empty function (`AppleControllerInterface.h:87`). Unreal
-  rumble never reaches a pad on a Mac. `FPadRumble` drives `GCController.haptics` directly.
-- A wired Xbox 360 pad does not work on Apple Silicon (no driver).
+Missed sim deadlines: 0 of 15 402 ticks (`--stats-path`, jitter p99 0). Before the real-time
+fix: about 70 % missed, jitter p99 12 ms, packet gaps up to 21 ms.
 
 ## Open faults and next
 
 - OB_CityHill needs gitignored City Sample art in `Content/` (docs/city-level.md lists the
   folders). Known render-track state: plain facades, dress shoes on the rider.
-- c4: the deployed balance law cannot hold speed on grades above about 5 %. A fix is in work.
-  Until it lands, the 15 % street feels wrong. Do not tune around it in the game.
-- sim-host misses many 2 ms deadlines on this Mac under load (about 70 %); the mean rate holds
-  at 500 Hz, but packets arrive in bursts (p99 gap about 15 ms).
+- `--balance-comp` (grade compensation for the deployed law) is on in `run_sim.sh`. c4's 200-run
+  test: 159 pass, 37 stall (mostly climbs of 15 % or more), 2 runaway, 2 nose strikes (0 with the
+  warning). It is reversible: remove the flag if the hill feels wrong with it.
 - Rumble is built but not yet felt on a real DualSense.
 - Next: the shared HUD spec (in progress), the game HUD panel (time, score, toasts), ride check.
