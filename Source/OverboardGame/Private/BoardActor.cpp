@@ -1,6 +1,7 @@
 #include "BoardActor.h"
 
 #include "Kismet/GameplayStatics.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -396,6 +397,32 @@ bool ABoardActor::TryStartRidingAnim()
 	return true;
 }
 
+void ABoardActor::UpdateX7Lights(const OverboardWire::FBoardState& S)
+{
+	// L1 front bar white and L3 underglow, L4 hub ring teal: always on. L2 rear bar red: a tail light,
+	// bright while the motor brakes (current < 0). L5 amber end segments: the rider warning, pulsed
+	// at 2 Hz on flags bit 5, solid on bit 6 (the same signal as the HUD chip). Strengths are emissive
+	// multipliers sized to read in daylight.
+	const double Clock = bReplayActive ? GetReplayClockSeconds() : GetWorld()->GetTimeSeconds();
+	const bool bBraking = S.MotorCurrentA < -1.f;
+	const bool bSolid = (S.Flags & (1u << 6)) != 0;
+	const bool bPulsed = (S.Flags & (1u << 5)) != 0;
+	float Amber = 0.f;
+	if (bSolid)
+	{
+		Amber = 1.f;
+	}
+	else if (bPulsed)
+	{
+		Amber = 0.5f + 0.5f * FMath::Cos(2.f * PI * 2.f * static_cast<float>(Clock));
+	}
+	if (X7Front) { X7Front->SetScalarParameterValue(TEXT("EmissiveStrength"), 4.f); }
+	if (X7Rear) { X7Rear->SetScalarParameterValue(TEXT("EmissiveStrength"), bBraking ? 8.f : 1.2f); }
+	if (X7Under) { X7Under->SetScalarParameterValue(TEXT("EmissiveStrength"), 3.f); }
+	if (X7Ring) { X7Ring->SetScalarParameterValue(TEXT("EmissiveStrength"), 3.f); }
+	if (X7Amber) { X7Amber->SetScalarParameterValue(TEXT("EmissiveStrength"), 12.f * Amber); }
+}
+
 float ABoardActor::DeckTopAtCm(float XCm) const
 {
 	// The pad surface under a foot, cm over the axle. The X7 pads are kicked: measured on the GLB
@@ -684,6 +711,19 @@ void ABoardActor::BeginPlay()
 			MeshAssemblyRoot->SetVisibility(false, true);
 			PintAssemblyRoot->SetVisibility(true, true);
 			bX7Skin = true;
+			// The board's lights (c4's mapping, shared with the game): a dynamic material per light slot.
+			auto Mid = [](UStaticMeshComponent* C, FName Slot) -> UMaterialInstanceDynamic*
+			{
+				const int32 I = C->GetMaterialIndex(Slot);
+				return I == INDEX_NONE ? nullptr : C->CreateDynamicMaterialInstance(I);
+			};
+			X7Front = Mid(PintFrameMesh, TEXT("sc_front"));
+			X7Rear = Mid(PintFrameMesh, TEXT("sc_rear"));
+			X7Under = Mid(PintFrameMesh, TEXT("sc_led"));
+			X7Amber = Mid(PintFrameMesh, TEXT("led_amber"));
+			X7Ring = Mid(PintWheelTireMesh, TEXT("sc_ring"));
+			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: X7 lights front %d rear %d under %d amber %d ring %d."),
+				X7Front != nullptr, X7Rear != nullptr, X7Under != nullptr, X7Amber != nullptr, X7Ring != nullptr);
 			RenderDeckTopCm = 4.6f;   // pad top under the feet (+-24 cm), measured on the GLB centre line
 			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: X7 concept skin visible (proxy geometry, not CAD); deck top %.1f cm."), RenderDeckTopCm);
 		}
@@ -1116,6 +1156,11 @@ void ABoardActor::UpdatePoseFromHistory()
 		const FRotator WheelSpin(SpinSign * FMath::RadiansToDegrees(History.Last().State.WheelAngleRad), 0.f, 0.f);
 		PintWheelTireMesh->SetRelativeRotation(WheelSpin);
 		PintWheelHubMesh->SetRelativeRotation(WheelSpin);
+	}
+
+	if (bX7Skin)
+	{
+		UpdateX7Lights(History.Last().State);
 	}
 
 	// Blend parameters BEFORE the offset below, so the two stay visibly independent: the offset is

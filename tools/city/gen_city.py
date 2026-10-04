@@ -357,6 +357,13 @@ def main():
 
     # ---- front-row buildings from the City Sample SF modular kits -------------------------------
     blocks, kit = kit_buildings(rng, x_lo, x_hi, gap, z_side)
+    # Close the views: a block across each end of the main street and of the cross street, so no
+    # camera looks past the level into empty space (the preview's black wall at the crest).
+    for xe, sgn in ((x_lo, -1.0), (x_hi, 1.0)):
+        ze = z_side(xe)
+        box_mesh(blocks, (xe + sgn * 14.0, 0.0, ze + 9.0), (16.0, 2 * (SETBACK + 14.0), 22.0), "Body")
+    for ye in (CROSS_Y + 8.0, -(CROSS_Y + 8.0)):
+        box_mesh(blocks, (xc_cross, ye, floor_z + 9.0), (2 * SW + 2 * SIDE_W + 8.0, 12.0, 22.0), "Body")
     nv, nt = ue_winding(blocks).write(out("blocks.obm"))
     json.dump(kit, open(out("buildings.json"), "w"), separators=(",", ":"))
     log("buildings: %d (%s), %d kit pieces; blocks.obm %d verts %d tris" % (

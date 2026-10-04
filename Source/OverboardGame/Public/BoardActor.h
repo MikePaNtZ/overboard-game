@@ -265,6 +265,12 @@ protected:
 	FVector ShoeSoleLocal[2][2];   // [foot][heel, toe] sole points in the foot bone's frame
 	bool bShoeSoleKnown = false;
 	float DeckTopAtCm(float XCm) const;
+	void UpdateX7Lights(const OverboardWire::FBoardState& S);
+	UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> X7Front;
+	UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> X7Rear;
+	UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> X7Under;
+	UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> X7Amber;
+	UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> X7Ring;
 	float RenderBallAboveDeckCm = 0.3f;  // the shoe's lowest sole point over the pad (with shoe data; see ShoeSoleLocal)
 	FVector SmoothedLeanWorld = FVector::ZeroVector;
 	float SmoothedTurn = 0.f;
