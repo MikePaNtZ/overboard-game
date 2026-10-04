@@ -15,11 +15,12 @@ HERE="$(cd "$(dirname "$0")/../.." && pwd)"
 REPLAY="${OB_REPLAY:-/tmp/ob-render/a05.bin}"
 OFFSET="${OB_REPLAY_OFFSET:-3.0}"
 FRAMES="${OB_FRAMES_DIR:-/tmp/ob-render/frames}"
-LOG="/tmp/ob-render/render_${CFG}.log"
+RWORK="${OB_RENDER_WORK:-/tmp/ob-render}"
+LOG="$RWORK/render_${CFG}.log"
 MAP="${OB_MAP:-/Game/Maps/OB_Carve}"
 SEQ="${OB_SEQ:-/Game/Cinematics/SEQ_Carve}"
 CINE="${OB_CINE:-/Game/Cinematics}"
-mkdir -p /tmp/ob-render
+mkdir -p "$RWORK"
 rm -rf "${FRAMES:?}/${CFG}"
 "/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor" \
   "$HERE/OverboardGame.uproject" "$MAP" -game \

@@ -6,9 +6,11 @@
 set -u
 HERE="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
-RESULT=/tmp/ob-city/editor_result.txt
-LOG=/tmp/ob-city/editor_$(basename "$1" .py).log
-mkdir -p /tmp/ob-city
+# OB_CITY_WORK (default /tmp/ob-city) keeps two worktrees from sharing work files.
+WORK="${OB_CITY_WORK:-/tmp/ob-city}"
+RESULT="$WORK/editor_result.txt"
+LOG="$WORK/editor_$(basename "$1" .py).log"
+mkdir -p "$WORK"
 rm -f "$RESULT"
 OB_EDITOR_SCRIPT="$SCRIPT" OB_EDITOR_RESULT="$RESULT" \
   "/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor" \

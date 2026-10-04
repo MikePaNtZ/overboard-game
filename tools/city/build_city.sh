@@ -17,7 +17,8 @@ HERE="$(cd "$(dirname "$0")/../.." && pwd)"
 PY="${PY:-/Users/mike/projects/overboard/.venv/bin/python}"
 COURSE="$(cd "$1" && pwd)"
 NAME="$(basename "$COURSE")"
-WORK=/tmp/ob-city
+WORK="${OB_CITY_WORK:-/tmp/ob-city}"   # set OB_CITY_WORK per worktree to keep runs apart
+export OB_CITY_WORK="$WORK" OB_BUILD_LOG="$WORK/build.txt" OB_FRAMES_DIR="$WORK/frames"
 DATA="$WORK/$NAME"
 mkdir -p "$WORK"
 
