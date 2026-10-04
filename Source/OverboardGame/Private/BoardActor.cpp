@@ -1513,6 +1513,14 @@ void ABoardActor::SetupRenderRider()
 	float Scale = 1.f;
 	FParse::Value(FCommandLine::Get(), TEXT("ObRiderScale="), Scale);
 	FParse::Value(FCommandLine::Get(), TEXT("ObRiderLeanGain="), RenderRiderLeanGain);
+	FParse::Value(FCommandLine::Get(), TEXT("ObRiderFwdCm="), RenderRiderFwdCm);
+	FParse::Value(FCommandLine::Get(), TEXT("ObBallAboveDeckCm="), RenderBallAboveDeckCm);
+	if (bPintSkinLoaded && PintFrameMesh->GetStaticMesh())
+	{
+		const FBox Fb = PintFrameMesh->GetStaticMesh()->GetBoundingBox();
+		UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: Pint frame bounds (%.1f, %.1f, %.1f)..(%.1f, %.1f, %.1f) cm, axle origin; deck constant %.1f."),
+			Fb.Min.X, Fb.Min.Y, Fb.Min.Z, Fb.Max.X, Fb.Max.Y, Fb.Max.Z, kRiderDeckHeightCm);
+	}
 	RenderBodyOffsetCm = FVector(0.f, 0.f, kRiderDeckHeightCm);
 	RenderBodyMesh->SetRelativeLocation(RenderBodyOffsetCm);
 	RenderBodyMesh->SetRelativeRotation(FRotator(0.f, RiderRidingYawDeg, 0.f));
@@ -1617,27 +1625,38 @@ void ABoardActor::UpdateRenderRider()
 	Inst->Inputs.TimeS = static_cast<float>(Clock);
 	Inst->SetBlendSpacePosition(FVector(LastRidingBlendPos.X, LastRidingBlendPos.Y, 0.f));
 
-	// Feet onto the deck: a few frames of calibration once posed, then frozen. Target: the ball
-	// bones 3 cm above the deck top, the feet centred on the axle.
-	if (RenderRiderCalibrationTicks < 14)
+	// Feet onto the deck. The first frames converge fast; after that the planting runs on every
+	// frame with a 0.15 s lag. A one-time calibration measured a pose that the riding animation
+	// then left, and the rider floated 10-15 cm over the deck. Target: the lower ball bone
+	// kRenderBallAboveDeckCm over the deck top, the feet centred on the axle plus the forward trim
+	// (-ObRiderFwdCm=, toward the nose). Only the Z offset tracks every frame; the X/Y centring is
+	// frozen after calibration, so the authored foot slide in a carve stays visible.
+	++RenderRiderCalibrationTicks;
+	if (RenderRiderCalibrationTicks >= 3)
 	{
-		++RenderRiderCalibrationTicks;
-		if (RenderRiderCalibrationTicks >= 3)
+		const FTransform AT = GetActorTransform();
+		const FVector BallL = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("ball_l")));
+		const FVector BallR = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("ball_r")));
+		const FVector FootL = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("foot_l")));
+		const FVector FootR = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("foot_r")));
+		const FVector Mid = 0.5f * (FootL + FootR);
+		const float LowZ = FMath::Min(BallL.Z, BallR.Z);
+		const float ErrZ = (kRiderDeckHeightCm + RenderBallAboveDeckCm) - LowZ;
+		const bool bCalibrating = RenderRiderCalibrationTicks < 14;
+		const float Gain = bCalibrating ? 0.8f : (Dt > 0.0 ? 1.f - FMath::Exp(-static_cast<float>(Dt) / 0.15f) : 0.f);
+		RenderBodyOffsetCm.Z += Gain * ErrZ;
+		if (bCalibrating)
 		{
-			const FTransform AT = GetActorTransform();
-			const FVector BallL = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("ball_l")));
-			const FVector BallR = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("ball_r")));
-			const FVector FootL = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("foot_l")));
-			const FVector FootR = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("foot_r")));
-			const FVector Mid = 0.5f * (FootL + FootR);
-			const float LowZ = FMath::Min(BallL.Z, BallR.Z);
-			RenderBodyOffsetCm += 0.8f * FVector(-Mid.X, -Mid.Y, (kRiderDeckHeightCm + 3.f) - LowZ);
-			RenderBodyMesh->SetRelativeLocation(RenderBodyOffsetCm);
-			if (RenderRiderCalibrationTicks == 14)
-			{
-				UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: feet calibrated. Body offset (%.1f, %.1f, %.1f) cm; feet L (%.1f, %.1f, %.1f) R (%.1f, %.1f, %.1f) in board frame."),
-					RenderBodyOffsetCm.X, RenderBodyOffsetCm.Y, RenderBodyOffsetCm.Z, FootL.X, FootL.Y, FootL.Z, FootR.X, FootR.Y, FootR.Z);
-			}
+			// The nose is local -X, so a forward trim is a negative X target.
+			RenderBodyOffsetCm.X += 0.8f * (-RenderRiderFwdCm - Mid.X);
+			RenderBodyOffsetCm.Y += 0.8f * (-Mid.Y);
+		}
+		RenderBodyMesh->SetRelativeLocation(RenderBodyOffsetCm);
+		if (RenderRiderCalibrationTicks == 14 || RenderRiderCalibrationTicks % 120 == 0)
+		{
+			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: feet tick %d. Body offset (%.1f, %.1f, %.1f) cm; ball L z %.1f R z %.1f, foot L (%.1f, %.1f, %.1f) R (%.1f, %.1f, %.1f) in board frame; deck %.1f."),
+				RenderRiderCalibrationTicks, RenderBodyOffsetCm.X, RenderBodyOffsetCm.Y, RenderBodyOffsetCm.Z, BallL.Z, BallR.Z,
+				FootL.X, FootL.Y, FootL.Z, FootR.X, FootR.Y, FootR.Z, kRiderDeckHeightCm);
 		}
 	}
 
