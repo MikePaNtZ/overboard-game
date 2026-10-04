@@ -35,6 +35,9 @@ public:
 
 	virtual void Tick(float DeltaSeconds) override;
 
+	// Steps to the next camera view (chase -> close -> high -> chase). Bound to Options / C.
+	void CycleView();
+
 protected:
 	UPROPERTY(VisibleAnywhere, Category = "Camera")
 	TObjectPtr<USceneComponent> Root;
@@ -80,6 +83,7 @@ protected:
 
 private:
 	TWeakObjectPtr<ABoardActor> FollowTarget;
+	int32 ViewIndex = 0;
 
 	// Finds the board actor lazily rather than requiring GameMode to wire it up, so spawn order
 	// between the camera pawn and the board actor doesn't matter.

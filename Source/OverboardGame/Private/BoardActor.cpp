@@ -1100,6 +1100,7 @@ void ABoardActor::UpdatePoseFromHistory()
 	}
 
 	// Newest raw sample, not the interpolated render pose -- see IsFallen()'s comment on why.
+	LatestSampleFlags = History.Last().State.Flags;
 	bLatestSampleFallen = (History.Last().State.Flags & OverboardWire::EStateFlags::Fallen) != 0;
 
 	// ADR-0012. THE ONLY PLACE THE TAKEOVER IS TRIGGERED. It is gated on the wire's bit and

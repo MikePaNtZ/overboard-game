@@ -34,6 +34,13 @@ public class OverboardGame : ModuleRules
 		// the module accepts experimental API (only that component uses it).
 		bValidateExperimentalApi = false;
 
+		// PadRumble drives the gamepad through Apple's haptics directly: UE 5.7's Mac
+		// force-feedback path is an empty stub.
+		if (Target.Platform == UnrealTargetPlatform.Mac)
+		{
+			PublicFrameworks.AddRange(new string[] { "GameController", "CoreHaptics" });
+		}
+
 		// The wire layer (packet decode/encode + the MuJoCo -> Unreal transform) lives at the
 		// repo root in wire/, deliberately outside any UE module, so it stays a small,
 		// engine-free C++17 harness that compiles and tests standalone (see wire/README.md).

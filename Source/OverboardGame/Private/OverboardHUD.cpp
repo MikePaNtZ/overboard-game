@@ -1,6 +1,9 @@
 #include "OverboardHUD.h"
 
 #include "BoardActor.h"
+#include "OverboardPlayerController.h"
+#include "OverboardWire.h"
+#include "HAL/PlatformTime.h"
 #include "TerrainVerification.g.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
@@ -92,6 +95,8 @@ void AOverboardHUD::DrawHUD()
 	{
 		return;
 	}
+
+	DrawRiderCues(*Board);
 
 	const bool bWarningNow = Board->IsAuthorityWarning();
 	const double Now = FPlatformTime::Seconds();
@@ -225,4 +230,49 @@ void AOverboardHUD::DrawTerrainTag()
 
 	DrawRect(FLinearColor(0.35f, 0.22f, 0.f, 0.8f), X - 8.f, Y - 6.f, TW + 16.f, TH + 12.f);
 	DrawText(Text, FLinearColor(1.f, 0.85f, 0.4f, 1.f), X, Y, GEngine->GetMediumFont(), 1.0f);
+}
+
+// Two small cues, interim until the shared HUD spec (docs/hud-spec.md, render track) lands:
+//  - rider warning (StateOut bit 5 pulsed / bit 6 solid): an amber square, bottom centre, that
+//    blinks in phase with the rumble (AOverboardPlayerController::WarningPulseOn) or stays on;
+//  - fall (bit 2) or handoff (bit 4): a centre prompt to reset.
+// Both read the newest raw flags only; nothing here computes a board quantity.
+void AOverboardHUD::DrawRiderCues(const ABoardActor& Board)
+{
+	const float W = Canvas->ClipX;
+	const float H = Canvas->ClipY;
+	const uint16 Flags = Board.GetLatestFlags();
+	const bool bDown = Board.IsPhysicsHandoff() || Board.IsFallen();
+
+	if (bDown)
+	{
+		const FString Title = TEXT("FALLEN");
+		const FString Detail = TEXT("Press Circle (or R) to reset");
+		float TW, TH, DW, DH;
+		GetTextSize(Title, TW, TH, GEngine->GetLargeFont(), 1.5f);
+		GetTextSize(Detail, DW, DH, GEngine->GetMediumFont(), 1.0f);
+		const float BoxW = FMath::Max(TW, DW) + 64.f;
+		const float BoxH = TH + DH + 40.f;
+		const float X = (W - BoxW) * 0.5f;
+		const float Y = H * 0.38f;
+		DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.6f), X, Y, BoxW, BoxH);
+		DrawText(Title, FLinearColor(1.f, 0.35f, 0.25f, 1.f), (W - TW) * 0.5f, Y + 12.f, GEngine->GetLargeFont(), 1.5f);
+		DrawText(Detail, FLinearColor::White, (W - DW) * 0.5f, Y + 20.f + TH, GEngine->GetMediumFont(), 1.0f);
+		return;
+	}
+
+	const bool bSolid = (Flags & OverboardWire::EStateFlags::RiderWarningSolid) != 0;
+	const bool bPulsed = (Flags & OverboardWire::EStateFlags::RiderWarningPulsed) != 0;
+	if (bSolid || (bPulsed && AOverboardPlayerController::WarningPulseOn(FPlatformTime::Seconds())))
+	{
+		constexpr float kSize = 28.f;
+		const float X = (W - kSize) * 0.5f;
+		const float Y = H - 72.f;
+		const FLinearColor Amber(1.f, 0.62f, 0.f, 1.f);
+		DrawRect(Amber, X, Y, kSize, kSize);
+		const FString Label = bSolid ? TEXT("LIMIT") : TEXT("NEAR LIMIT");
+		float LW, LH;
+		GetTextSize(Label, LW, LH, GEngine->GetSmallFont(), 1.0f);
+		DrawText(Label, Amber, (W - LW) * 0.5f, Y + kSize + 4.f, GEngine->GetSmallFont(), 1.0f);
+	}
 }

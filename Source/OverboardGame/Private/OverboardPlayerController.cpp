@@ -14,6 +14,9 @@
 #include "OverboardWire.h"
 #include "OverboardGameMode.h"
 #include "BoardActor.h"
+#include "OverboardCameraPawn.h"
+#include "EngineUtils.h"
+#include "HAL/PlatformTime.h"
 #include "Logging/LogMacros.h"
 #include "Misc/CommandLine.h"
 #include "TimerManager.h"
@@ -66,6 +69,7 @@ void AOverboardPlayerController::BeginPlay()
 
 void AOverboardPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	Rumble.Shutdown();
 	if (SendSocket)
 	{
 		ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(SendSocket);
@@ -99,15 +103,11 @@ void AOverboardPlayerController::SetupInputComponent()
 
 	Super::SetupInputComponent();
 
-	// Built at runtime rather than as .uasset data assets -- still no editor session available
-	// to author Input Mapping Context assets as of W2 either. See class header for the full
-	// mapping (gamepad AND keyboard) and why right-stick-X / A-D / Left-Right legitimately drive
-	// two wire channels at once.
+	// Built at runtime, not as .uasset data assets, so the whole mapping is readable in one place.
+	// The pad and the keyboard drive SEPARATE actions: the pad value goes to the wire unfiltered,
+	// and only the digital keys are ramped (see the class header).
 	MappingContext = NewObject<UInputMappingContext>(this, TEXT("OverboardMappingContext"));
 
-	// Maps two positive keys and two negative keys (Negate modifier) onto one Axis1D action --
-	// the standard Enhanced Input pattern for a digital key pair driving an analogue-shaped
-	// action. Both WASD and the arrow keys are mapped, per the CEO's "direction pad" ask.
 	auto MapDigitalAxisPair = [this](UInputAction* Action, FKey PositiveKey1, FKey PositiveKey2, FKey NegativeKey1, FKey NegativeKey2)
 	{
 		MappingContext->MapKey(Action, PositiveKey1);
@@ -115,56 +115,68 @@ void AOverboardPlayerController::SetupInputComponent()
 		MappingContext->MapKey(Action, NegativeKey1).Modifiers.Add(NewObject<UInputModifierNegate>(this));
 		MappingContext->MapKey(Action, NegativeKey2).Modifiers.Add(NewObject<UInputModifierNegate>(this));
 	};
+	auto MakeAction = [this](const TCHAR* Name, EInputActionValueType Type)
+	{
+		UInputAction* Action = NewObject<UInputAction>(this, Name);
+		Action->ValueType = Type;
+		return Action;
+	};
 
-	IA_WeightShiftForeAft = NewObject<UInputAction>(this, TEXT("IA_WeightShiftForeAft"));
-	IA_WeightShiftForeAft->ValueType = EInputActionValueType::Axis1D;
-	MappingContext->MapKey(IA_WeightShiftForeAft, EKeys::Gamepad_LeftY); // gamepad path unchanged
-	MapDigitalAxisPair(IA_WeightShiftForeAft, EKeys::W, EKeys::Up, EKeys::S, EKeys::Down);
+	IA_LeanPad = MakeAction(TEXT("IA_LeanPad"), EInputActionValueType::Axis1D);
+	MappingContext->MapKey(IA_LeanPad, EKeys::Gamepad_LeftY);
 
-	IA_WeightShiftLateral = NewObject<UInputAction>(this, TEXT("IA_WeightShiftLateral"));
-	IA_WeightShiftLateral->ValueType = EInputActionValueType::Axis1D;
-	MappingContext->MapKey(IA_WeightShiftLateral, EKeys::Gamepad_RightX); // gamepad path unchanged
-	MapDigitalAxisPair(IA_WeightShiftLateral, EKeys::D, EKeys::Right, EKeys::A, EKeys::Left);
+	IA_LeanKeys = MakeAction(TEXT("IA_LeanKeys"), EInputActionValueType::Axis1D);
+	MapDigitalAxisPair(IA_LeanKeys, EKeys::W, EKeys::Up, EKeys::S, EKeys::Down);
 
-	// NON-PHYSICAL game steering channel -- see class comment. Deliberately the same physical
-	// inputs as weight_shift_lateral above (lean-to-steer): separate UInputActions bound to the
-	// same keys, each producing its own (here, identical) raw value that gets shaped/sent
-	// independently.
-	IA_Steer = NewObject<UInputAction>(this, TEXT("IA_Steer"));
-	IA_Steer->ValueType = EInputActionValueType::Axis1D;
-	MappingContext->MapKey(IA_Steer, EKeys::Gamepad_RightX); // gamepad path unchanged
-	MapDigitalAxisPair(IA_Steer, EKeys::D, EKeys::Right, EKeys::A, EKeys::Left);
+	IA_SteerPad = MakeAction(TEXT("IA_SteerPad"), EInputActionValueType::Axis1D);
+	MappingContext->MapKey(IA_SteerPad, EKeys::Gamepad_RightX);
 
-	IA_Arm = NewObject<UInputAction>(this, TEXT("IA_Arm"));
-	IA_Arm->ValueType = EInputActionValueType::Boolean;
-	MappingContext->MapKey(IA_Arm, EKeys::Gamepad_FaceButton_Bottom); // gamepad path unchanged
+	IA_SteerKeys = MakeAction(TEXT("IA_SteerKeys"), EInputActionValueType::Axis1D);
+	MapDigitalAxisPair(IA_SteerKeys, EKeys::D, EKeys::Right, EKeys::A, EKeys::Left);
+
+	// L2 analog (0..1). Left Shift is the keyboard equivalent (full pull).
+	IA_TailBrake = MakeAction(TEXT("IA_TailBrake"), EInputActionValueType::Axis1D);
+	MappingContext->MapKey(IA_TailBrake, EKeys::Gamepad_LeftTriggerAxis);
+	MappingContext->MapKey(IA_TailBrake, EKeys::LeftShift);
+
+	IA_Arm = MakeAction(TEXT("IA_Arm"), EInputActionValueType::Boolean);
+	MappingContext->MapKey(IA_Arm, EKeys::Gamepad_FaceButton_Bottom); // Cross
 	MappingContext->MapKey(IA_Arm, EKeys::SpaceBar);
 
-	IA_Reset = NewObject<UInputAction>(this, TEXT("IA_Reset"));
-	IA_Reset->ValueType = EInputActionValueType::Boolean;
-	MappingContext->MapKey(IA_Reset, EKeys::Gamepad_FaceButton_Right); // gamepad path unchanged
+	IA_Reset = MakeAction(TEXT("IA_Reset"), EInputActionValueType::Boolean);
+	MappingContext->MapKey(IA_Reset, EKeys::Gamepad_FaceButton_Right); // Circle
 	MappingContext->MapKey(IA_Reset, EKeys::R);
 
-	IA_Quit = NewObject<UInputAction>(this, TEXT("IA_Quit"));
-	IA_Quit->ValueType = EInputActionValueType::Boolean;
+	// Options on a DualSense is Apple's buttonMenu, which UE maps to Gamepad_Special_Right.
+	IA_CameraCycle = MakeAction(TEXT("IA_CameraCycle"), EInputActionValueType::Boolean);
+	MappingContext->MapKey(IA_CameraCycle, EKeys::Gamepad_Special_Right);
+	MappingContext->MapKey(IA_CameraCycle, EKeys::C);
+
+	IA_Quit = MakeAction(TEXT("IA_Quit"), EInputActionValueType::Boolean);
 	MappingContext->MapKey(IA_Quit, EKeys::Escape);
 
-	// AddMappingContext does NOT happen here -- see ReceivedPlayer() and the header comment on
-	// it. This used to be here and silently did nothing whenever GetLocalPlayer() was null at
-	// this point, which is exactly what killed both the keyboard AND the gamepad.
+	// AddMappingContext does NOT happen here -- see ReceivedPlayer().
 
 	if (UEnhancedInputComponent* EIC = Cast<UEnhancedInputComponent>(InputComponent))
 	{
-		EIC->BindAction(IA_WeightShiftForeAft, ETriggerEvent::Triggered, this, &AOverboardPlayerController::OnWeightShiftForeAft);
-		EIC->BindAction(IA_WeightShiftForeAft, ETriggerEvent::Completed, this, &AOverboardPlayerController::OnWeightShiftForeAft);
-		EIC->BindAction(IA_WeightShiftLateral, ETriggerEvent::Triggered, this, &AOverboardPlayerController::OnWeightShiftLateral);
-		EIC->BindAction(IA_WeightShiftLateral, ETriggerEvent::Completed, this, &AOverboardPlayerController::OnWeightShiftLateral);
-		EIC->BindAction(IA_Steer, ETriggerEvent::Triggered, this, &AOverboardPlayerController::OnSteer);
-		EIC->BindAction(IA_Steer, ETriggerEvent::Completed, this, &AOverboardPlayerController::OnSteer);
-		EIC->BindAction(IA_Arm, ETriggerEvent::Started, this, &AOverboardPlayerController::OnArm);
-		EIC->BindAction(IA_Arm, ETriggerEvent::Completed, this, &AOverboardPlayerController::OnArm);
-		EIC->BindAction(IA_Reset, ETriggerEvent::Started, this, &AOverboardPlayerController::OnReset);
-		EIC->BindAction(IA_Reset, ETriggerEvent::Completed, this, &AOverboardPlayerController::OnReset);
+		auto BindAxis = [EIC, this](UInputAction* Action, void (AOverboardPlayerController::*Handler)(const FInputActionValue&))
+		{
+			EIC->BindAction(Action, ETriggerEvent::Triggered, this, Handler);
+			EIC->BindAction(Action, ETriggerEvent::Completed, this, Handler);
+		};
+		auto BindButton = [EIC, this](UInputAction* Action, void (AOverboardPlayerController::*Handler)(const FInputActionValue&))
+		{
+			EIC->BindAction(Action, ETriggerEvent::Started, this, Handler);
+			EIC->BindAction(Action, ETriggerEvent::Completed, this, Handler);
+		};
+		BindAxis(IA_LeanPad, &AOverboardPlayerController::OnLeanPad);
+		BindAxis(IA_LeanKeys, &AOverboardPlayerController::OnLeanKeys);
+		BindAxis(IA_SteerPad, &AOverboardPlayerController::OnSteerPad);
+		BindAxis(IA_SteerKeys, &AOverboardPlayerController::OnSteerKeys);
+		BindAxis(IA_TailBrake, &AOverboardPlayerController::OnTailBrake);
+		BindButton(IA_Arm, &AOverboardPlayerController::OnArm);
+		BindButton(IA_Reset, &AOverboardPlayerController::OnReset);
+		EIC->BindAction(IA_CameraCycle, ETriggerEvent::Started, this, &AOverboardPlayerController::OnCameraCycle);
 		EIC->BindAction(IA_Quit, ETriggerEvent::Started, this, &AOverboardPlayerController::OnQuit);
 		UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController: action bindings registered on the EnhancedInputComponent."));
 	}
@@ -212,17 +224,27 @@ void AOverboardPlayerController::ReceivedPlayer()
 	}
 }
 
-// Verbose-level instrumentation on every handler (overboard#162, COO's explicit debugging ask):
-// "log the actual value arriving ... if the handler never fires, it is mapping; if it fires with
-// zero, it is the action/trigger." Verbose is filtered out by default (no spam in a normal
-// session) but is exactly what's needed the next time input goes dark for a reason nobody
-// logged -- raise LogOverboardInput to Verbose (`Log LogOverboardInput Verbose` in the in-game
-// console, or -LogCmds="LogOverboardInput Verbose" on the command line) to see it.
-void AOverboardPlayerController::OnWeightShiftForeAft(const FInputActionValue& Value) { CurrentForeAft = Value.Get<float>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnWeightShiftForeAft: %.3f"), CurrentForeAft); }
-void AOverboardPlayerController::OnWeightShiftLateral(const FInputActionValue& Value) { CurrentLateral = Value.Get<float>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnWeightShiftLateral: %.3f"), CurrentLateral); }
-void AOverboardPlayerController::OnSteer(const FInputActionValue& Value) { CurrentSteer = Value.Get<float>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnSteer: %.3f"), CurrentSteer); }
+// Verbose-level instrumentation on every handler (overboard#162): raise LogOverboardInput to
+// Verbose (`Log LogOverboardInput Verbose` in the console) to see each value as it arrives.
+void AOverboardPlayerController::OnLeanPad(const FInputActionValue& Value) { PadLean = Value.Get<float>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnLeanPad: %.3f"), PadLean); }
+void AOverboardPlayerController::OnLeanKeys(const FInputActionValue& Value) { KeyLean = Value.Get<float>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnLeanKeys: %.3f"), KeyLean); }
+void AOverboardPlayerController::OnSteerPad(const FInputActionValue& Value) { PadSteer = Value.Get<float>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnSteerPad: %.3f"), PadSteer); }
+void AOverboardPlayerController::OnSteerKeys(const FInputActionValue& Value) { KeySteer = Value.Get<float>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnSteerKeys: %.3f"), KeySteer); }
+void AOverboardPlayerController::OnTailBrake(const FInputActionValue& Value) { TailBrake = Value.Get<float>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnTailBrake: %.3f"), TailBrake); }
 void AOverboardPlayerController::OnArm(const FInputActionValue& Value) { bArmHeld = Value.Get<bool>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnArm: %s"), bArmHeld ? TEXT("true") : TEXT("false")); }
 void AOverboardPlayerController::OnReset(const FInputActionValue& Value) { bResetHeld = Value.Get<bool>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnReset: %s"), bResetHeld ? TEXT("true") : TEXT("false")); }
+
+void AOverboardPlayerController::OnCameraCycle(const FInputActionValue& Value)
+{
+	if (AOverboardCameraPawn* CameraPawn = Cast<AOverboardCameraPawn>(GetPawn()))
+	{
+		CameraPawn->CycleView();
+	}
+	else
+	{
+		UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController: camera cycle pressed, but the possessed pawn is not an AOverboardCameraPawn."));
+	}
+}
 
 void AOverboardPlayerController::OnQuit(const FInputActionValue& Value)
 {
@@ -233,44 +255,49 @@ void AOverboardPlayerController::OnQuit(const FInputActionValue& Value)
 	}
 }
 
+const ABoardActor* AOverboardPlayerController::FindBoard() const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return nullptr;
+	}
+	if (const AOverboardGameMode* GameMode = World->GetAuthGameMode<AOverboardGameMode>())
+	{
+		if (const ABoardActor* Board = GameMode->GetSpawnedBoard())
+		{
+			return Board;
+		}
+	}
+	// A level can place its board by hand rather than through the game mode.
+	for (TActorIterator<ABoardActor> It(World); It; ++It)
+	{
+		return *It;
+	}
+	return nullptr;
+}
+
 void AOverboardPlayerController::PlayerTick(float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
 
-	CheckForAutoResetOnFall();
+	const ABoardActor* Board = FindBoard();
+	if (Board)
+	{
+		CheckForAutoResetOnFall(Board);
+	}
+	UpdateRumble(Board);
 
-	// Ramp toward whatever Enhanced Input reported this frame -- see KeyboardRampSpeed's comment.
-	// For the gamepad, Current* already moves gradually, so this is a near no-op; for the
-	// keyboard, Current* snaps between 0 and +-1 and this is what turns that into a ramp.
-	SmoothedForeAft = FMath::FInterpTo(SmoothedForeAft, CurrentForeAft, DeltaTime, KeyboardRampSpeed);
-	SmoothedLateral = FMath::FInterpTo(SmoothedLateral, CurrentLateral, DeltaTime, KeyboardRampSpeed);
-	SmoothedSteer = FMath::FInterpTo(SmoothedSteer, CurrentSteer, DeltaTime, KeyboardRampSpeed);
-
-	// Send at frame rate (#162 W2 dispatch) -- no accumulator/throttle. The wire has no framing
-	// beyond seq, so sending every Tick is both the simplest thing and what was asked for; if
-	// this ever needs decoupling from render rate, that's a deliberate follow-up, not a default.
-	SendInputPacket();
+	// Send at frame rate -- no accumulator/throttle. sim-host zeroes an input older than 100 ms,
+	// so the frame rate must stay well above 10 Hz.
+	SendInputPacket(DeltaTime);
 }
 
-void AOverboardPlayerController::CheckForAutoResetOnFall()
+void AOverboardPlayerController::CheckForAutoResetOnFall(const ABoardActor* Board)
 {
-	const AOverboardGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AOverboardGameMode>() : nullptr;
-	const ABoardActor* Board = GameMode ? GameMode->GetSpawnedBoard() : nullptr;
-	if (!Board)
-	{
-		return; // board not spawned yet -- nothing to check
-	}
-
-	// ADR-0012: never auto-reset out of a physics handoff.
-	//
-	// A handoff almost always coincides with FALLEN, so without this the rising edge below would
-	// fire Reset on the very next tick, the host would clear its latch, and the crash would end
-	// roughly one frame after it began -- the player would see the board twitch and respawn
-	// rather than tumble. Reset during a handoff is the PLAYER's call, and bResetHeld still
-	// carries it: this suppresses the automatic one only.
-	//
-	// bWasFallenLastTick is still tracked through the handoff so that clearing it does not
-	// immediately re-trigger on an edge that was never serviced.
+	// ADR-0012: never auto-reset out of a physics handoff. A handoff almost always comes with
+	// FALLEN; an automatic reset on the next tick would end the crash one frame after it began.
+	// Reset during a handoff is the PLAYER's call (Circle / R).
 	const bool bIsFallenNow = Board->IsFallen();
 	if (Board->IsPhysicsHandoff())
 	{
@@ -287,22 +314,79 @@ void AOverboardPlayerController::CheckForAutoResetOnFall()
 	bWasFallenLastTick = bIsFallenNow;
 }
 
-float AOverboardPlayerController::ShapeAxis(float Raw) const
+void AOverboardPlayerController::UpdateRumble(const ABoardActor* Board)
+{
+	const double Now = FPlatformTime::Seconds();
+	float Level = 0.f;
+	if (Board)
+	{
+		const uint16 Flags = Board->GetLatestFlags();
+		const bool bDown = Board->IsPhysicsHandoff() || Board->IsFallen();
+		if (bDown && !bWasDownLastTick)
+		{
+			FallJoltUntilSeconds = Now + RumbleFallSeconds;
+		}
+		bWasDownLastTick = bDown;
+
+		if (Now < FallJoltUntilSeconds)
+		{
+			Level = RumbleFallLevel;
+		}
+		else if (bDown)
+		{
+			Level = 0.f; // the ride is over; the warning no longer means anything
+		}
+		else if (Flags & OverboardWire::EStateFlags::RiderWarningSolid)
+		{
+			Level = RumbleSolidLevel;
+		}
+		else if (Flags & OverboardWire::EStateFlags::RiderWarningPulsed)
+		{
+			Level = WarningPulseOn(Now) ? RumblePulsedLevel : 0.f;
+		}
+	}
+	Rumble.SetLevel(this, Level);
+}
+
+float AOverboardPlayerController::ShapeLean(float Raw) const
 {
 	const float Abs = FMath::Abs(Raw);
 	if (Abs < StickDeadzone)
 	{
 		return 0.f;
 	}
-	// Rescale [Deadzone, 1] -> [0, 1] so the curve starts at 0 right past the deadzone edge
-	// instead of jumping straight to a nonzero command the instant the stick leaves centre.
-	const float Rescaled = (Abs - StickDeadzone) / (1.f - StickDeadzone);
-	const float Curved = FMath::Pow(Rescaled, ResponseCurveExponent);
+	// Rescale [Deadzone, 1] -> [0, 1] so the curve starts at 0 right past the dead-zone edge.
+	const float X = FMath::Min((Abs - StickDeadzone) / (1.f - StickDeadzone), 1.f);
+	const float Curved = (1.f - LeanCubicBlend) * X + LeanCubicBlend * X * X * X;
 	return FMath::Sign(Raw) * Curved;
 }
 
-void AOverboardPlayerController::SendInputPacket()
+float AOverboardPlayerController::ShapeSteer(float Raw) const
 {
+	// The same dead zone and curve as the lean: a small carve answers, a full stick is a full carve.
+	return ShapeLean(Raw);
+}
+
+void AOverboardPlayerController::SendInputPacket(float DeltaTime)
+{
+	// Keyboard ramps only. A pad value is already gradual and goes to the wire unfiltered.
+	SmoothedKeyLean = FMath::FInterpTo(SmoothedKeyLean, KeyLean, DeltaTime, KeyboardRampSpeed);
+	SmoothedKeySteer = FMath::FInterpTo(SmoothedKeySteer, KeySteer, DeltaTime, KeyboardRampSpeed);
+
+	float ForeAft = FMath::Clamp(ShapeLean(PadLean) + SmoothedKeyLean, -1.f, 1.f);
+	const float Steer = FMath::Clamp(ShapeSteer(PadSteer) + SmoothedKeySteer, -1.f, 1.f);
+
+	// Tail brake (L2): fore_aft = min(stick, -L2). A full pull is always -1, whatever the stick.
+	const float BrakeTravel = FMath::Clamp(TailBrake, 0.f, 1.f);
+	if (BrakeTravel > TriggerDeadzone)
+	{
+		const float Brake = (BrakeTravel - TriggerDeadzone) / (1.f - TriggerDeadzone);
+		ForeAft = FMath::Min(ForeAft, -Brake);
+	}
+
+	LastSentForeAft = ForeAft;
+	LastSentSteer = Steer;
+
 	if (!SendSocket || !HostAddr.IsValid())
 	{
 		return;
@@ -313,12 +397,11 @@ void AOverboardPlayerController::SendInputPacket()
 	const bool bSendReset = bResetHeld || bAutoResetPending;
 	bAutoResetPending = false; // one-shot: consumed the instant it's sent, never held
 	Packet.Flags = (bArmHeld ? OverboardWire::EInputFlags::Arm : 0) | (bSendReset ? OverboardWire::EInputFlags::Reset : 0);
-	// Ramped (Smoothed*, not Current* -- see KeyboardRampSpeed), then deadzone + curve shape,
-	// then clamp is the final, unconditional step before the wire -- do not rely on the host to
-	// sanitise, even though it does (#162 W2 dispatch).
-	Packet.WeightShiftForeAft = FMath::Clamp(ShapeAxis(SmoothedForeAft), -1.f, 1.f);
-	Packet.WeightShiftLateral = FMath::Clamp(ShapeAxis(SmoothedLateral), -1.f, 1.f);
-	Packet.Steer = FMath::Clamp(ShapeAxis(SmoothedSteer), -1.f, 1.f); // NON-PHYSICAL
+	Packet.WeightShiftForeAft = ForeAft;
+	// Under --lean-steer the rider model sets the lateral ballast from steer; the controls track
+	// asks for 0 here so that a later change cannot count the lean twice.
+	Packet.WeightShiftLateral = 0.f;
+	Packet.Steer = Steer;
 
 	uint8 Buf[OverboardWire::kInputPacketWireSize];
 	OverboardWire::EncodeInputPacket(Packet, Buf);
@@ -329,76 +412,63 @@ void AOverboardPlayerController::SendInputPacket()
 
 void AOverboardPlayerController::RunInputSelfTest()
 {
+	// Headless check of the real path: simulated key events go through the mapping context,
+	// the triggers, the handlers and the shaping, and the test reads the value that went into the
+	// last wire packet. Three phases, 0.5 s apart, then quit.
 	UE_LOG(LogOverboardInput, Log, TEXT("=== OverboardInputSelfTest: BEGIN ==="));
-
 	if (!PlayerInput)
 	{
 		UE_LOG(LogOverboardInput, Error, TEXT("OverboardInputSelfTest: FAIL -- PlayerInput is null, cannot inject a key event."));
 		return;
 	}
 
-	// Keyboard phase: a real 'W pressed' event through the actual Enhanced Input pipeline --
-	// mapping context lookup, trigger evaluation, the Negate-modified paired key, our handler,
-	// the ramp, the real wire send -- via the engine's own simulated-input mechanism, not a
-	// hand-rolled shortcut that could pass while the real path stays broken.
-	UE_LOG(LogOverboardInput, Log, TEXT("OverboardInputSelfTest: [1/2 keyboard] baseline -- CurrentForeAft=%.3f SmoothedForeAft=%.3f"), CurrentForeAft, SmoothedForeAft);
-	PlayerInput->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::W, IE_Pressed, 1.0f));
-	UE_LOG(LogOverboardInput, Log, TEXT("OverboardInputSelfTest: [1/2 keyboard] injected 'W pressed'. Checking again shortly (processed on a later frame, not synchronously)."));
-
-	FTimerHandle CheckKeyboardHandle;
-	GetWorldTimerManager().SetTimer(CheckKeyboardHandle, [this]()
+	auto Inject = [this](FKey Key, EInputEvent Event, float Value)
 	{
-		const bool bHandlerFired = !FMath::IsNearlyZero(CurrentForeAft);
-		const bool bReachedWire = !FMath::IsNearlyZero(SmoothedForeAft);
-		UE_LOG(LogOverboardInput, Log, TEXT("OverboardInputSelfTest: [1/2 keyboard] after settle -- CurrentForeAft=%.3f (handler %s) SmoothedForeAft=%.3f (ramped/wire value %s)"),
-			CurrentForeAft, bHandlerFired ? TEXT("FIRED") : TEXT("NEVER FIRED -- mapping context problem"),
-			SmoothedForeAft, bReachedWire ? TEXT("NON-ZERO -- PASS") : TEXT("still zero -- FAIL"));
-		UE_LOG(LogOverboardInput, Log, TEXT("=== OverboardInputSelfTest KEYBOARD: %s ==="), bReachedWire ? TEXT("PASS") : TEXT("FAIL"));
-
 		if (PlayerInput)
 		{
-			PlayerInput->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::W, IE_Released, 0.0f));
+			PlayerInput->InputKey(FInputKeyEventArgs::CreateSimulated(Key, Event, Value));
 		}
+	};
+	auto Report = [this](const TCHAR* Phase, bool bPass)
+	{
+		UE_LOG(LogOverboardInput, Log, TEXT("=== OverboardInputSelfTest %s: %s (fore_aft=%.3f steer=%.3f) ==="),
+			Phase, bPass ? TEXT("PASS") : TEXT("FAIL"), LastSentForeAft, LastSentSteer);
+	};
 
-		// Gamepad phase, per the COO's explicit ask to confirm this fix covers both paths --
-		// same mapping context, same InputComponent/PlayerInput classes, so the same root cause
-		// should have broken both, and the same fix should cover both. Confirmed, not assumed.
-		FTimerHandle GamepadInjectHandle;
-		GetWorldTimerManager().SetTimer(GamepadInjectHandle, [this]()
+	// 1. Keyboard: W must ramp the sent lean above zero.
+	Inject(EKeys::W, IE_Pressed, 1.f);
+	FTimerHandle H1;
+	GetWorldTimerManager().SetTimer(H1, [this, Inject, Report]()
+	{
+		Report(TEXT("KEYBOARD W"), LastSentForeAft > 0.05f);
+		Inject(EKeys::W, IE_Released, 0.f);
+		SmoothedKeyLean = 0.f; // the key ramp would otherwise decay into phase 2's reading
+
+		// 2. Pad: left stick Y = 0.6 must send the shaped value, unfiltered.
+		Inject(EKeys::Gamepad_LeftY, IE_Axis, 0.6f);
+		FTimerHandle H2;
+		GetWorldTimerManager().SetTimer(H2, [this, Inject, Report]()
 		{
-			UE_LOG(LogOverboardInput, Log, TEXT("OverboardInputSelfTest: [2/2 gamepad] baseline -- CurrentForeAft=%.3f SmoothedForeAft=%.3f"), CurrentForeAft, SmoothedForeAft);
-			if (PlayerInput)
+			const float Expected = ShapeLean(0.6f);
+			Report(TEXT("PAD LEFT Y 0.6"), FMath::IsNearlyEqual(LastSentForeAft, Expected, 0.05f));
+
+			// 3. L2 full pull with the stick still forward must send -1 (min rule).
+			Inject(EKeys::Gamepad_LeftTriggerAxis, IE_Axis, 1.f);
+			FTimerHandle H3;
+			GetWorldTimerManager().SetTimer(H3, [this, Inject, Report]()
 			{
-				PlayerInput->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::Gamepad_LeftY, IE_Axis, 0.6f));
-			}
-			UE_LOG(LogOverboardInput, Log, TEXT("OverboardInputSelfTest: [2/2 gamepad] injected Gamepad_LeftY=0.6. Checking again shortly."));
+				Report(TEXT("L2 FULL WITH STICK FORWARD"), FMath::IsNearlyEqual(LastSentForeAft, -1.f, 0.01f));
+				Inject(EKeys::Gamepad_LeftTriggerAxis, IE_Axis, 0.f);
+				Inject(EKeys::Gamepad_LeftY, IE_Axis, 0.f);
 
-			FTimerHandle CheckGamepadHandle;
-			GetWorldTimerManager().SetTimer(CheckGamepadHandle, [this]()
-			{
-				const bool bHandlerFired = !FMath::IsNearlyZero(CurrentForeAft);
-				const bool bReachedWire = !FMath::IsNearlyZero(SmoothedForeAft);
-				UE_LOG(LogOverboardInput, Log, TEXT("OverboardInputSelfTest: [2/2 gamepad] after settle -- CurrentForeAft=%.3f (handler %s) SmoothedForeAft=%.3f (ramped/wire value %s)"),
-					CurrentForeAft, bHandlerFired ? TEXT("FIRED") : TEXT("NEVER FIRED"),
-					SmoothedForeAft, bReachedWire ? TEXT("NON-ZERO -- PASS") : TEXT("still zero -- FAIL"));
-				UE_LOG(LogOverboardInput, Log, TEXT("=== OverboardInputSelfTest GAMEPAD: %s ==="), bReachedWire ? TEXT("PASS") : TEXT("FAIL"));
-
-				if (PlayerInput)
-				{
-					PlayerInput->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::Gamepad_LeftY, IE_Axis, 0.0f));
-				}
-
-				// Self-test mode is a one-shot headless check, never a normal play session --
-				// quit afterward rather than leaving an -unattended process running indefinitely
-				// in the background (bit a verification pass once already: four stray instances
-				// kept sending packets for minutes after their self-tests had long finished).
+				// A self-test is a one-shot headless check: quit, so no stray instance keeps sending.
 				FTimerHandle QuitHandle;
 				GetWorldTimerManager().SetTimer(QuitHandle, [this]()
 				{
 					UE_LOG(LogOverboardInput, Log, TEXT("OverboardInputSelfTest: done, quitting."));
 					ConsoleCommand(TEXT("quit"));
-				}, 1.0f, false);
+				}, 0.5f, false);
 			}, 0.5f, false);
 		}, 0.5f, false);
-	}, 0.5f, false);
+	}, 1.0f, false);
 }

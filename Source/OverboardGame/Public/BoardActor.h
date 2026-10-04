@@ -42,6 +42,11 @@ public:
 	// render pose, so it reacts on the tick data actually arrives, not one render-delay later.
 	bool IsFallen() const { return bLatestSampleFallen; }
 
+	// The newest raw sample's whole StateOut flag word (OverboardWire::EStateFlags), for readers
+	// that need a bit this class does not wrap -- the rider-warning rumble and HUD cue read bits 5
+	// and 6 here. 0 before anything has been received.
+	uint16 GetLatestFlags() const { return LatestSampleFlags; }
+
 	// True if the newest received sample had OverboardWire::EStateFlags::AuthorityWarning set --
 	// ADR-0011 exit criterion (c), surfaced by AOverboardHUD (condition 3 of the second
 	// ratification, overboard-game#19).
@@ -614,6 +619,7 @@ private:
 	float LeanSignForDiagnostic = 0.f;
 
 	bool bLatestSampleFallen = false;
+	uint16 LatestSampleFlags = 0;
 
 	// ADR-0012 physics-authority handoff. `bPhysicsHandoffActive` mirrors the wire's LEVEL bit
 	// (not an edge -- a dropped packet must not strand this client), and the two Begin/End

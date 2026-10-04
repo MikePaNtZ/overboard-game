@@ -79,6 +79,7 @@ private:
 
 	void DrawAuthorityBanner(float Alpha);
 	void DrawTerrainTag();
+	void DrawRiderCues(const ABoardActor& Board);
 
 	/// Resolves this level's name and looks it up in the table generated from the terrain
 	/// declarations. When the level's drivable surface has not been measured against the

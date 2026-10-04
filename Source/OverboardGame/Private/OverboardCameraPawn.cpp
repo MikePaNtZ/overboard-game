@@ -74,3 +74,32 @@ void AOverboardCameraPawn::Tick(float DeltaSeconds)
 	const FRotator NewRotation = FMath::RInterpTo(GetActorRotation(), FRotator(0.f, TargetYaw, 0.f), DeltaSeconds, FollowYawSpeed);
 	SetActorRotation(FRotator(0.f, NewRotation.Yaw, 0.f));
 }
+
+namespace
+{
+	// The views Options / C steps through. 0 is the original chase view (the class defaults).
+	struct FCameraView
+	{
+		const TCHAR* Name;
+		float ArmLengthCm;
+		float ArmPitchDeg;
+		float HeightOffsetCm;
+	};
+	constexpr FCameraView kViews[] = {
+		{ TEXT("chase"), 480.f, -18.f, 60.f },
+		{ TEXT("close"), 260.f, -10.f, 110.f },  // near the rider's eye line, behind the tail
+		{ TEXT("high"), 1100.f, -38.f, 80.f },   // reads the street ahead: the grade and the gates
+	};
+}
+
+void AOverboardCameraPawn::CycleView()
+{
+	ViewIndex = (ViewIndex + 1) % UE_ARRAY_COUNT(kViews);
+	const FCameraView& View = kViews[ViewIndex];
+	ArmLengthCm = View.ArmLengthCm;
+	ArmPitchDeg = View.ArmPitchDeg;
+	FollowHeightOffsetCm = View.HeightOffsetCm;
+	SpringArm->TargetArmLength = ArmLengthCm;
+	SpringArm->SetRelativeRotation(FRotator(ArmPitchDeg, 0.f, 0.f));
+	UE_LOG(LogTemp, Log, TEXT("AOverboardCameraPawn: view '%s'"), View.Name);
+}

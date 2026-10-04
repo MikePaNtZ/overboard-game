@@ -114,6 +114,12 @@ namespace OverboardWire
 		/// host, and two engines integrating the same board is the failure the latch exists
 		/// to prevent.
 		constexpr uint16_t PhysicsHandoff = 1u << 4;
+
+		// Rider warning (sim-host b958dcb, set only with --authority-margin warn|limit): the motor
+		// is near its limit. Pulsed = margin above 0.70, solid = above 0.85; never both. On the
+		// real board it is a ~70 Hz buzz through the motor plus an LED cue.
+		constexpr uint16_t RiderWarningPulsed = 1u << 5;
+		constexpr uint16_t RiderWarningSolid = 1u << 6;
 	}
 
 	// Input packet flags (bit0 arm, bit1 reset)
