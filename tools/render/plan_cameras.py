@@ -56,17 +56,62 @@ if os.environ.get("OB_HEAD_CHECK") == "1":
 # on the trail track. A shot with "fixed" holds the camera at a MuJoCo point (x, y, z in m) and
 # turns to keep the rider in frame. "still" is the sim time of the frame MRQ_Still_<shot> renders.
 SHOTS_TRAIL = [
-    dict(name="T1_valley", t0=4.0, t1=9.0, rate=1.0, focal=24.0, fstop=8.0, fixed=(66.0, 26.0, 46.0),
-         fixed_target=(-20.0, -2.0, -8.0), dist=(0.0, 0.0), height=(0.0, 0.0), side=(0.0, 0.0), look_ahead=0.0,
+    # Aerial push-in: starts 24 m over the board and ends 5 m up and 7 m behind it, on the path corridor.
+    dict(name="T1_valley", t0=4.0, t1=9.0, rate=1.0, focal=24.0, fstop=8.0,
+         dist=(2200.0, 700.0), height=(2400.0, 500.0), side=(0.0, 0.0), look_ahead=0.0,
          shake=0.0, still=6.0),
-    dict(name="T2_chase", t0=11.0, t1=17.0, rate=1.0, focal=35.0, fstop=2.8,
-         dist=(380.0, 380.0), height=(160.0, 160.0), side=(60.0, 60.0), look_ahead=1200.0, shake=0.1, still=14.0),
-    dict(name="T3_bridge", t0=26.0, t1=31.0, rate=1.0, focal=30.0, fstop=5.6, fixed=(2.5, -11.5, -2.7),
-         dist=(0.0, 0.0), height=(0.0, 0.0), side=(0.0, 0.0), look_ahead=0.0, shake=0.0, still=28.6, ev100=10.4),
-    dict(name="T4_front", t0=33.0, t1=39.0, rate=1.0, focal=40.0, fstop=2.8,
-         dist=(-560.0, -560.0), height=(120.0, 120.0), side=(-170.0, -170.0), look_ahead=0.0, shake=0.06,
-         look_at_head=True, head_cm=80.0, still=36.0),
+    dict(name="T2_chase", t0=10.5, t1=16.5, rate=1.0, focal=35.0, fstop=2.8,
+         dist=(380.0, 380.0), height=(160.0, 160.0), side=(60.0, 60.0), look_ahead=1200.0, shake=0.1, still=13.5),
+    # The board crosses the bridge (x 8.9 to 2.1 m) at sim 16.3 to 17.8 s. The camera is low, on the
+    # verge beside the span, and follows the board.
+    dict(name="T3_bridge", t0=15.3, t1=19.3, rate=1.0, focal=30.0, fstop=5.6, ev100=10.6,
+         cam_fixed_ground=(10.5, -3.6, 70.0), dist=(0.0, 0.0), height=(0.0, 0.0),
+         side=(0.0, 0.0), look_ahead=0.0, shake=0.0, still=17.0),
+    dict(name="T4_front", t0=27.0, t1=33.5, rate=1.0, focal=40.0, fstop=2.8,
+         dist=(-560.0, -420.0), height=(120.0, 120.0), side=(-170.0, -170.0), look_ahead=0.0, shake=0.06,
+         look_at_head=True, head_cm=80.0, still=30.0),
 ]
+
+# Footprint radius (m, scale 1) and height (cm, scale 1) of each scatter kind, as in gen_course.FOOT.
+# Used to keep the trail cameras out of the dressing. Aspens also get a crown (radius 3 m from 4 m up).
+FOOT = dict(aspen_01=0.4, aspen_02=0.3, aspen_03=1.0, aspen_04=0.55, hazel_01=2.4, hazel_02=0.9, hazel_03=0.7,
+            hazel_04=0.35, snag_birch_a=0.4, snag_birch_c=0.4, snag_alder_b=0.4, rock=0.5,
+            grass_meadow_a=0.3, grass_meadow_b=0.3, grass_meadow_c=0.3, grass_forest=0.3, grass_reed=0.45,
+            flower_daisy=0.16, flower_buttercup=0.16, flower_knapweed=0.16, fern=0.8)
+HEIGHT = dict(grass_meadow_a=120, grass_meadow_b=120, grass_meadow_c=120, grass_forest=120, grass_reed=200,
+              flower_daisy=100, flower_buttercup=100, flower_knapweed=100, fern=80, rock=100,
+              hazel_01=300, hazel_02=300, hazel_03=300, hazel_04=300)
+CLEAR_CM = 150.0
+
+
+def load_scatter(path):
+    """Instances as one array (x, y, z, footprint_cm, top_cm, crown_cm), UE cm. None if no file."""
+    if not os.path.exists(path):
+        return None
+    rows = []
+    for kind, inst in json.load(open(path))["kinds"].items():
+        for x, y, z, _yaw, _p, _r, sc in inst:
+            crown = 300.0 * sc if kind.startswith("aspen") else 0.0
+            rows.append((x, y, z, FOOT.get(kind, 0.5) * 100.0 * sc, z + HEIGHT.get(kind, 3000) * sc, crown))
+    return np.array(rows)
+
+
+def blocked(sc, p, margin):
+    """True if the point p (UE cm) is inside an instance footprint plus margin."""
+    d = np.hypot(sc[:, 0] - p[0], sc[:, 1] - p[1])
+    trunk = (d < sc[:, 3] + margin) & (p[2] < sc[:, 4] + margin)
+    crown = (sc[:, 5] > 0) & (d < sc[:, 5] + margin) & (p[2] > sc[:, 2] + 400.0) & (p[2] < sc[:, 2] + 2000.0)
+    return bool((trunk | crown).any())
+
+
+def cam_clear(sc, cam, target):
+    """The camera point keeps CLEAR_CM from the dressing, and so does the line to the target."""
+    if blocked(sc, cam, CLEAR_CM):
+        return False
+    for f in np.linspace(0.1, 1.0, 14):
+        if blocked(sc, cam + (target - cam) * f, 40.0):
+            return False
+    return True
 
 
 def to_ue(px, py, pz):
@@ -160,6 +205,7 @@ def main():
         i = int(np.argmin(np.hypot(board[:, 0] - xy[0], board[:, 1] - xy[1])))
         return ground[i]
 
+    scat = load_scatter(os.environ.get("OB_SCATTER", "/tmp/ob-trail/valley_gentle/scatter.json"))
     shots, frame = [], 0
     for k, sh in enumerate(SHOTS):
         t0, t1 = max(sh["t0"], t[0]), min(sh["t1"], t[-1])
@@ -198,6 +244,19 @@ def main():
                 cam = b - fwd * dist + side * sid
                 cam[2] = ground_under(cam) + hgt
                 tgt = b + np.array([0, 0, sh.get("head_cm", HEAD_ABOVE_BOARD_CM)])
+            if sh.get("cam_fixed_ground"):
+                cx, cy, ch = sh["cam_fixed_ground"]
+                cam = to_ue(cx, cy, 0.0)
+                cam[2] = ground_under(cam) + ch
+                tgt = b + np.array([0, 0, 70.0])
+            if scat is not None and a.shots == "trail":
+                aim = b + np.array([0, 0, 90.0])
+                for _ in range(40):
+                    if cam_clear(scat, cam, aim):
+                        break
+                    cam[1] += -math.copysign(20.0, cam[1] - ORIGIN_CM[1])  # toward the path centre line
+                else:
+                    print("WARNING: %s key %d camera not clear of dressing" % (sh["name"], j))
             dv = tgt - cam
             yaw = math.degrees(math.atan2(dv[1], dv[0]))
             pitch = math.degrees(math.atan2(dv[2], math.hypot(dv[0], dv[1])))
