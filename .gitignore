@@ -94,3 +94,10 @@ Content/Textures/
 # and City Sample parts that are licensed to Mike's Epic account, not redistributable in this
 # PUBLIC repo; same reasoning as Content/CityPark/. See docs/carve-render.md.
 Content/MetaHumans/
+
+# The OB_Trail level's environment art, copied locally from the City Sample Fab pack (licensed to
+# Mike's Epic account, not redistributable in this PUBLIC repo; same reasoning as Content/CityPark/):
+# the street-tree kits, the dirt texture and the Megascans master materials they pull in. See
+# docs/trail-level.md for the copy command.
+Content/Prop/
+Content/MSPresets/

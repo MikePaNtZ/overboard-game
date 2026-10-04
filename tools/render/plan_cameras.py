@@ -52,6 +52,23 @@ if os.environ.get("OB_HEAD_CHECK") == "1":
                       shake=0.0, look_at_head=True))
 
 
+# OB_Trail (tools/trail/): the MuJoCo origin is the landscape centre, yaw 0. Times are sim seconds
+# on the trail track. A shot with "fixed" holds the camera at a MuJoCo point (x, y, z in m) and
+# turns to keep the rider in frame. "still" is the sim time of the frame MRQ_Still_<shot> renders.
+SHOTS_TRAIL = [
+    dict(name="T1_valley", t0=4.0, t1=9.0, rate=1.0, focal=24.0, fstop=8.0, fixed=(66.0, 26.0, 46.0),
+         fixed_target=(-20.0, -2.0, -8.0), dist=(0.0, 0.0), height=(0.0, 0.0), side=(0.0, 0.0), look_ahead=0.0,
+         shake=0.0, still=6.0),
+    dict(name="T2_chase", t0=11.0, t1=17.0, rate=1.0, focal=35.0, fstop=2.8,
+         dist=(380.0, 380.0), height=(160.0, 160.0), side=(60.0, 60.0), look_ahead=1200.0, shake=0.1, still=14.0),
+    dict(name="T3_bridge", t0=26.0, t1=31.0, rate=1.0, focal=30.0, fstop=5.6, fixed=(2.5, -11.5, -2.7),
+         dist=(0.0, 0.0), height=(0.0, 0.0), side=(0.0, 0.0), look_ahead=0.0, shake=0.0, still=28.6, ev100=10.4),
+    dict(name="T4_front", t0=33.0, t1=39.0, rate=1.0, focal=40.0, fstop=2.8,
+         dist=(-560.0, -560.0), height=(120.0, 120.0), side=(-170.0, -170.0), look_ahead=0.0, shake=0.06,
+         look_at_head=True, head_cm=80.0, still=36.0),
+]
+
+
 def to_ue(px, py, pz):
     x, y, z = px * 100.0, -py * 100.0, pz * 100.0
     c, s = math.cos(math.radians(ORIGIN_YAW_DEG)), math.sin(math.radians(ORIGIN_YAW_DEG))
@@ -96,7 +113,24 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("npz")
     ap.add_argument("out")
+    ap.add_argument("--shots", default="carve", help="carve (OB_Carve, default) or trail (OB_Trail)")
+    ap.add_argument("--origin-cm", default=None, help="x,y,z of the MuJoCo origin in UE (default: OB_Carve's)")
+    ap.add_argument("--origin-yaw", type=float, default=None)
     a = ap.parse_args()
+    global ORIGIN_CM, ORIGIN_YAW_DEG, SHOTS
+    if a.origin_cm:
+        ORIGIN_CM = np.array([float(v) for v in a.origin_cm.split(",")])
+    if a.origin_yaw is not None:
+        ORIGIN_YAW_DEG = a.origin_yaw
+    if a.shots == "trail":
+        SHOTS = SHOTS_TRAIL
+        if os.environ.get("OB_CONTACT_CHECK") == "1":
+            # Wheel-contact close-ups: a camera held 1.5 m beside the path, 0.2 m over the surface,
+            # at the board's position at the still time. Short lens-free check of tyre vs ground.
+            for nm, ts in (("C1_descent", 13.0), ("C2_bridge", 28.5), ("C3_climb", 36.0)):
+                SHOTS.append(dict(name=nm, t0=ts - 1.0, t1=ts + 1.0, rate=1.0, focal=50.0, fstop=8.0,
+                                  dist=(0.0, 0.0), height=(0.0, 0.0), side=(0.0, 0.0), look_ahead=0.0, shake=0.0,
+                                  fixed_rel=(0.0, 1.5, 0.2 - 0.1454), still=ts, look_at_wheel=True))
     d = np.load(a.npz)
     t = d["t"]
     board = to_ue(d["px"], d["py"], d["pz"])
@@ -150,10 +184,20 @@ def main():
             ahead = anc + fwd * sh["look_ahead"]
             ahead[2] = ground_under(ahead) + 40.0
             tgt = 0.45 * (b + np.array([0, 0, 95.0])) + 0.55 * ahead
+            if sh.get("look_down"):
+                tgt = ahead + np.array([0, 0, sh["look_down"]])
+            if sh.get("fixed"):
+                cam = to_ue(*sh["fixed"])
+                tgt = to_ue(*sh["fixed_target"]) if sh.get("fixed_target") else b + np.array([0, 0, 90.0])
+            if sh.get("fixed_rel"):
+                ks = int(np.argmin(np.abs(t - sh["still"])))
+                fr = sh["fixed_rel"]
+                cam = to_ue(d["px"][ks] + fr[0], d["py"][ks] + fr[1], d["pz"][ks] + fr[2])
+                tgt = to_ue(d["px"][ks], d["py"][ks], d["pz"][ks] - 0.10)
             if sh.get("look_at_head"):
                 cam = b - fwd * dist + side * sid
                 cam[2] = ground_under(cam) + hgt
-                tgt = b + np.array([0, 0, HEAD_ABOVE_BOARD_CM])
+                tgt = b + np.array([0, 0, sh.get("head_cm", HEAD_ABOVE_BOARD_CM)])
             dv = tgt - cam
             yaw = math.degrees(math.atan2(dv[1], dv[0]))
             pitch = math.degrees(math.atan2(dv[2], math.hypot(dv[0], dv[1])))
@@ -167,9 +211,12 @@ def main():
                 while yaw - prev_yaw > 180: yaw -= 360
                 while yaw - prev_yaw < -180: yaw += 360
             prev_yaw = yaw
-            focus = float(np.linalg.norm((tgt if sh.get("look_at_head") else b + np.array([0, 0, 100.0])) - cam))
+            focus = float(np.linalg.norm((tgt if (sh.get("look_at_head") or sh.get("fixed_rel")) else b + np.array([0, 0, 100.0])) - cam))
             keys.append([frame + j, *map(float, cam), roll, pitch, yaw, focus])
-        shots.append(dict(name=sh["name"], start=frame, end=frame + n, focal=sh["focal"], fstop=sh["fstop"],
+        extra = {k: sh[k] for k in ("ev100",) if k in sh}
+        if "still" in sh:
+            extra["still"] = frame + int(round((min(max(sh["still"], t0), t1) - t0) / sh["rate"] * FPS))
+        shots.append(dict(name=sh["name"], start=frame, end=frame + n, focal=sh["focal"], fstop=sh["fstop"], **extra,
                           sim_t0=t0, sim_t1=t1, replay_rate=sh["rate"],
                           replay_offset=t0 - (frame / FPS) * sh["rate"], keys=keys))
         frame += n
