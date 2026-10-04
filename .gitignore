@@ -101,3 +101,11 @@ Content/MetaHumans/
 # docs/trail-level.md for the copy command.
 Content/Prop/
 Content/MSPresets/
+
+# The OB_City level's buildings and street art, copied locally from the City Sample Fab pack
+# (licensed to Mike's Epic account, not redistributable in this PUBLIC repo; same reasoning as
+# Content/CityPark/): the SF building kits (packed level actors and their meshes/materials/textures)
+# and the City Sample ground/decal content they pull in. See docs/city-level.md for the copy command.
+Content/Building/
+Content/Environment/
+Content/Vehicle/
