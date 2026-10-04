@@ -22,8 +22,11 @@ namespace OverboardTerrainVerification
 	};
 
 	inline constexpr FLevelVerification kLevels[] = {
+		{ "OB_Carve", false },
 		{ "OB_City", false },
+		{ "OB_CityHill", false },
 		{ "OB_Main", true },
+		{ "OB_Trail", false },
 	};
 
 	/// Unknown level names return false. An unrecognised level has certainly not been

@@ -1,0 +1,10 @@
+level      Content/Maps/OB_Carve.umap
+level_hash a626af2494e7e9ee
+
+note Render-track level (offline carve render): the board pose comes only from a replay file (ADR-0009), so nothing here reaches the physics. Declared by the game play track so the check stays honest; the render track owns the content.
+
+surface carve_ground
+  kind      external
+  status    unverified
+  reach_m   100.0
+  source    Carve-render scenery, not traced. Geometry is third-party or generated content this check cannot open. To verify: export the drivable surface and declare it as kind mesh or probe.

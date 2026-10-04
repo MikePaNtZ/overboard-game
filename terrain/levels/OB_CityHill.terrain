@@ -1,0 +1,10 @@
+level      Content/Maps/OB_CityHill.umap
+level_hash 1ea19a134f6af9fd
+
+note The street, kerbs and sidewalks are meshes sampled from the MuJoCo course height (overboard-viz carve-lab course city_hill, course_height.npy) by tools/city/gen_city.py, so the DRAWN street is the RIDDEN heightfield plus 4.0 mm: tools/city/verify_city.py checks the tyre against the street along the track (2026-10-04: 36 samples, worst gap 7.82 mm, PASS). sim-host rides course_hfield.bin itself, so on this level the terrain does reach the physics -- through the heightfield, not through this level. The 0.15 m kerbs are real steps in that heightfield; the tyre rides a smooth plate over them (sim f3dd683), the bumpers do not.
+
+surface city_hill_street
+  kind      external
+  status    unverified
+  reach_m   100.0
+  source    Generated meshes (SM_CityStreet, SM_CityKerbs, SM_CitySidewalks) built at level-build time from /tmp OBM files that are not in this repo, so this check cannot open them. Profile: run-in 2 %, descent 15 % for 70 m, flat 30 m, climb 12 % for 55 m, crest; sag and crest radius 60 m (course.json). The 15 % descent is far above the plane slope rule on purpose: the slope is the course, and the controls track owns whether it is rideable. To verify: commit the street OBM (or an STL export) and declare it as kind mesh.
