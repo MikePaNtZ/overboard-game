@@ -18,6 +18,7 @@ yaw, then translate). The cameras only LOOK at the board; nothing here moves the
 import argparse
 import json
 import math
+import os
 
 import numpy as np
 
@@ -40,6 +41,15 @@ SHOTS = [
     dict(name="S5_chase_stop", t0=19.0, t1=24.0, rate=1.0, focal=35.0, fstop=2.2,
          dist=(380.0, 620.0), height=(160.0, 300.0), side=(60.0, 90.0), look_ahead=1200.0, shake=0.1),
 ]
+
+# Optional look-dev close-up of the rider's head (OB_HEAD_CHECK=1): three-quarter front, aimed at
+# the head (board + HEAD_ABOVE_BOARD_CM), from the sim time of the chase still (frame 162 = 9.75 s).
+# 2 s long: a still frame within a few frames of the sequence end rendered with no board state.
+HEAD_ABOVE_BOARD_CM = 165.0
+if os.environ.get("OB_HEAD_CHECK") == "1":
+    SHOTS.append(dict(name="S6_head_check", t0=9.75, t1=11.75, rate=1.0, focal=50.0, fstop=4.0,
+                      dist=(-150.0, -150.0), height=(170.0, 170.0), side=(110.0, 110.0), look_ahead=0.0,
+                      shake=0.0, look_at_head=True))
 
 
 def to_ue(px, py, pz):
@@ -140,6 +150,10 @@ def main():
             ahead = anc + fwd * sh["look_ahead"]
             ahead[2] = ground_under(ahead) + 40.0
             tgt = 0.45 * (b + np.array([0, 0, 95.0])) + 0.55 * ahead
+            if sh.get("look_at_head"):
+                cam = b - fwd * dist + side * sid
+                cam[2] = ground_under(cam) + hgt
+                tgt = b + np.array([0, 0, HEAD_ABOVE_BOARD_CM])
             dv = tgt - cam
             yaw = math.degrees(math.atan2(dv[1], dv[0]))
             pitch = math.degrees(math.atan2(dv[2], math.hypot(dv[0], dv[1])))
@@ -153,7 +167,7 @@ def main():
                 while yaw - prev_yaw > 180: yaw -= 360
                 while yaw - prev_yaw < -180: yaw += 360
             prev_yaw = yaw
-            focus = float(np.linalg.norm(b + np.array([0, 0, 100.0]) - cam))
+            focus = float(np.linalg.norm((tgt if sh.get("look_at_head") else b + np.array([0, 0, 100.0])) - cam))
             keys.append([frame + j, *map(float, cam), roll, pitch, yaw, focus])
         shots.append(dict(name=sh["name"], start=frame, end=frame + n, focal=sh["focal"], fstop=sh["fstop"],
                           sim_t0=t0, sim_t1=t1, replay_rate=sh["rate"],

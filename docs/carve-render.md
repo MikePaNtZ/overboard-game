@@ -83,12 +83,19 @@ rider. `-ObRider=citysample` (or a skater that is not built) gives the City Samp
 - The face is fitted to the City Sample crowd head `m_002_nrw_FaceMesh` (match by UVs). The body
   is parametric: 1.80 m, masculine (negative on the Masculine/Feminine axis), slim girths.
 - The Creator's own wardrobe, grooms, presets and the skin texture-synthesis model are in its
-  optional content. Without it the Creator has no wardrobe, no grooms, no presets, no skin
-  editing, and the face base colour is not synthesized (the face renders white). The render then
-  dresses him in City Sample crowd garments (`m_tal_nrw_crewneck`, `_jeans`, `_loafers`,
-  leader-posed to the body) and binds City Sample's `Hair_S_Messy` groom to his face. After the
-  optional content is installed, set `FACE_PRESET`, `WARDROBE` and `GROOMS` in
+  optional content. Without it the Creator has no wardrobe, no grooms, no presets and no skin
+  editing. The baked head base colour is then flat grey, and the face and scalp render white.
+  `post_build_skater.py` repaints it in the neck skin tone (`repaint_head_basecolor.py`).
+- Clothes and hair come from City Sample's male crowd: `m_tal_nrw_crewneck`, `_jeans`,
+  `_loafers` (leader-posed to the body), and `Hair_S_Messy`. The groom is attached rigidly to the
+  head bone, with the inverse of the m_002 head-bone reference pose as its offset. A skinned
+  binding put the hair behind the skull. He has no eyebrows until the Creator's grooms are
+  installed. After the install, set `FACE_PRESET`, `WARDROBE` and `GROOMS` in
   `create_skater.py` and run `build_skater.sh` again.
+- The GPU skin cache must be on (`Config/DefaultEngine.ini`) for MetaHumans and bound grooms.
+- `OB_HEAD_CHECK=1 plan_cameras.py ...` adds a head close-up shot, and `build_carve_level.py` then
+  makes `MRQ_Still_Head`. Render it with `OB_REPLAY_OFFSET=-15.0 render.sh MRQ_Still_Head ...`.
+  Do not put a still frame within a few frames of the sequence end: it rendered with no board.
 - Body conform to a City Sample body fails: those bodies use the older MetaHuman skeleton.
 - Copy the City Sample and MonoWheel parts in first, with `tools/metahuman/copy_vault_closure.py
   --copy` (the command is in its header).

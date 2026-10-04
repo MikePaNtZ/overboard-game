@@ -336,6 +336,11 @@ chase = next((s for s in cams["shots"] if "chase" in s["name"]), cams["shots"][0
 still = int(os.environ.get("OB_STILL_FRAME", (chase["start"] + chase["end"]) // 2))
 make_config("MRQ_Still_Chase", (1920, 1080), 2, 16, png=True, warmup=64, cvars=True,
             frame_range=(still, still + 1), out_dir="MRQ_Still")
+# Rider look-dev close-up, only when the plan has it (plan_cameras.py with OB_HEAD_CHECK=1).
+head = next((s for s in cams["shots"] if s["name"] == "S6_head_check"), None)
+if head:
+    make_config("MRQ_Still_Head", (1920, 1080), 2, 16, png=True, warmup=64, cvars=True,
+                frame_range=(head["start"] + 2, head["start"] + 3), out_dir="MRQ_Still_Head")
 for shot in cams["shots"]:
     end = min(shot["end"], cams["frames"])
     make_config("MRQ_Final_" + shot["name"], (1920, 1080), 1, 8, png=True, warmup=64, cvars=True,

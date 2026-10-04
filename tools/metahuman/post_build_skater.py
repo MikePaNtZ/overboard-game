@@ -13,10 +13,13 @@ Log: /tmp/ob-render/mh_post_build.txt
   The deck contact itself is set at run time by ABoardActor's foot calibration.
 - Output: /Game/MetaHumans/Skater/Anims/ (the blendspace and the sequences, suffix _MH).
 
-Hair: the Creator has no grooms until the optional content is installed. HAIR_GROOMS binds City
-Sample grooms to the built face mesh, transferred from the crowd head they were authored on (the
-face was fitted to that head, so the transfer is close). Output: /Game/MetaHumans/Skater/Grooms/.
-Empty the list when the Creator's own grooms are used (create_skater.py GROOMS).
+Head base colour: without texture synthesis (optional content) the baked head base colour is flat
+grey and the face and scalp render white. fix_head_basecolor repaints it in the neck skin tone.
+
+Hair: no binding is made. City Sample's Hair_S_Messy is authored on the crowd head m_002, and a
+transfer binding to the skater face put the hair behind the skull (the two heads differ in vertex
+order and position). ABoardActor attaches that groom rigidly to the head bone instead.
+HAIR_GROOMS stays for grooms that do bind (for example the Creator's own, after the install).
 """
 import os
 import unreal
@@ -28,9 +31,13 @@ SOURCE_MESH = "/Game/MonoWheel_Board/Demo/UE5/Mannequins/Meshes/SKM_Manny_Simple
 SOURCE_ANIMS_DIR = "/Game/MonoWheel_Board/Animations/UE5"
 BUILD_DIR = "/Game/MetaHumans/Skater"
 SUFFIX = "_MH"
+FACE_DIR = "/Game/MetaHumans/Skater/Face"
+HEAD_BC = FACE_DIR + "/Baked/T_Head_BC_VT"
+HEAD_BC_SKIN = FACE_DIR + "/Baked/T_Head_BC_Skin_VT"
+VENV_PYTHON = "/Users/mike/projects/overboard/.venv/bin/python"  # numpy + Pillow
 GROOM_DIR = "/Game/MetaHumans/Skater/Grooms"
 GROOM_SOURCE_HEAD = "/Game/Crowd/Character/Male/m_002/Face/m_002_nrw_FaceMesh"
-HAIR_GROOMS = ["/Game/Crowd/Character/Male/m_002/Hair/Hair/Hair_S_Messy"]
+HAIR_GROOMS = []
 
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 _log = open(LOG_PATH, "w")
@@ -91,7 +98,59 @@ def bind_grooms():
         log("groom binding", target)
 
 
+def synthesis_ran():
+    plugin = unreal.Paths.convert_relative_path_to_full(unreal.Paths.engine_plugins_dir())
+    return os.path.isdir(os.path.join(plugin, "MetaHuman/MetaHumanCharacter/Content/Optional/TextureSynthesis"))
+
+
+def fix_head_basecolor():
+    """Without texture synthesis the baked head base colour is flat grey: the face and scalp render
+    white. Repaint it in the neck skin tone (repaint_head_basecolor.py) and use it on every head
+    skin material. Skipped when the optional content (texture synthesis) is installed."""
+    if synthesis_ran():
+        log("head base colour: texture synthesis is installed, kept as built")
+        return
+    import subprocess
+    src_tex = unreal.load_asset(HEAD_BC)
+    if not src_tex:
+        log("MISSING", HEAD_BC)
+        return
+    raw, painted = "/tmp/ob-render/mh_head_bc_raw.png", "/tmp/ob-render/T_Head_BC_Skin_VT.png"
+    task = unreal.AssetExportTask()
+    task.object, task.filename, task.automated, task.replace_identical = src_tex, raw, True, True
+    task.exporter = unreal.TextureExporterPNG()
+    if not unreal.Exporter.run_asset_export_task(task):
+        log("FAIL export", HEAD_BC)
+        return
+    tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "repaint_head_basecolor.py")
+    res = subprocess.run([VENV_PYTHON, tool, raw, painted, "4096"], capture_output=True, text=True)
+    log("repaint:", res.stdout.strip(), res.stderr.strip()[-400:])
+    if res.returncode != 0:
+        return
+    fresh(HEAD_BC_SKIN)
+    imp = unreal.AssetImportTask()
+    imp.filename, imp.destination_path, imp.destination_name = painted, FACE_DIR + "/Baked", HEAD_BC_SKIN.split("/")[-1]
+    imp.automated, imp.replace_existing, imp.save = True, True, False
+    unreal.AssetToolsHelpers.get_asset_tools().import_asset_tasks([imp])
+    tex = unreal.load_asset(HEAD_BC_SKIN)
+    tex.set_editor_property("srgb", True)
+    tex.set_editor_property("virtual_texture_streaming", True)  # the baked skin material samples a VT
+    unreal.EditorAssetLibrary.save_loaded_asset(tex, False)
+    mel = unreal.MaterialEditingLibrary
+    for path in unreal.EditorAssetLibrary.list_assets(FACE_DIR + "/Materials", recursive=False):
+        mi = unreal.load_asset(path)
+        if not isinstance(mi, unreal.MaterialInstanceConstant):
+            continue
+        for tp in mi.get_editor_property("texture_parameter_values"):
+            if tp.parameter_value and tp.parameter_value.get_path_name().split(".")[0] == HEAD_BC:
+                name = str(tp.parameter_info.name)
+                mel.set_material_instance_texture_parameter_value(mi, name, tex)
+                unreal.EditorAssetLibrary.save_loaded_asset(mi, False)
+                log("head base colour:", path.split(".")[0].split("/")[-1], name, "->", HEAD_BC_SKIN)
+
+
 def main():
+    fix_head_basecolor()
     bind_grooms()
     source_mesh = unreal.load_asset(SOURCE_MESH)
     target_mesh = find_mesh("body")

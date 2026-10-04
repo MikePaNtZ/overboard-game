@@ -19,7 +19,7 @@
 #include "Misc/CommandLine.h"
 #include "RiderAnimInstance.h"
 #include "GroomComponent.h"
-#include "GroomBindingAsset.h"
+#include "GroomAsset.h"
 #include "Components/SpotLightComponent.h"
 #include "Misc/Parse.h"
 #include "Misc/FileHelper.h"
@@ -1367,7 +1367,32 @@ namespace
 	const TCHAR* kSkaterBody = TEXT("/Game/MetaHumans/Skater/Body/SKM_MHC_Skater_BodyMesh.SKM_MHC_Skater_BodyMesh");
 	const TCHAR* kSkaterFace = TEXT("/Game/MetaHumans/Skater/Face/SKM_MHC_Skater_FaceMesh.SKM_MHC_Skater_FaceMesh");
 	const TCHAR* kSkaterRidingBlendSpace = TEXT("/Game/MetaHumans/Skater/Anims/MonoWheel_Board_Riding_BS_MH.MonoWheel_Board_Riding_BS_MH");
-	const TCHAR* kSkaterHairBinding = TEXT("/Game/MetaHumans/Skater/Grooms/GB_Skater_Hair_S_Messy.GB_Skater_Hair_S_Messy");
+	// Hair: City Sample's Hair_S_Messy, authored on the crowd head m_002 in that head's own position.
+	// A skinned binding to the skater face cannot be made (no transfer source shares both the
+	// groom's head and the skater face topology; the binding put the hair behind the skull). A short
+	// groom does not need skinning, so it rides rigidly on the head bone: its offset is the inverse
+	// of m_002's head-bone reference pose. The skater face was fitted to m_002, so the skulls match.
+	const TCHAR* kSkaterHairGroom = TEXT("/Game/Crowd/Character/Male/m_002/Hair/Hair/Hair_S_Messy.Hair_S_Messy");
+	const TCHAR* kSkaterHairSourceHead = TEXT("/Game/Crowd/Character/Male/m_002/Face/m_002_nrw_FaceMesh.m_002_nrw_FaceMesh");
+	const FName kHeadBone(TEXT("head"));
+
+	// Component-space reference pose of a bone (the product of the local reference transforms).
+	bool RefPoseComponentSpace(const USkeletalMesh* Mesh, FName Bone, FTransform& Out)
+	{
+		const FReferenceSkeleton& Ref = Mesh->GetRefSkeleton();
+		int32 Index = Ref.FindBoneIndex(Bone);
+		if (Index == INDEX_NONE)
+		{
+			return false;
+		}
+		Out = FTransform::Identity;
+		while (Index != INDEX_NONE)
+		{
+			Out = Out * Ref.GetRefBonePose()[Index];
+			Index = Ref.GetParentIndex(Index);
+		}
+		return true;
+	}
 	const TCHAR* kSkaterGarments[] = {
 		TEXT("/Game/Crowd/Character/Male/NormalWeight/Meshes/m_tal_nrw_crewneck.m_tal_nrw_crewneck"),
 		TEXT("/Game/Crowd/Character/Male/NormalWeight/Meshes/m_tal_nrw_jeans.m_tal_nrw_jeans"),
@@ -1465,16 +1490,21 @@ void ABoardActor::SetupRenderRider()
 			Part->SetLeaderPoseComponent(RenderBodyMesh);
 			RenderGarmentMeshes.Add(Part);
 		}
-		if (UGroomBindingAsset* HairBinding = LoadObject<UGroomBindingAsset>(nullptr, kSkaterHairBinding))
+		UGroomAsset* HairGroom = LoadObject<UGroomAsset>(nullptr, kSkaterHairGroom);
+		USkeletalMesh* HairSourceHead = LoadObject<USkeletalMesh>(nullptr, kSkaterHairSourceHead);
+		FTransform SourceHeadRef;
+		if (HairGroom && HairSourceHead && HeadMeshAsset && RefPoseComponentSpace(HairSourceHead, kHeadBone, SourceHeadRef)
+			&& HeadMeshAsset->GetRefSkeleton().FindBoneIndex(kHeadBone) != INDEX_NONE)
 		{
 			RenderHairGroom = NewObject<UGroomComponent>(this);
-			RenderHairGroom->SetupAttachment(RenderHeadMesh);
-			RenderHairGroom->SetGroomAsset(HairBinding->GetGroom(), HairBinding);
+			RenderHairGroom->SetupAttachment(RenderHeadMesh, kHeadBone);
+			RenderHairGroom->SetGroomAsset(HairGroom);
+			RenderHairGroom->SetRelativeTransform(SourceHeadRef.Inverse());
 			RenderHairGroom->RegisterComponent();
 		}
 		else
 		{
-			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RENDER RIDER: hair binding missing; the skater renders without hair."));
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RENDER RIDER: hair groom or its source head missing; the skater renders without hair."));
 		}
 	}
 
