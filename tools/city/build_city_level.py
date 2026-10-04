@@ -706,8 +706,30 @@ def place_one(label, s, x, cls, n, cube, setback):
     return n + 1, foot
 
 
+def place_kit_buildings():
+    """The front row from buildings.json (gen_city.py): City Sample SF kit pieces as instances, and
+    one plain body box per building (blocks.obm) that makes the stepped base and the side walls."""
+    kit = json.load(open(os.path.join(DATA, "buildings.json")))
+    body = make_mesh(os.path.join(DATA, "blocks.obm"), "SM_CityBodies", slots={"Body": mats["plinth"]})
+    sm_actor(body, "OB_CityHillBodies")
+    holder = spawn(unreal.load_class(None, "/Script/OverboardGame.TrailScatterActor"), label="OB_CityHillBuildings")
+    total = 0
+    for path, rows in sorted(kit["pieces"].items()):
+        mesh = unreal.load_asset(path)
+        if not mesh:
+            log("  building piece MISSING %s" % path)
+            continue
+        xf = [unreal.Transform(unreal.Vector(r[0], r[1], r[2]), unreal.Rotator(roll=0.0, pitch=0.0, yaw=r[3]),
+                               unreal.Vector(1.0, 1.0, 1.0)) for r in rows]
+        n = holder.add_static_instances(mesh, xf, 0.0, True, "HISM_" + path.split("/")[-1])
+        total += n
+        log("  piece %-36s %4d" % (path.split("/")[-1], n))
+    b = kit["buildings"]
+    log("buildings: %d kit buildings, %d pieces; base drop max %.2f m" % (len(b), total, max(x["base_drop"] for x in b)))
+
+
 if "buildings" not in SKIP:
-    place_buildings()
+    place_kit_buildings()
 
 
 # --- dressing ------------------------------------------------------------------------------------

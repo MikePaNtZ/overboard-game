@@ -153,6 +153,87 @@ def box_mesh(mesh, center, size, section, uvscale=1.0 / 100.0, yaw_deg=0.0):
     mesh.add(p, n, uv, t, section)
 
 
+# --- front-row buildings ------------------------------------------------------------------------
+# City Sample's SF kits, measured in the editor (static-mesh bounds, cm). Every wall piece spans local
+# Y -width..0, and its STREET face is at its most negative local X (-0.5 m for kit C, -4.13 m for kit
+# D, whose bays stand proud): a first render with the face assumed at X = 0 showed the backs. Kit C: a three-storey row building, walls 1.5 m wide, bands 5.0 + 4.0 + 4.0 m and a
+# 1.25 m cornice. Kit D: 5.45 m bay-window units, 5.0 m per floor; its bays stand 0.95 m proud.
+KIT_C = "/Game/Building/SF/C/Kit_Bldg_SFC_L%d_A/Mesh/SM_BLDG_SFC_L%d_A1_%s_N1"
+KIT_C_BANDS = [(1, 500.0, ("Wall_01", "Wall_02")), (2, 400.0, ("Wall_01",)), (3, 400.0, ("Wall_01",)),
+               (4, 125.0, ("Wall_01",))]
+KIT_D = "/Game/Building/SF/D/Kit_Bldg_SFD_L2_A/Mesh/SM_BLDG_SFD_L02_A_%s_N1"
+KIT_D_WALLS = ("Wall_02", "Wall_09")
+KIT_D_W, KIT_D_FLOOR = 5.45, 5.0
+KIT_FRONT_CM = dict(C=50.0, D=413.0)   # local -X of the street face
+BODY_DEPTH = 12.0     # m: the plain body behind each facade (it also makes the stepped base)
+BODY_INSET = 0.02     # m behind the facade line: the front of the stone base
+BASE_DEPTH = 0.6      # m: the stone base under the floor on the downhill side
+
+
+def kit_buildings(rng, x_lo, x_hi, gap, z_side):
+    """Lay out the two street walls. Each building is level: its floor is the sidewalk height at
+    its uphill corner, and its body box fills down to the sidewalk at the downhill corner (the San
+    Francisco stepped base). Returns the body boxes (one mesh) and the piece transforms (UE cm)."""
+    blocks = obm.Mesh()
+    pieces = {}
+    buildings = []
+
+    def put(path, x_cm, y_cm, z_cm, yaw):
+        pieces.setdefault(path, []).append([round(x_cm, 1), round(y_cm, 1), round(z_cm, 1), yaw])
+
+    for s in (+1.0, -1.0):                 # MuJoCo +y is UE -y: that side's facade faces UE +Y
+        d = 1.0 if s > 0 else -1.0           # UE direction from the facade line toward the street
+        yaw = -90.0 * d                      # turns local -X (the street face) to UE +d*Y
+        y_line = -100.0 * s * SETBACK        # UE y of the facade line
+        for ra, rb in ((x_lo - 4.0, gap[0] - 0.5), (gap[1] + 0.5, x_hi + 4.0)):
+            x = ra
+            last = None
+            while x < rb - 4.0:
+                k = "D" if (last != "D" and rng.uniform() < 0.35) else "C"
+                n = 2 if k == "D" else int(rng.integers(5, 8))
+                w = n * (KIT_D_W if k == "D" else 1.5)
+                if x + w > rb:
+                    k, n = "C", max(2, int((rb - x) // 1.5))
+                    w = n * 1.5
+                    if n < 3:
+                        break
+                za, zb = z_side(x), z_side(x + w)
+                floor = max(za, zb) + 0.02
+                height = 13.0 + 1.25 if k == "C" else 3 * KIT_D_FLOOR + 0.6
+                # the body: base below the floor on the downhill side, side walls where roofs step
+                zlo = min(za, zb) - 0.5
+                # The body sits behind the full depth of the kit pieces: their windows are recessed,
+                # and a body face just behind the facade line covered them (the walls read blank).
+                inset = KIT_FRONT_CM[k] / 100.0 + 0.05
+                ymj = s * (SETBACK + inset + BODY_DEPTH / 2)                 # MuJoCo frame, as box_mesh takes
+                box_mesh(blocks, (x + w / 2, ymj, (zlo + floor + height) / 2),
+                         (w, BODY_DEPTH, floor + height - zlo), "Body")
+                # the stepped stone base: a thin front box from the sidewalk up to the floor
+                if floor - zlo > 0.05:
+                    yb = s * (SETBACK + BODY_INSET + BASE_DEPTH / 2)
+                    box_mesh(blocks, (x + w / 2, yb, (zlo + floor) / 2), (w, BASE_DEPTH, floor - zlo), "Body")
+                # kit pieces; the wall's local Y runs -width..0 and maps to UE +X (yaw 90) or -X (yaw -90)
+                for i in range(n):
+                    # yaw -90 maps local Y to UE +X, yaw +90 to UE -X; the piece spans local Y -width..0
+                    pw = 150.0 if k == "C" else 100.0 * KIT_D_W
+                    x0 = 100.0 * x + i * pw + (pw if d > 0 else 0.0)
+                    yp = y_line - d * KIT_FRONT_CM[k]        # the street face lands on the facade line
+                    if k == "C":
+                        for band, bh, names in KIT_C_BANDS:
+                            z0 = 100.0 * floor + sum(h for b, h, _ in KIT_C_BANDS if b < band)
+                            nm = names[int(rng.integers(len(names)))]
+                            put(KIT_C % (band, band, nm), x0, yp, z0, yaw)
+                    else:
+                        for f in range(3):
+                            nm = KIT_D_WALLS[int(rng.integers(len(KIT_D_WALLS)))]
+                            put(KIT_D % nm, x0, yp, 100.0 * (floor + f * KIT_D_FLOOR), yaw)
+                buildings.append(dict(kit=k, side=s, x0=x, width=w, floor_z=floor, base_drop=floor - min(za, zb),
+                                      height=height))
+                x += w
+                last = k
+    return blocks, dict(pieces=pieces, buildings=buildings)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("course_dir")
@@ -273,6 +354,14 @@ def main():
             xpos += w + rng.uniform(1.0, 4.0)
     nv, nt = ue_winding(massing).write(out("massing.obm"))
     log("massing.obm %d boxes %d verts %d tris" % (nmass, nv, nt))
+
+    # ---- front-row buildings from the City Sample SF modular kits -------------------------------
+    blocks, kit = kit_buildings(rng, x_lo, x_hi, gap, z_side)
+    nv, nt = ue_winding(blocks).write(out("blocks.obm"))
+    json.dump(kit, open(out("buildings.json"), "w"), separators=(",", ":"))
+    log("buildings: %d (%s), %d kit pieces; blocks.obm %d verts %d tris" % (
+        len(kit["buildings"]), ", ".join("%s %d" % (k, sum(1 for b in kit["buildings"] if b["kit"] == k)) for k in ("C", "D")),
+        sum(len(v) for v in kit["pieces"].values()), nv, nt))
 
     # ---- dressing scatter -----------------------------------------------------------------------
     scat = make_scatter(rng, xs, sw_z, yc, x_lo, x_hi, gap, floor_z, xc_cross, z_side)
