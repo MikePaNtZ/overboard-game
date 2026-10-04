@@ -126,6 +126,27 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Board|Networking")
 	float RenderDelaySeconds = 0.05f;
 
+	// --- Offline replay (render path) ---------------------------------------------------------
+	//
+	// A recorded run, as a file of concatenated wire packets, played against a DETERMINISTIC clock
+	// instead of the UDP stream and the wall clock. It exists for offline rendering (Movie Render
+	// Queue), which renders far slower than real time: a live UDP replay would race ahead of the
+	// renderer. Same decoder, same transform, same rider path as live -- only the sample source
+	// and the clock change. Off unless the command line carries -ObReplay=<file>.
+	//
+	// Clock: the first playing Level Sequence's time, plus -ObReplayOffset=<sim seconds> (the sim
+	// time at sequence time 0). Without a sequence, world time since BeginPlay. The sequence clock
+	// keeps the board locked to the camera keys, warm-up frames and temporal sub-samples included.
+	bool bReplayActive = false;
+	TArray<FTimestampedBoardState> ReplaySamples; // ArrivalTimeSeconds holds the sample's sim time
+	double ReplayTimeOffsetS = 0.0;
+	double ReplayWorldStartS = 0.0;
+	bool LoadReplayFromCommandLine();
+	double GetReplayClockSeconds() const;
+	// Fills OutHistory with the replay samples that bracket the replay clock, and OutRenderTime
+	// with the clock value, so UpdatePoseFromHistory interpolates them exactly as it does live data.
+	void GetReplayHistory(TArray<FTimestampedBoardState>& OutHistory, double& OutRenderTime) const;
+
 	// --- W3 real mesh -----------------------------------------------------------------------
 
 	// Parent for every real-geometry part, attached at zero relative offset -- see mesh/README.md:
@@ -172,6 +193,13 @@ protected:
 	// gone, because "wrong asset scale" and "pose stream offset" now look identical.
 	UPROPERTY(EditAnywhere, Category = "Board|Skin")
 	bool bUsePintSkin = true;
+
+	// Spin the Pint tyre and hub by the wire's wheel_angle. The prepared Pint parts have their
+	// origin on the axle (see the constructor), so a pitch about local Y is the wheel's own spin.
+	// Sign settled from the data, not assumed: this run's wheel_angle grows while the board moves
+	// along its local -X, and a wheel rolling towards -X turns nose-up (positive pitch) in UE.
+	UPROPERTY(EditAnywhere, Category = "Board|Skin")
+	bool bSpinPintWheel = true;
 
 	UPROPERTY(VisibleAnywhere, Category = "Board|Skin")
 	TObjectPtr<USceneComponent> PintAssemblyRoot;

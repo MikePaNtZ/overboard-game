@@ -19,7 +19,7 @@ public class OverboardGame : ModuleRules
 			"ProceduralMeshComponent",
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		PrivateDependencyModuleNames.AddRange(new string[] { "LevelSequence", "MovieScene" });
 
 		// The wire layer (packet decode/encode + the MuJoCo -> Unreal transform) lives at the
 		// repo root in wire/, deliberately outside any UE module, so it stays a small,

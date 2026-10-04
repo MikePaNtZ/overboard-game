@@ -16,6 +16,13 @@
 #include "HAL/PlatformTime.h"
 #include "Misc/Paths.h"
 #include "Logging/LogMacros.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "Misc/FileHelper.h"
+#include "EngineUtils.h"
+#include "Algo/BinarySearch.h"
+#include "LevelSequenceActor.h"
+#include "LevelSequencePlayer.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogOverboardMesh, Log, All);
 
@@ -665,11 +672,92 @@ void ABoardActor::BeginPlay()
 		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: rider requested (bShowRider) but the mannequin mesh/animation did not resolve -- Content/Characters/Mannequins/ is most likely not copied in locally (see docs/mannequin-rider.md). Board renders without a rider."));
 	}
 
+	// Offline replay replaces the UDP stream entirely -- see the header. No socket is bound, so a
+	// render can never be disturbed by a live sender that happens to be running.
+	if (LoadReplayFromCommandLine())
+	{
+		bReplayActive = true;
+		ReplayWorldStartS = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+		// Read the sequence clock AFTER the sequence has evaluated this frame, so the board and the
+		// sequence camera always agree on the time.
+		SetTickGroup(TG_PostUpdateWork);
+		return;
+	}
+
 	StateClient = MakeUnique<FBoardStateClient>();
 	if (!StateClient->StartListening())
 	{
 		UE_LOG(LogTemp, Error, TEXT("ABoardActor: BoardStateClient failed to start; board will not move."));
 	}
+}
+
+bool ABoardActor::LoadReplayFromCommandLine()
+{
+	FString Path;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("ObReplay="), Path) || Path.IsEmpty())
+	{
+		return false;
+	}
+	FParse::Value(FCommandLine::Get(), TEXT("ObReplayOffset="), ReplayTimeOffsetS);
+
+	TArray<uint8> Bytes;
+	if (!FFileHelper::LoadFileToArray(Bytes, *Path))
+	{
+		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor REPLAY: cannot read '%s'; falling back to the live wire."), *Path);
+		return false;
+	}
+
+	const size_t PacketSize = OverboardWire::GetStatePacketWireSize(OverboardWire::kStateSchemaVersionLatest);
+	ReplaySamples.Reset(Bytes.Num() / PacketSize);
+	for (size_t Off = 0; Off + PacketSize <= static_cast<size_t>(Bytes.Num()); Off += PacketSize)
+	{
+		FTimestampedBoardState Sample;
+		std::string Err;
+		if (!OverboardWire::DecodeBoardState(Bytes.GetData() + Off, PacketSize, Sample.State, Err))
+		{
+			UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor REPLAY: bad packet at byte %llu: %s"), static_cast<uint64>(Off), *FString(Err.c_str()));
+			return false;
+		}
+		Sample.ArrivalTimeSeconds = Sample.State.SimTimeS;
+		ReplaySamples.Add(Sample);
+	}
+	if (ReplaySamples.Num() < 2)
+	{
+		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor REPLAY: '%s' holds fewer than two packets."), *Path);
+		return false;
+	}
+	UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor REPLAY: %d samples, sim t %.3f..%.3f s, offset %.3f s, from '%s'. UDP not bound."),
+		ReplaySamples.Num(), ReplaySamples[0].ArrivalTimeSeconds, ReplaySamples.Last().ArrivalTimeSeconds, ReplayTimeOffsetS, *Path);
+	return true;
+}
+
+double ABoardActor::GetReplayClockSeconds() const
+{
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		for (TActorIterator<ALevelSequenceActor> It(World); It; ++It)
+		{
+			const ULevelSequencePlayer* Player = It->GetSequencePlayer();
+			if (Player && Player->IsPlaying())
+			{
+				return ReplayTimeOffsetS + Player->GetCurrentTime().AsSeconds();
+			}
+		}
+		return ReplayTimeOffsetS + (World->GetTimeSeconds() - ReplayWorldStartS);
+	}
+	return ReplayTimeOffsetS;
+}
+
+void ABoardActor::GetReplayHistory(TArray<FTimestampedBoardState>& OutHistory, double& OutRenderTime) const
+{
+	OutRenderTime = GetReplayClockSeconds();
+	// First sample strictly after the clock; the bracket is [Upper-1, Upper].
+	int32 Upper = Algo::UpperBoundBy(ReplaySamples, OutRenderTime, &FTimestampedBoardState::ArrivalTimeSeconds);
+	Upper = FMath::Clamp(Upper, 1, ReplaySamples.Num() - 1);
+	OutHistory.Reset(2);
+	OutHistory.Add(ReplaySamples[Upper - 1]);
+	OutHistory.Add(ReplaySamples[Upper]);
 }
 
 void ABoardActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -866,7 +954,7 @@ void ABoardActor::EndPhysicsHandoff()
 
 void ABoardActor::UpdatePoseFromHistory()
 {
-	if (!StateClient.IsValid())
+	if (!StateClient.IsValid() && !bReplayActive)
 	{
 		return;
 	}
@@ -877,7 +965,15 @@ void ABoardActor::UpdatePoseFromHistory()
 	// samples here would silently reintroduce the same "history shorter than the render delay"
 	// gap that GetHistorySnapshot's own default already guards against.
 	TArray<FTimestampedBoardState> History;
-	StateClient->GetHistorySnapshot(History);
+	double ReplayRenderTime = 0.0;
+	if (bReplayActive)
+	{
+		GetReplayHistory(History, ReplayRenderTime);
+	}
+	else
+	{
+		StateClient->GetHistorySnapshot(History);
+	}
 	if (History.Num() == 0)
 	{
 		return; // nothing received yet -- hold current pose, do not guess
@@ -931,6 +1027,13 @@ void ABoardActor::UpdatePoseFromHistory()
 	LatestRiderLateralM = History.Last().State.RiderLateralM;
 	LatestWheelRateRadS = History.Last().State.WheelRateRadS;
 
+	if (bSpinPintWheel && bUsePintSkin && bPintSkinLoaded)
+	{
+		const FRotator WheelSpin(FMath::RadiansToDegrees(History.Last().State.WheelAngleRad), 0.f, 0.f);
+		PintWheelTireMesh->SetRelativeRotation(WheelSpin);
+		PintWheelHubMesh->SetRelativeRotation(WheelSpin);
+	}
+
 	// Blend parameters BEFORE the offset below, so the two stay visibly independent: the offset is
 	// the honest un-amplified ballast displacement and always has been, while the blend parameters
 	// are the new declared-gain channel. They read the same source values and must not be confused
@@ -951,7 +1054,9 @@ void ABoardActor::UpdatePoseFromHistory()
 		RiderMesh->SetRelativeLocation(FVector(OffsetXCm, OffsetYCm, GetRiderBaseHeightCm()));
 	}
 
-	const double RenderTime = FPlatformTime::Seconds() - static_cast<double>(RenderDelaySeconds);
+	const double RenderTime = bReplayActive
+		? ReplayRenderTime
+		: FPlatformTime::Seconds() - static_cast<double>(RenderDelaySeconds);
 
 	// Find the bracket [i, i+1] such that History[i].Arrival <= RenderTime <= History[i+1].Arrival.
 	// One buffer behind, never extrapolate: if RenderTime is older than everything we have, hold
