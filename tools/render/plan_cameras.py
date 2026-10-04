@@ -76,6 +76,19 @@ SHOTS_TRAIL = [
          look_at_head=True, head_cm=80.0, still=30.0),
 ]
 
+# One follow shot for the whole run (--shots follow, any course). The camera rides a RAIL: the
+# board path smoothed with a zero-lag Gaussian (rail_sigma s), so the straight line through the
+# S-turns is kept and the rider swings across the frame in each carve. It sits rail_dist cm behind
+# the board's point on the rail, f_height cm over the ground under it, f_side cm to the right of
+# travel, and looks along the rail: aim_mix of the rider's chest, the rest a point look_ahead cm
+# ahead on the rail. No damped spring: a spring lags 2 v / omega, 8 m at 9 m/s. t1 < 0 counts from
+# the track end.
+SHOTS_FOLLOW = [
+    dict(name="F1_follow", t0=0.6, t1=-0.6, rate=1.0, focal=30.0, fstop=4.0, follow=True,
+         rail_sigma=1.4, rail_dist=520.0, f_height=230.0, f_side=70.0, look_ahead=1500.0, aim_mix=0.65,
+         chest_cm=105.0, shake=0.04, still=12.0, dist=(0.0, 0.0), height=(0.0, 0.0), side=(0.0, 0.0)),
+]
+
 # Footprint radius (m, scale 1) and height (cm, scale 1) of each scatter kind, as in gen_course.FOOT.
 # Used to keep the trail cameras out of the dressing. Aspens also get a crown (radius 3 m from 4 m up).
 FOOT = dict(aspen_01=0.4, aspen_02=0.3, aspen_03=1.0, aspen_04=0.55, hazel_01=2.4, hazel_02=0.9, hazel_03=0.7,
@@ -171,6 +184,8 @@ def main():
         ORIGIN_CM = np.array([float(v) for v in a.origin_cm.split(",")])
     if a.origin_yaw is not None:
         ORIGIN_YAW_DEG = a.origin_yaw
+    if a.shots == "follow":
+        SHOTS = SHOTS_FOLLOW
     if a.shots == "trail":
         SHOTS = SHOTS_TRAIL
         if os.environ.get("OB_CONTACT_CHECK") == "1":
@@ -199,6 +214,16 @@ def main():
     heading = gauss_smooth(heading[:, None], hz * 0.6)[:, 0]
     ground = board[:, 2] - AXLE_ABOVE_GROUND_CM
 
+    # The follow rail: the board path, zero-lag Gaussian smoothing, and its arc length.
+    rail_cache = {}
+
+    def rail(sigma_s):
+        if sigma_s not in rail_cache:
+            r = gauss_smooth(board, hz * sigma_s)
+            arc = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(r[:, 0]), np.diff(r[:, 1])))])
+            rail_cache[sigma_s] = (r, arc)
+        return rail_cache[sigma_s]
+
     def at(arr, ts):
         ts = min(max(ts, t[0]), t[-1])
         if arr.ndim == 1:
@@ -213,10 +238,11 @@ def main():
     # Pre-roll: each trail shot gets HANDLE frames on its own camera before its first rendered frame.
     # The shutter is centred on the frame, so frame "start" takes half its temporal samples from
     # start - 0.5. Without the pre-roll those samples see the previous shot's camera: a ghost at the cut.
-    handle = HANDLE if a.shots == "trail" else 0
+    handle = HANDLE if a.shots in ("trail", "follow") else 0
     shots, frame = [], 0
     for k, sh in enumerate(SHOTS):
-        t0, t1 = max(sh["t0"], t[0]), min(sh["t1"], t[-1])
+        t1_req = sh["t1"] if sh["t1"] >= 0 else t[-1] + sh["t1"]
+        t0, t1 = max(sh["t0"], t[0]), min(t1_req, t[-1])
         if t1 <= t0:
             continue
         n = int(round((t1 - t0) / sh["rate"] * FPS))
@@ -258,7 +284,30 @@ def main():
                 cam = to_ue(cx, cy, 0.0)
                 cam[2] = ground_under(cam) + ch
                 tgt = b + np.array([0, 0, sh.get("cam_aim_cm", 70.0)])
-            if scat is not None and a.shots == "trail":
+            if sh.get("follow"):
+                r, arc = rail(sh["rail_sigma"])
+                ab = at(arc, ts)
+                rb = at(r, ts)
+                def on_rail(s_cm):
+                    if s_cm < 0.0:  # before the track start: carry the rail on along its first direction
+                        k = int(np.searchsorted(arc, 100.0))
+                        u0 = (r[k] - r[0]) / max(arc[k], 1e-6)
+                        return r[0] + u0 * s_cm
+                    i = int(np.clip(np.searchsorted(arc, s_cm), 1, len(arc) - 1))
+                    f = (s_cm - arc[i - 1]) / max(arc[i] - arc[i - 1], 1e-6)
+                    return r[i - 1] + (r[i] - r[i - 1]) * f
+                behind = on_rail(ab - sh["rail_dist"])
+                tang = rb - behind
+                tang[2] = 0.0
+                tang /= max(np.linalg.norm(tang), 1e-6)
+                right = np.array([tang[1], -tang[0], 0.0])  # UE is left-handed: +Y is right of +X
+                cam = behind + right * sh["f_side"]
+                cam[2] = ground_under(cam) + sh["f_height"]
+                ahead = on_rail(ab + sh["look_ahead"])
+                ahead[2] = ground_under(ahead) + 60.0
+                chest = b + np.array([0, 0, sh["chest_cm"]])
+                tgt = sh["aim_mix"] * chest + (1.0 - sh["aim_mix"]) * ahead
+            if scat is not None and a.shots in ("trail", "follow"):
                 aim = b + np.array([0, 0, 90.0])
                 for _ in range(40):
                     if cam_clear(scat, cam, aim):
@@ -280,6 +329,8 @@ def main():
                 while yaw - prev_yaw < -180: yaw += 360
             prev_yaw = yaw
             focus = float(np.linalg.norm((tgt if (sh.get("look_at_head") or sh.get("fixed_rel")) else b + np.array([0, 0, 100.0])) - cam))
+            if sh.get("follow"):
+                focus = float(np.linalg.norm(b + np.array([0, 0, 100.0]) - cam))
             keys.append([start + j, *map(float, cam), roll, pitch, yaw, focus])
         extra = {k: sh[k] for k in ("ev100", "motion_blur") if k in sh}
         if "still" in sh:
