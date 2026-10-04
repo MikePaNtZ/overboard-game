@@ -330,6 +330,12 @@ def make_config(name, res, spatial, temporal, png=True, warmup=48, cvars=True, f
 make_config("MRQ_Preview", (960, 540), 1, 1, png=False, warmup=16, cvars=False)
 make_config("MRQ_Final", (1920, 1080), 1, 8, png=True, warmup=64, cvars=True)
 make_config("MRQ_Still", (1920, 1080), 2, 16, png=True, warmup=64, cvars=True)
+# One 1080p frame from the first chase shot (OB_STILL_FRAME, default its middle). Render with
+# render_shots.sh's replay offset for that shot: OB_REPLAY_OFFSET=<offset> render.sh MRQ_Still_Chase
+chase = next((s for s in cams["shots"] if "chase" in s["name"]), cams["shots"][0])
+still = int(os.environ.get("OB_STILL_FRAME", (chase["start"] + chase["end"]) // 2))
+make_config("MRQ_Still_Chase", (1920, 1080), 2, 16, png=True, warmup=64, cvars=True,
+            frame_range=(still, still + 1), out_dir="MRQ_Still")
 for shot in cams["shots"]:
     end = min(shot["end"], cams["frames"])
     make_config("MRQ_Final_" + shot["name"], (1920, 1080), 1, 8, png=True, warmup=64, cvars=True,

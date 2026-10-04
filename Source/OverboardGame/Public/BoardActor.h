@@ -228,7 +228,10 @@ protected:
 
 	// --- Render rider (offline render path only, -ObRenderRider) -------------------------------
 	//
-	// A dressed character (City Sample's player body + head, gitignored local content) drawn
+	// A dressed character drawn INSTEAD of the mannequin: by default the MetaHuman skater
+	// (/Game/MetaHumans/Skater, built by tools/metahuman/build_skater.sh, dressed in City Sample
+	// crowd garments, with a City Sample hair groom); -ObRider=citysample, or a missing skater,
+	// gives City Sample's player body + head. Both are gitignored local content. The rider is drawn
 	// INSTEAD of the mannequin, playing the same riding blendspace through URiderAnimInstance,
 	// which adds a procedural layer: lean over planted feet, crouch with leg IK, arms, breathing,
 	// head look. See UpdateRenderRider for which inputs come from the sim. Off unless the command
@@ -241,6 +244,11 @@ protected:
 	TObjectPtr<class USpotLightComponent> RiderKeyLight;
 	UPROPERTY(VisibleAnywhere, Category = "Board|RenderRider")
 	TObjectPtr<class USpotLightComponent> RiderRimLight;
+	// Garments and hair of the skater rider, created in SetupRenderRider (their number varies).
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<USkeletalMeshComponent>> RenderGarmentMeshes;
+	UPROPERTY(Transient)
+	TObjectPtr<class UGroomComponent> RenderHairGroom;
 	bool bRenderRiderActive = false;
 	bool bRiderLightsActive = false;
 	int32 RenderRiderCalibrationTicks = 0;

@@ -18,6 +18,8 @@
 #include "Logging/LogMacros.h"
 #include "Misc/CommandLine.h"
 #include "RiderAnimInstance.h"
+#include "GroomComponent.h"
+#include "GroomBindingAsset.h"
 #include "Components/SpotLightComponent.h"
 #include "Misc/Parse.h"
 #include "Misc/FileHelper.h"
@@ -1357,19 +1359,66 @@ bool ABoardActor::BuildPartFromStl(UProceduralMeshComponent* Component, const FS
 	return true;
 }
 
+namespace
+{
+	// The MetaHuman skater (tools/metahuman/build_skater.sh) and what he wears. The Creator has no
+	// wardrobe or grooms until its optional content is installed, so the garments and the hair
+	// come from City Sample's male crowd (copied in by tools/metahuman/copy_vault_closure.py).
+	const TCHAR* kSkaterBody = TEXT("/Game/MetaHumans/Skater/Body/SKM_MHC_Skater_BodyMesh.SKM_MHC_Skater_BodyMesh");
+	const TCHAR* kSkaterFace = TEXT("/Game/MetaHumans/Skater/Face/SKM_MHC_Skater_FaceMesh.SKM_MHC_Skater_FaceMesh");
+	const TCHAR* kSkaterRidingBlendSpace = TEXT("/Game/MetaHumans/Skater/Anims/MonoWheel_Board_Riding_BS_MH.MonoWheel_Board_Riding_BS_MH");
+	const TCHAR* kSkaterHairBinding = TEXT("/Game/MetaHumans/Skater/Grooms/GB_Skater_Hair_S_Messy.GB_Skater_Hair_S_Messy");
+	const TCHAR* kSkaterGarments[] = {
+		TEXT("/Game/Crowd/Character/Male/NormalWeight/Meshes/m_tal_nrw_crewneck.m_tal_nrw_crewneck"),
+		TEXT("/Game/Crowd/Character/Male/NormalWeight/Meshes/m_tal_nrw_jeans.m_tal_nrw_jeans"),
+		TEXT("/Game/Crowd/Character/Male/NormalWeight/Meshes/m_tal_nrw_loafers.m_tal_nrw_loafers"),
+	};
+}
+
 void ABoardActor::SetupRenderRider()
 {
-	USkeletalMesh* Body = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Character/Player/Female/Meshes/SKM_PlayerFemale_Body.SKM_PlayerFemale_Body"));
-	USkeletalMesh* HeadMeshAsset = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Character/Player/Female/Meshes/SKM_PlayerFemale_Head.SKM_PlayerFemale_Head"));
-	if (!Body || !RiderRidingBlendSpace || !Body->GetSkeleton() || !RiderRidingBlendSpace->GetSkeleton())
+	FString RiderSet = TEXT("skater");
+	FParse::Value(FCommandLine::Get(), TEXT("ObRider="), RiderSet);
+	const bool bWantSkater = RiderSet.Equals(TEXT("skater"), ESearchCase::IgnoreCase);
+
+	USkeletalMesh* Body = nullptr;
+	USkeletalMesh* HeadMeshAsset = nullptr;
+	UBlendSpace* RidingBlendSpace = RiderRidingBlendSpace;
+	bool bSkater = false;
+	if (bWantSkater)
+	{
+		USkeletalMesh* SkaterBody = LoadObject<USkeletalMesh>(nullptr, kSkaterBody);
+		UBlendSpace* SkaterBlendSpace = LoadObject<UBlendSpace>(nullptr, kSkaterRidingBlendSpace);
+		if (SkaterBody && SkaterBlendSpace)
+		{
+			Body = SkaterBody;
+			HeadMeshAsset = LoadObject<USkeletalMesh>(nullptr, kSkaterFace);
+			RidingBlendSpace = SkaterBlendSpace; // retargeted to the MetaHuman body, not shared by compatibility
+			bSkater = true;
+		}
+		else
+		{
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RENDER RIDER: MetaHuman skater not built (body %s, retargeted blendspace %s); run tools/metahuman/build_skater.sh. Using the City Sample rider."),
+				SkaterBody ? TEXT("ok") : TEXT("missing"), SkaterBlendSpace ? TEXT("ok") : TEXT("missing"));
+		}
+	}
+	if (!bSkater)
+	{
+		Body = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Character/Player/Female/Meshes/SKM_PlayerFemale_Body.SKM_PlayerFemale_Body"));
+		HeadMeshAsset = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Character/Player/Female/Meshes/SKM_PlayerFemale_Head.SKM_PlayerFemale_Head"));
+	}
+	if (!Body || !RidingBlendSpace || !Body->GetSkeleton() || !RidingBlendSpace->GetSkeleton())
 	{
 		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor RENDER RIDER: body mesh or riding blendspace missing (City Sample subset not copied? see docs/carve-render.md); keeping the mannequin."));
 		return;
 	}
 	USkeleton* BodySkeleton = Body->GetSkeleton();
-	USkeleton* AnimSkeleton = RiderRidingBlendSpace->GetSkeleton();
-	BodySkeleton->AddCompatibleSkeleton(AnimSkeleton);
-	AnimSkeleton->AddCompatibleSkeleton(BodySkeleton);
+	USkeleton* AnimSkeleton = RidingBlendSpace->GetSkeleton();
+	if (BodySkeleton != AnimSkeleton)
+	{
+		BodySkeleton->AddCompatibleSkeleton(AnimSkeleton);
+		AnimSkeleton->AddCompatibleSkeleton(BodySkeleton);
+	}
 
 	RenderBodyMesh->SetSkeletalMesh(Body);
 	RenderBodyMesh->SetDisablePostProcessBlueprint(true);
@@ -1381,9 +1430,9 @@ void ABoardActor::SetupRenderRider()
 		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor RENDER RIDER: URiderAnimInstance did not instantiate; keeping the mannequin."));
 		return;
 	}
-	Inst->SetAnimationAsset(RiderRidingBlendSpace, /*bIsLooping=*/true);
+	Inst->SetAnimationAsset(RidingBlendSpace, /*bIsLooping=*/true);
 	Inst->SetPlaying(true);
-	if (Inst->GetAnimationAsset() != RiderRidingBlendSpace)
+	if (Inst->GetAnimationAsset() != RidingBlendSpace)
 	{
 		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor RENDER RIDER: blendspace refused by %s; keeping the mannequin."), *BodySkeleton->GetName());
 		return;
@@ -1394,6 +1443,39 @@ void ABoardActor::SetupRenderRider()
 		RenderHeadMesh->SetSkeletalMesh(HeadMeshAsset);
 		RenderHeadMesh->SetDisablePostProcessBlueprint(true);
 		RenderHeadMesh->SetLeaderPoseComponent(RenderBodyMesh);
+	}
+
+	if (bSkater)
+	{
+		// Garments follow the body bone for bone (same MetaHuman bone names).
+		for (const TCHAR* GarmentPath : kSkaterGarments)
+		{
+			USkeletalMesh* Garment = LoadObject<USkeletalMesh>(nullptr, GarmentPath);
+			if (!Garment)
+			{
+				UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RENDER RIDER: garment %s missing; see docs/carve-render.md."), GarmentPath);
+				continue;
+			}
+			USkeletalMeshComponent* Part = NewObject<USkeletalMeshComponent>(this);
+			Part->SetupAttachment(RenderBodyMesh);
+			Part->SetSkeletalMesh(Garment);
+			Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Part->SetDisablePostProcessBlueprint(true);
+			Part->RegisterComponent();
+			Part->SetLeaderPoseComponent(RenderBodyMesh);
+			RenderGarmentMeshes.Add(Part);
+		}
+		if (UGroomBindingAsset* HairBinding = LoadObject<UGroomBindingAsset>(nullptr, kSkaterHairBinding))
+		{
+			RenderHairGroom = NewObject<UGroomComponent>(this);
+			RenderHairGroom->SetupAttachment(RenderHeadMesh);
+			RenderHairGroom->SetGroomAsset(HairBinding->GetGroom(), HairBinding);
+			RenderHairGroom->RegisterComponent();
+		}
+		else
+		{
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RENDER RIDER: hair binding missing; the skater renders without hair."));
+		}
 	}
 
 	float Scale = 1.f;
@@ -1407,8 +1489,8 @@ void ABoardActor::SetupRenderRider()
 	RiderMesh->SetVisibility(false, true);
 	RenderBodyMesh->SetVisibility(true, true);
 	bRenderRiderActive = true;
-	UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: dressed rider %s (+head %s), skeleton %s, blendspace bound, scale %.3f, lean gain %.2f."),
-		*Body->GetName(), HeadMeshAsset ? *HeadMeshAsset->GetName() : TEXT("none"), *BodySkeleton->GetName(), Scale, RenderRiderLeanGain);
+	UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: %s rider %s (+head %s, %d garments, hair %s), skeleton %s, blendspace %s bound, scale %.3f, lean gain %.2f."),
+		bSkater ? TEXT("MetaHuman skater") : TEXT("City Sample"), *Body->GetName(), HeadMeshAsset ? *HeadMeshAsset->GetName() : TEXT("none"), RenderGarmentMeshes.Num(), RenderHairGroom ? TEXT("yes") : TEXT("no"), *BodySkeleton->GetName(), *RidingBlendSpace->GetName(), Scale, RenderRiderLeanGain);
 
 	if (FParse::Param(FCommandLine::Get(), TEXT("ObRiderLights")))
 	{
@@ -1432,7 +1514,13 @@ void ABoardActor::SetupRenderRider()
 		};
 		Configure(RiderKeyLight, KeyCd, FLinearColor(1.0f, 0.86f, 0.72f));
 		Configure(RiderRimLight, RimCd, FLinearColor(1.0f, 0.72f, 0.45f));
-		for (UPrimitiveComponent* Lit : TArray<UPrimitiveComponent*>{RenderBodyMesh, RenderHeadMesh, PintFrameMesh, PintWheelTireMesh, PintWheelHubMesh})
+		TArray<UPrimitiveComponent*> LitParts{RenderBodyMesh, RenderHeadMesh, PintFrameMesh, PintWheelTireMesh, PintWheelHubMesh};
+		LitParts.Append(RenderGarmentMeshes);
+		if (RenderHairGroom)
+		{
+			LitParts.Add(RenderHairGroom);
+		}
+		for (UPrimitiveComponent* Lit : LitParts)
 		{
 			Lit->SetLightingChannels(true, false, true);
 		}

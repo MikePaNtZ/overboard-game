@@ -6,6 +6,7 @@
 #
 # The board is driven by the replay file, not by UDP: -ObReplay=<bin> -ObReplayOffset=<sim s>.
 # Make the bin with tools/replay/npz_replay.py --bin.
+# -RenderOffscreen: MRQ needs no window, and with no display attached a window blocks in Metal Present.
 set -u
 CFG=$1; shift
 HERE="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -18,7 +19,7 @@ rm -rf "${FRAMES:?}/${CFG}"
   "$HERE/OverboardGame.uproject" /Game/Maps/OB_Carve -game \
   -LevelSequence=/Game/Cinematics/SEQ_Carve.SEQ_Carve \
   -MoviePipelineConfig=/Game/Cinematics/${CFG}.${CFG} \
-  -windowed -resx=960 -resy=540 -log -unattended -nosplash -nosound -NoLoadingScreen \
+  -windowed -resx=960 -resy=540 -RenderOffscreen -log -unattended -nosplash -nosound -NoLoadingScreen \
   -abslog="$LOG" -ObReplay="$REPLAY" -ObReplayOffset="$OFFSET" "$@" >/dev/null 2>&1
 echo "exit $?"
 ls "$FRAMES/$CFG" 2>/dev/null | wc -l

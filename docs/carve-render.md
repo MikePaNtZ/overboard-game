@@ -66,6 +66,36 @@ paths. An import table stores a name with a numeric suffix (`T_ShirtPattern_10`)
 resolver must also try the base name plus every numbered sibling. The crowd clothing material
 needs the `AnimToTexture` plugin.
 
+## The MetaHuman skater rider (default with `-ObRenderRider`)
+
+`tools/metahuman/build_skater.sh` builds a male MetaHuman skater with the UE 5.7 in-editor
+MetaHuman Creator, in one command. `-ObRenderRider` then draws him instead of the City Sample
+rider. `-ObRider=citysample` (or a skater that is not built) gives the City Sample rider.
+
+| Step | Script | Runs in | Does |
+|---|---|---|---|
+| 1 | `create_skater.py` | commandlet | The MetaHuman Character `/Game/MetaHumans/Skater/MHC_Skater`: face, body, wardrobe, grooms. The choices are the parameters at the top. |
+| 2 | `finish_skater.py` | editor, `-RenderOffscreen` | Epic cloud face auto-rig and texture sources, then the Cinematic build to `BP_Skater`. |
+| 3 | `post_build_skater.py` | editor, `-RenderOffscreen` | Retargets the MonoWheel riding blendspace and its ten sequences to the MetaHuman body (auto-generated IK rigs, default retarget ops), and binds the hair groom. |
+
+- The cloud step needs an Epic sign-in. The first run asks for a device code in the log. Later
+  runs reuse the stored login.
+- The face is fitted to the City Sample crowd head `m_002_nrw_FaceMesh` (match by UVs). The body
+  is parametric: 1.80 m, masculine (negative on the Masculine/Feminine axis), slim girths.
+- The Creator's own wardrobe, grooms, presets and the skin texture-synthesis model are in its
+  optional content. Without it the Creator has no wardrobe, no grooms, no presets, no skin
+  editing, and the face base colour is not synthesized (the face renders white). The render then
+  dresses him in City Sample crowd garments (`m_tal_nrw_crewneck`, `_jeans`, `_loafers`,
+  leader-posed to the body) and binds City Sample's `Hair_S_Messy` groom to his face. After the
+  optional content is installed, set `FACE_PRESET`, `WARDROBE` and `GROOMS` in
+  `create_skater.py` and run `build_skater.sh` again.
+- Body conform to a City Sample body fails: those bodies use the older MetaHuman skeleton.
+- Copy the City Sample and MonoWheel parts in first, with `tools/metahuman/copy_vault_closure.py
+  --copy` (the command is in its header).
+- Traps: in a commandlet the material bake crashes (no Texture Graph engine) and the batch
+  retarget asserts (no Slate). With no display attached, an editor or game window blocks in Metal
+  Present, so the editor steps and `render.sh` use `-RenderOffscreen`.
+
 ## Rebuild and render
 
 ```
@@ -78,6 +108,7 @@ $PY tools/render/plan_cameras.py $NPZ /tmp/ob-render/cameras.json
 export OB_EXTRA="-ObRenderRider -ObRiderLights -ObKeyCd=90 -ObRimCd=160"
 tools/render/render_shots.sh Preview     # 960x540, one sample per frame
 tools/render/render_shots.sh Final       # 1080p, 8 temporal samples, about 30 min
+OB_REPLAY_OFFSET=3.0 tools/render/render.sh MRQ_Still_Chase -ObReplayRate=1.0 $OB_EXTRA  # one 1080p chase frame
 python3 tools/render/title_card.py /tmp/ob-render/title.png "OVERBOARD" "subtitle"
 ```
 

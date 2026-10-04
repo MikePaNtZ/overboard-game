@@ -86,3 +86,11 @@ Content/Crowd/
 Content/Material/
 Content/Megascans/
 Content/Textures/
+
+# The MetaHuman skater rider, generated locally by tools/metahuman/build_skater.sh: the MetaHuman
+# Character asset, the Cinematic build (BP_Skater, meshes, textures), the retargeted riding
+# animation, the IK rigs and the hair binding. /Game/MetaHumans/Common/ is the MetaHuman common
+# content the build copies in. All of it is generated, large, and built from Epic MetaHuman content
+# and City Sample parts that are licensed to Mike's Epic account, not redistributable in this
+# PUBLIC repo; same reasoning as Content/CityPark/. See docs/carve-render.md.
+Content/MetaHumans/
