@@ -20,7 +20,7 @@ public class OverboardGame : ModuleRules
 		});
 
 		// HairStrandsCore: the render rider's hair groom (GroomComponent).
-		PrivateDependencyModuleNames.AddRange(new string[] { "LevelSequence", "MovieScene", "AnimationCore", "HairStrandsCore" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "LevelSequence", "MovieScene", "AnimationCore", "HairStrandsCore", "Json" });
 
 		// Landscape, MeshDescription (+ UnrealEd in the editor): UTrailBuildLibrary, the landscape and mesh import that
 		// tools/trail/build_trail_level.py calls. Editor-only code; the game build links no editor.

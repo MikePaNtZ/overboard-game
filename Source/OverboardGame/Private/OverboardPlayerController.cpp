@@ -15,6 +15,7 @@
 #include "OverboardGameMode.h"
 #include "BoardActor.h"
 #include "OverboardCameraPawn.h"
+#include "RideCourseElements.h"
 #include "EngineUtils.h"
 #include "HAL/PlatformTime.h"
 #include "Logging/LogMacros.h"
@@ -64,6 +65,31 @@ void AOverboardPlayerController::BeginPlay()
 	if (!SendSocket || !bValidIp)
 	{
 		UE_LOG(LogOverboardInput, Error, TEXT("AOverboardPlayerController: failed to set up send socket to 127.0.0.1:%d"), kHostPort);
+	}
+
+	SpawnCourseElements();
+}
+
+void AOverboardPlayerController::SpawnCourseElements()
+{
+	// -ObCourse=<name> picks the layout in tools/play/elements/; OB_CityHill gets city_hill.
+	FString Course;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("ObCourse="), Course))
+	{
+		const FString MapName = GetWorld() ? GetWorld()->GetMapName() : FString();
+		if (MapName.Contains(TEXT("CityHill")))
+		{
+			Course = TEXT("city_hill");
+		}
+	}
+	if (Course.IsEmpty() || Course == TEXT("none"))
+	{
+		return;
+	}
+	ARideCourseElements* Elements = GetWorld()->SpawnActor<ARideCourseElements>();
+	if (Elements && !Elements->LoadLayout(Course))
+	{
+		Elements->Destroy();
 	}
 }
 

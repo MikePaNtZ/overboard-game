@@ -45,7 +45,12 @@ public:
 	// The newest raw sample's whole StateOut flag word (OverboardWire::EStateFlags), for readers
 	// that need a bit this class does not wrap -- the rider-warning rumble and HUD cue read bits 5
 	// and 6 here. 0 before anything has been received.
-	uint16 GetLatestFlags() const { return LatestSampleFlags; }
+	uint16 GetLatestFlags() const { return bHaveLatestState ? LatestState.Flags : 0; }
+
+	// The newest raw StateOut sample (raw MuJoCo frame, untransformed), for read-only cues: the
+	// HUD speed and the game elements. False before anything has been received. Frozen during a
+	// handoff, like the flags.
+	bool GetLatestState(OverboardWire::FBoardState& OutState) const { OutState = LatestState; return bHaveLatestState; }
 
 	// True if the newest received sample had OverboardWire::EStateFlags::AuthorityWarning set --
 	// ADR-0011 exit criterion (c), surfaced by AOverboardHUD (condition 3 of the second
@@ -127,9 +132,14 @@ protected:
 	// How far behind the wall clock we render, in seconds. Must always be able to find two real
 	// samples to interpolate between; too small and we run out of history and hold the last
 	// known pose (still not extrapolation, just a stall). Tune once the host's real send rate
-	// (500 Hz control loop) is confirmed -- this default is a conservative placeholder.
+	// (500 Hz control loop) is confirmed.
+	//
+	// Measured 2026-10-04 on the Mac (tools/play/latency_probe.py, x7 plant, city_hill): sim-host
+	// sends at 500 Hz mean, but in bursts -- packet gap p99 15.3 ms, max 20.9 ms. 25 ms covers
+	// the measured max with ~4 ms margin; a rarer gap holds the last pose for one frame. The old 50 ms used the
+	// whole 50 ms stick-to-screen budget of live play. Live path only; replay has its own clock.
 	UPROPERTY(EditAnywhere, Category = "Board|Networking")
-	float RenderDelaySeconds = 0.05f;
+	float RenderDelaySeconds = 0.025f;
 
 	// --- Offline replay (render path) ---------------------------------------------------------
 	//
@@ -619,7 +629,6 @@ private:
 	float LeanSignForDiagnostic = 0.f;
 
 	bool bLatestSampleFallen = false;
-	uint16 LatestSampleFlags = 0;
 
 	// ADR-0012 physics-authority handoff. `bPhysicsHandoffActive` mirrors the wire's LEVEL bit
 	// (not an edge -- a dropped packet must not strand this client), and the two Begin/End

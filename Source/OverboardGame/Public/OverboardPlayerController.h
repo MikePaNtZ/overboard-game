@@ -146,6 +146,7 @@ private:
 	FPadRumble Rumble;
 
 	const ABoardActor* FindBoard() const;
+	void SpawnCourseElements();
 	void CheckForAutoResetOnFall(const ABoardActor* Board);
 	void UpdateRumble(const ABoardActor* Board);
 
