@@ -263,7 +263,21 @@ def finish(mat, usages=()):
                                             "" if not errs else "  COMPILE ERRORS: " + " | ".join(errs)))
 
 
+DEBUG_FLAT = os.environ.get("OB_CITY_DEBUG_FLAT") == "1"   # look-dev: plain grey street and sidewalks
+
+
+def build_flat_material(name):
+    mat = new_material(name)
+    g = Graph(mat)
+    g.out(g.const((0.3, 0.3, 0.3)), MP.MP_BASE_COLOR)
+    g.out(g.const(0.8), MP.MP_ROUGHNESS)
+    finish(mat, USAGES)
+    return mat
+
+
 def build_street_material():
+    if DEBUG_FLAT:
+        return build_flat_material("M_CityStreet")
     """Megascans asphalt in world space; a double-yellow centre line, white edge lines and crosswalks
     from the mesh UVs (u across in m 0..12, v along in m = -x). The intersection box blanks the lines."""
     mat = new_material("M_CityStreet")
@@ -308,6 +322,8 @@ def build_street_material():
 
 
 def build_sidewalk_material():
+    if DEBUG_FLAT:
+        return build_flat_material("M_CitySidewalk")
     """Megascans concrete with a scored-joint grid from the mesh UV0 (metres)."""
     mat = new_material("M_CitySidewalk")
     g = Graph(mat)
@@ -388,9 +404,9 @@ def build_look():
     setp(sc, "intensity", L["sun_lux"])
     setp(sc, "use_temperature", True)
     setp(sc, "temperature", L["sun_temp"])
-    setp(sc, "atmosphere_sun_light", True)
+    setp(sc, "atmosphere_sun_light", L.get("sun_atmos", True))
     setp(sc, "light_source_angle", 0.6)
-    setp(sc, "cast_shadows", True)
+    setp(sc, "cast_shadows", L.get("sun_shadows", True))
     setp(sc, "bloom_scale", 0.2)
     setp(sc, "enable_light_shaft_bloom", True)
     setp(sc, "volumetric_scattering_intensity", L.get("sun_vol_scatter", 0.25))
@@ -538,8 +554,9 @@ sm_actor(street_mesh, "OB_CityHillStreet")
 sm_actor(cross_mesh, "OB_CityHillCross")
 sm_actor(kerb_mesh, "OB_CityHillKerbs")
 sm_actor(side_mesh, "OB_CityHillSidewalks")
-m_actor = sm_actor(massing_mesh, "OB_CityHillMassing")
-m_actor.static_mesh_component.set_editor_property("cast_shadow", True)
+if "massing" not in SKIP:
+    m_actor = sm_actor(massing_mesh, "OB_CityHillMassing")
+    m_actor.static_mesh_component.set_editor_property("cast_shadow", True)
 
 
 # --- sidewalk height lookup (from meta table) ----------------------------------------------------

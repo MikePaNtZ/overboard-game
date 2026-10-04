@@ -37,6 +37,21 @@ from scipy import ndimage
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "trail"))
 import obm  # noqa: E402
 
+
+def ue_winding(mesh):
+    """Wind every triangle as Unreal expects for this pipeline: cross(b - a, c - a) points AGAINST
+    the vertex normal (the trail's path and bridge, which render correctly, are wound so). A
+    triangle wound the other way shows its back face, and the street rendered black."""
+    for k, (pos, nrm, uv0, col, uv1, tri, sec) in enumerate(mesh.parts):
+        a, b, c = pos[tri[:, 0]], pos[tri[:, 1]], pos[tri[:, 2]]
+        fn = np.cross(b - a, c - a)
+        vn = nrm[tri[:, 0]] + nrm[tri[:, 1]] + nrm[tri[:, 2]]
+        bad = np.sum(fn * vn, axis=1) > 0
+        tri = tri.copy()
+        tri[bad, 1], tri[bad, 2] = tri[bad, 2], tri[bad, 1].copy()
+        mesh.parts[k] = (pos, nrm, uv0, col, uv1, tri, sec)
+    return mesh
+
 # --- street cross-section (MuJoCo metres), from course.json path ---------------------------------
 SW = 6.0            # street half width (width_m 12 / 2)
 CURB_H = 0.15       # kerb height (course.json path.curb_m)
@@ -171,7 +186,7 @@ def main():
     ZZ = sample(XX, YY) + RIBBON_LIFT
     street = obm.Mesh()
     add_grid(street, XX, YY, ZZ, "Street", AA + SW, -XX)              # u across (0..12 m), v along (-x)
-    nv, nt = street.write(out("street.obm"))
+    nv, nt = ue_winding(street).write(out("street.obm"))
     log("street.obm %d verts %d tris" % (nv, nt))
 
     # ---- cross street (flat, at the intersection) -----------------------------------------------
@@ -181,7 +196,7 @@ def main():
     CZ = np.full_like(CX, floor_z + CROSS_LIFT)
     cross = obm.Mesh()
     add_grid(cross, CX, CY, CZ, "Street", CX - (xc_cross - SW), CY)
-    nv, nt = cross.write(out("cross.obm"))
+    nv, nt = ue_winding(cross).write(out("cross.obm"))
     log("cross.obm %d verts %d tris" % (nv, nt))
 
     # ---- kerbs and sidewalks --------------------------------------------------------------------
@@ -232,9 +247,9 @@ def main():
             Ys = np.repeat(cy[:, None], len(xw), 1)
             Zs = np.full_like(Xs, zt)
             add_grid(sides, Xs, Ys, Zs, "Sidewalk", Xs - sx_edge, Ys)
-    nv, nt = kerbs.write(out("kerbs.obm"))
+    nv, nt = ue_winding(kerbs).write(out("kerbs.obm"))
     log("kerbs.obm %d verts %d tris" % (nv, nt))
-    nv, nt = sides.write(out("sidewalks.obm"))
+    nv, nt = ue_winding(sides).write(out("sidewalks.obm"))
     log("sidewalks.obm %d verts %d tris" % (nv, nt))
 
     # ---- massing: the cheap depth layer behind the front row ------------------------------------
@@ -256,7 +271,7 @@ def main():
             box_mesh(massing, (cxb, cyb, zt + h / 2 - 2.0), (w - 2.0, depth, h + 20.0), "Massing", yaw_deg=0.0)
             nmass += 1
             xpos += w + rng.uniform(1.0, 4.0)
-    nv, nt = massing.write(out("massing.obm"))
+    nv, nt = ue_winding(massing).write(out("massing.obm"))
     log("massing.obm %d boxes %d verts %d tris" % (nmass, nv, nt))
 
     # ---- dressing scatter -----------------------------------------------------------------------
