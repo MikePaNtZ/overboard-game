@@ -396,6 +396,17 @@ bool ABoardActor::TryStartRidingAnim()
 	return true;
 }
 
+float ABoardActor::DeckTopAtCm(float XCm) const
+{
+	// The pad surface under a foot, cm over the axle. The X7 pads are kicked: measured on the GLB
+	// centre line, 4.06 cm at 16 cm from the axle, rising 0.0717 cm per cm to 5.35 cm at the end.
+	if (bX7Skin)
+	{
+		return 4.06f + 0.0717f * FMath::Max(FMath::Abs(XCm) - 16.f, 0.f);
+	}
+	return RenderDeckTopCm;
+}
+
 float ABoardActor::GetRiderBaseHeightCm() const
 {
 	// The root lift is a distance measured on the MESH, so it scales with the mesh. Without the
@@ -673,7 +684,7 @@ void ABoardActor::BeginPlay()
 			MeshAssemblyRoot->SetVisibility(false, true);
 			PintAssemblyRoot->SetVisibility(true, true);
 			bX7Skin = true;
-			RenderDeckTopCm = 5.9f;   // pad top over the axle, measured on the GLB
+			RenderDeckTopCm = 4.6f;   // pad top under the feet (+-24 cm), measured on the GLB centre line
 			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: X7 concept skin visible (proxy geometry, not CAD); deck top %.1f cm."), RenderDeckTopCm);
 		}
 		else
@@ -1520,6 +1531,29 @@ void ABoardActor::SetupRenderRider()
 			Part->RegisterComponent();
 			Part->SetLeaderPoseComponent(RenderBodyMesh);
 			RenderGarmentMeshes.Add(Part);
+			// The shoes: under leader pose a shoe vertex renders at the MetaHuman foot bone times the
+			// City Sample skeleton's reference pose, so the sole has a fixed offset in each foot's own
+			// frame. Store the heel and toe sole points in that frame (heel under the foot bone, toe
+			// under the ball bone, both at the mesh's lowest point).
+			if (FCString::Strstr(GarmentPath, TEXT("loafers")))
+			{
+				const float SoleZ = Garment->GetBounds().GetBox().Min.Z;
+				const TCHAR* FootBones[2] = {TEXT("foot_l"), TEXT("foot_r")};
+				const TCHAR* BallBones[2] = {TEXT("ball_l"), TEXT("ball_r")};
+				bool bOk = true;
+				for (int32 s = 0; s < 2; ++s)
+				{
+					FTransform FootRef, BallRef;
+					bOk &= RefPoseComponentSpace(Garment, FootBones[s], FootRef) && RefPoseComponentSpace(Garment, BallBones[s], BallRef);
+					const FVector Heel(FootRef.GetLocation().X, FootRef.GetLocation().Y, SoleZ);
+					const FVector Toe(BallRef.GetLocation().X, BallRef.GetLocation().Y, SoleZ);
+					ShoeSoleLocal[s][0] = FootRef.InverseTransformPosition(Heel);
+					ShoeSoleLocal[s][1] = FootRef.InverseTransformPosition(Toe);
+				}
+				bShoeSoleKnown = bOk;
+				UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: shoe soles %s: heel L %s toe L %s (foot frame, cm); sole z %.1f."),
+					bOk ? TEXT("known") : TEXT("NOT FOUND"), *ShoeSoleLocal[0][0].ToString(), *ShoeSoleLocal[0][1].ToString(), SoleZ);
+			}
 		}
 		UGroomAsset* HairGroom = LoadObject<UGroomAsset>(nullptr, kSkaterHairGroom);
 		USkeletalMesh* HairSourceHead = LoadObject<USkeletalMesh>(nullptr, kSkaterHairSourceHead);
@@ -1654,38 +1688,70 @@ void ABoardActor::UpdateRenderRider()
 	Inst->Inputs.TimeS = static_cast<float>(Clock);
 	Inst->SetBlendSpacePosition(FVector(LastRidingBlendPos.X, LastRidingBlendPos.Y, 0.f));
 
-	// Feet onto the deck. The first frames converge fast; after that the planting runs on every
-	// frame with a 0.15 s lag. A one-time calibration measured a pose that the riding animation
-	// then left, and the rider floated 10-15 cm over the deck. Target: the lower ball bone
-	// kRenderBallAboveDeckCm over the deck top, the feet centred on the axle plus the forward trim
-	// (-ObRiderFwdCm=, toward the nose). Only the Z offset tracks every frame; the X/Y centring is
-	// frozen after calibration, so the authored foot slide in a carve stays visible.
+	// Feet onto the deck. The first frames set the body height from the lower foot. After that each
+	// foot is planted on ITS pad: a per-foot lift of the leg-IK target, with a 0.15 s lag, so the ball
+	// bone sits RenderBallAboveDeckCm over the pad surface under that foot. One body height cannot fit
+	// both feet: the authored stance holds them at different heights, and the X7 pads are kicked.
+	// The X/Y centring (feet on the axle plus -ObRiderFwdCm=) is frozen after calibration.
 	++RenderRiderCalibrationTicks;
 	if (RenderRiderCalibrationTicks >= 3)
 	{
 		const FTransform AT = GetActorTransform();
-		const FVector BallL = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("ball_l")));
-		const FVector BallR = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("ball_r")));
+		// The lowest sole point of each visible shoe (heel or toe), in the board frame. Without the
+		// shoe data, fall back to the MetaHuman ball bones.
+		FVector Ball[2] = {AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("ball_l"))),
+			AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("ball_r")))};
+		if (bShoeSoleKnown)
+		{
+			const FName FootNames[2] = {TEXT("foot_l"), TEXT("foot_r")};
+			for (int32 s = 0; s < 2; ++s)
+			{
+				const FTransform FootW = RenderBodyMesh->GetBoneTransform(RenderBodyMesh->GetBoneIndex(FootNames[s]));
+				const FVector Heel = AT.InverseTransformPosition(FootW.TransformPosition(ShoeSoleLocal[s][0]));
+				const FVector Toe = AT.InverseTransformPosition(FootW.TransformPosition(ShoeSoleLocal[s][1]));
+				Ball[s] = Heel.Z < Toe.Z ? Heel : Toe;
+			}
+		}
 		const FVector FootL = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("foot_l")));
 		const FVector FootR = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("foot_r")));
 		const FVector Mid = 0.5f * (FootL + FootR);
-		const float LowZ = FMath::Min(BallL.Z, BallR.Z);
-		const float ErrZ = (RenderDeckTopCm + RenderBallAboveDeckCm) - LowZ;
-		const bool bCalibrating = RenderRiderCalibrationTicks < 14;
-		const float Gain = bCalibrating ? 0.8f : (Dt > 0.0 ? 1.f - FMath::Exp(-static_cast<float>(Dt) / 0.15f) : 0.f);
-		RenderBodyOffsetCm.Z += Gain * ErrZ;
-		if (bCalibrating)
+		float Err[2];
+		for (int32 s = 0; s < 2; ++s)
 		{
+			Err[s] = (DeckTopAtCm(Ball[s].X) + RenderBallAboveDeckCm) - Ball[s].Z;
+		}
+		if (RenderRiderCalibrationTicks < 14)
+		{
+			RenderBodyOffsetCm.Z += 0.8f * FMath::Max(Err[0], Err[1]);   // the lower foot onto its pad
 			// The nose is local -X, so a forward trim is a negative X target.
 			RenderBodyOffsetCm.X += 0.8f * (-RenderRiderFwdCm - Mid.X);
 			RenderBodyOffsetCm.Y += 0.8f * (-Mid.Y);
+			RenderBodyMesh->SetRelativeLocation(RenderBodyOffsetCm);
 		}
-		RenderBodyMesh->SetRelativeLocation(RenderBodyOffsetCm);
+		else
+		{
+			// The replay clock stands still in Movie Render Queue's warm-up frames (Dt = 0); a fixed
+			// step per frame then lets the feet settle before the first rendered frame.
+			const float Gain = Dt > 0.0 ? 1.f - FMath::Exp(-static_cast<float>(Dt) / 0.15f) : 0.3f;
+			for (int32 s = 0; s < 2; ++s)
+			{
+				RenderFootLiftCm[s] = FMath::Clamp(RenderFootLiftCm[s] + Gain * Err[s], -15.f, 15.f);
+			}
+		}
+		Inst->Inputs.bFlattenFeet = bShoeSoleKnown;
+		for (int32 s = 0; s < 2; ++s)
+		{
+			Inst->Inputs.SoleLocal[s][0] = ShoeSoleLocal[s][0];
+			Inst->Inputs.SoleLocal[s][1] = ShoeSoleLocal[s][1];
+		}
+		Inst->Inputs.FootLiftCm[0] = RenderFootLiftCm[0];
+		Inst->Inputs.FootLiftCm[1] = RenderFootLiftCm[1];
 		if (RenderRiderCalibrationTicks == 14 || RenderRiderCalibrationTicks % 120 == 0)
 		{
-			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: feet tick %d. Body offset (%.1f, %.1f, %.1f) cm; ball L z %.1f R z %.1f, foot L (%.1f, %.1f, %.1f) R (%.1f, %.1f, %.1f) in board frame; deck %.1f."),
-				RenderRiderCalibrationTicks, RenderBodyOffsetCm.X, RenderBodyOffsetCm.Y, RenderBodyOffsetCm.Z, BallL.Z, BallR.Z,
-				FootL.X, FootL.Y, FootL.Z, FootR.X, FootR.Y, FootR.Z, RenderDeckTopCm);
+			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: feet tick %d. Body offset (%.1f, %.1f, %.1f) cm; ball L (x %.1f, z %.1f, pad %.1f) R (x %.1f, z %.1f, pad %.1f); lift L %.1f R %.1f cm."),
+				RenderRiderCalibrationTicks, RenderBodyOffsetCm.X, RenderBodyOffsetCm.Y, RenderBodyOffsetCm.Z,
+				Ball[0].X, Ball[0].Z, DeckTopAtCm(Ball[0].X), Ball[1].X, Ball[1].Z, DeckTopAtCm(Ball[1].X),
+				RenderFootLiftCm[0], RenderFootLiftCm[1]);
 		}
 	}
 

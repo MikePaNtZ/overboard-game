@@ -29,6 +29,9 @@ struct FRiderProceduralInputs
 	float CrouchCm = 0.f;                    // pelvis drop
 	float TimeS = 0.f;                       // deterministic clock for breathing and balance motion
 	float HeadLookWeight = 1.f;
+	float FootLiftCm[2] = {0.f, 0.f};        // per-foot IK target lift (component Z), feet onto the pads
+	FVector SoleLocal[2][2];                 // [foot][heel, toe] sole points in the foot bone frame
+	bool bFlattenFeet = false;               // turn each foot so its sole lies flat (heel and toe level)
 	bool bEnabled = false;
 };
 

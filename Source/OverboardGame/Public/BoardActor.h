@@ -261,7 +261,11 @@ protected:
 	// X7 skin's pad top (-ObBoardSkin=x7).
 	float RenderDeckTopCm = 8.3f;
 	bool bX7Skin = false;
-	float RenderBallAboveDeckCm = -11.f;  // measured in a side view: the ball bone sits ~12 cm over the shoe sole
+	float RenderFootLiftCm[2] = {0.f, 0.f};
+	FVector ShoeSoleLocal[2][2];   // [foot][heel, toe] sole points in the foot bone's frame
+	bool bShoeSoleKnown = false;
+	float DeckTopAtCm(float XCm) const;
+	float RenderBallAboveDeckCm = 0.3f;  // the shoe's lowest sole point over the pad (with shoe data; see ShoeSoleLocal)
 	FVector SmoothedLeanWorld = FVector::ZeroVector;
 	float SmoothedTurn = 0.f;
 	float SmoothedCrouch = 0.f;

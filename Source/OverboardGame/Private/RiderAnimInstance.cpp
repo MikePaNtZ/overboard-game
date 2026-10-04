@@ -157,7 +157,26 @@ bool FRiderAnimInstanceProxy::Evaluate(FPoseContext& Output)
 	const float TurnAbs = FMath::Abs(Inputs.TurnSigned);
 
 	// 1. Where the blendspace put the feet. They stay there: the deck does not move under them.
-	const FTransform FootTarget[2] = {W.CS[Foot[0]], W.CS[Foot[1]]};
+	FTransform FootTarget[2] = {W.CS[Foot[0]], W.CS[Foot[1]]};
+	for (int32 s = 0; s < 2; ++s)
+	{
+		// Flat feet: turn the foot about its heel so the heel-to-toe sole line is level with the deck
+		// (component space is the board's frame, up to yaw). A rider in comfort stands flat-footed.
+		if (Inputs.bFlattenFeet)
+		{
+			const FVector Heel = FootTarget[s].TransformPosition(Inputs.SoleLocal[s][0]);
+			const FVector Toe = FootTarget[s].TransformPosition(Inputs.SoleLocal[s][1]);
+			const FVector Sole = (Toe - Heel).GetSafeNormal();
+			const FVector Level = FVector(Sole.X, Sole.Y, 0.f).GetSafeNormal();
+			if (!Sole.IsNearlyZero() && !Level.IsNearlyZero())
+			{
+				const FQuat Turn = FQuat::FindBetweenNormals(Sole, Level);
+				FootTarget[s].SetRotation(Turn * FootTarget[s].GetRotation());
+				FootTarget[s].SetLocation(Heel + Turn.RotateVector(FootTarget[s].GetLocation() - Heel));
+			}
+		}
+		FootTarget[s].AddToTranslation(FVector(0, 0, Inputs.FootLiftCm[s]));
+	}
 	const FVector FeetMid = 0.5f * (FootTarget[0].GetLocation() + FootTarget[1].GetLocation());
 
 	// 2. Crouch: drop the hips. Leg IK (last step) turns this into knee and hip flex.
