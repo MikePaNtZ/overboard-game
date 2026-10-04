@@ -27,7 +27,7 @@ The only coupling is the UDP wire. Nothing in this branch computes a board quant
 
 | Control | Action | Wire field |
 |---|---|---|
-| Left stick Y | Lean fore/aft. Dead zone 0.10, curve 0.5x + 0.5x³, no filter | `weight_shift_fore_aft` |
+| Left stick Y | Lean fore/aft: full stick moves the rider 10 cm (`--rider-reach 0.10`). Dead zone 0.10, curve 0.5x + 0.5x³, no filter | `weight_shift_fore_aft` |
 | Right stick X | Carve intent (positive = right) | `steer` |
 | L2 (analog) | Hard lean back (tail brake): `fore_aft = min(stick, −L2)` | `weight_shift_fore_aft` |
 | Cross | Arm (releases the board) | input flag bit 0 |
