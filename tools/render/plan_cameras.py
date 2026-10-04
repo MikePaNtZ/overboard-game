@@ -110,28 +110,37 @@ def main():
             keys.append([f, *map(float, cam), roll, pitch, yaw, focus])
         shots.append(dict(name=name, start=f0, end=f1, focal=focal, fstop=fstop, keys=keys))
 
-    # Shot A -- wide establishing, high above the road ahead, slow drift back.
-    A0, A1 = 0, int(6.0 * FPS)
+    # Shot A -- wide establishing, high above the road ahead, slow drift back and down.
+    A0, A1 = 0, int(5.0 * FPS)
     sA = s_board[A1] + 1700.0
     def place_a(f):
         u = (f - A0) / max(1, A1 - A0)
         s = sA - 300.0 * u
         p = path_at_s(s)
         fwd, left = heading_at_s(s)
-        return p + left * 300.0 + np.array([0, 0, 650.0 - 150.0 * u]) - BOARD_GROUND_CM * np.array([0, 0, 1])
-    add_shot("A_wide", A0, A1, focal=50.0, fstop=4.0, place=place_a, aim_z=60.0, shake_deg=0.05, seed=10)
+        return p + left * 300.0 + np.array([0, 0, 650.0 - 150.0 * u - BOARD_GROUND_CM])
+    add_shot("A_wide", A0, A1, focal=70.0, fstop=4.0, place=place_a, aim_z=60.0, shake_deg=0.04, seed=10)
 
     # Shot B -- low tracking shot near road level, ahead of the board, looking back at the carves.
-    B0, B1 = A1, int(12.5 * FPS)
+    B0, B1 = A1, int(10.5 * FPS)
     def place_b(f):
         s = s_board[f] + 650.0
         p = path_at_s(s)
         fwd, left = heading_at_s(s)
-        return p + left * (-120.0) + np.array([0, 0, 35.0 - BOARD_GROUND_CM])
-    add_shot("B_low_track", B0, B1, focal=32.0, fstop=1.8, place=place_b, aim_z=55.0, shake_deg=0.25, seed=20)
+        return p + left * (-120.0) + np.array([0, 0, 45.0 - BOARD_GROUND_CM])
+    add_shot("B_low_track", B0, B1, focal=50.0, fstop=1.8, place=place_b, aim_z=60.0, shake_deg=0.2, seed=20)
+
+    # Shot D -- close side tracking at wheel height, on the sun side, slightly ahead.
+    D0, D1 = B1, int(14.0 * FPS)
+    def place_d(f):
+        s = s_board[f] + 120.0
+        p = path_at_s(s)
+        fwd, left = heading_at_s(s)
+        return p + left * 300.0 + np.array([0, 0, 30.0 - BOARD_GROUND_CM])
+    add_shot("D_side", D0, D1, focal=28.0, fstop=2.0, place=place_d, aim_z=55.0, shake_deg=0.15, seed=40)
 
     # Shot C -- chase from behind and to the side, easing to a stop and rising as the board halts.
-    C0, C1 = B1, n_frames
+    C0, C1 = D1, n_frames
     def place_c(f):
         u = (f - C0) / max(1, C1 - C0)
         s = s_board[f] - 520.0
@@ -144,7 +153,7 @@ def main():
                board=[list(map(float, p)) for p in bf], shots=shots)
     json.dump(out, open(a.out, "w"))
     print("frames", n_frames, "shots", [(s["name"], s["start"], s["end"]) for s in shots])
-    for f in (0, A1, B1, n_frames):
+    for f in (0, A1, B1, D1, n_frames):
         print("frame", f, "board", bf[f].round(1), "path", path[f].round(1))
 
 

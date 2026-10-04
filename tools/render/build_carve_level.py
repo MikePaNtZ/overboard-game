@@ -26,18 +26,18 @@ CINE = "/Game/Cinematics"
 SHOWCASE = "/Game/CityPark/Maps/Showcase"
 
 LOOK_DEFAULTS = dict(
-    sun_pitch=-20.0,      # elevation 20 degrees: late afternoon
-    sun_yaw=-10.0,        # direction the light travels
+    sun_pitch=-14.0,      # elevation 14 degrees: late afternoon
+    sun_yaw=22.0,         # sun ahead-left of the riding direction (heading ~142)        # direction the light travels
     sun_lux=10.0,
-    sun_temp=5200.0,
-    sky_intensity=1.0,
+    sun_temp=4700.0,
+    sky_intensity=1.4,
     fog_density=0.012,
     fog_falloff=0.25,
     vol_fog=True,
     vol_fog_extinction=0.6,
-    exposure_bias=0.0,
-    ev_min=5.0,
-    ev_max=9.0,
+    exposure_bias=0.3,
+    ev_min=4.0,
+    ev_max=7.0,
     clouds=True,
 )
 L = dict(LOOK_DEFAULTS, **LOOK)
@@ -280,10 +280,17 @@ CVARS = {
 }
 
 
-def make_config(name, res, spatial, temporal, png=True, warmup=48, cvars=True):
+def make_config(name, res, spatial, temporal, png=True, warmup=48, cvars=True, frame_range=None, out_dir=None):
     cfg = tools.create_asset(name, CINE, unreal.MoviePipelinePrimaryConfig, unreal.MoviePipelinePrimaryConfigFactory())
     out = cfg.find_or_add_setting_by_class(unreal.MoviePipelineOutputSetting)
-    out.output_directory = unreal.DirectoryPath(os.path.join(FRAMES_DIR, name))
+    out.output_directory = unreal.DirectoryPath(os.path.join(FRAMES_DIR, out_dir or name))
+    if frame_range:
+        # One camera cut per job. With temporal samples, MRQ 5.7 rendered every shot after the
+        # first but wrote none of them ("Not all frames were fully submitted"); a job per shot
+        # range does not hit that.
+        setp(out, "use_custom_playback_range", True)
+        setp(out, "custom_start_frame", frame_range[0])
+        setp(out, "custom_end_frame", frame_range[1])
     out.file_name_format = "{sequence_name}.{frame_number}"
     out.output_resolution = unreal.IntPoint(res[0], res[1])
     setp(out, "zero_pad_frame_numbers", 4)
@@ -323,4 +330,8 @@ def make_config(name, res, spatial, temporal, png=True, warmup=48, cvars=True):
 make_config("MRQ_Preview", (960, 540), 1, 1, png=False, warmup=16, cvars=False)
 make_config("MRQ_Final", (1920, 1080), 1, 8, png=True, warmup=64, cvars=True)
 make_config("MRQ_Still", (1920, 1080), 2, 16, png=True, warmup=64, cvars=True)
+for shot in cams["shots"]:
+    end = min(shot["end"], cams["frames"])
+    make_config("MRQ_Final_" + shot["name"], (1920, 1080), 1, 8, png=True, warmup=64, cvars=True,
+                frame_range=(shot["start"], end), out_dir="MRQ_Final_shots")
 log("DONE")
