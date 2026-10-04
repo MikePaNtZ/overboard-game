@@ -186,6 +186,9 @@ def main():
         ORIGIN_YAW_DEG = a.origin_yaw
     if a.shots == "follow":
         SHOTS = SHOTS_FOLLOW
+        # OB_FOLLOW_TAIL: seconds trimmed from the track end (default 0.6); 0 keeps a clip that ends
+        # on its event (a nose strike, a step-off).
+        SHOTS[0]["t1"] = -float(os.environ.get("OB_FOLLOW_TAIL", "0.6"))
     if a.shots == "trail":
         SHOTS = SHOTS_TRAIL
         if os.environ.get("OB_CONTACT_CHECK") == "1":
