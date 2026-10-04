@@ -222,7 +222,7 @@ def main():
             # Odd-reflection padding continues the path in a straight line past both ends. Edge
             # padding repeats the end point and pulls the rail 3 m ahead of a moving start.
             sig = hz * sigma_s
-            rr = int(4 * sig)
+            rr = min(int(4 * sig), len(board) - 2)   # a short track truncates the kernel
             k = np.exp(-0.5 * (np.arange(-rr, rr + 1) / sig) ** 2)
             k /= k.sum()
             pad = np.concatenate([2 * board[0] - board[rr:0:-1], board, 2 * board[-1] - board[-2:-rr - 2:-1]])
