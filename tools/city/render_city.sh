@@ -4,6 +4,7 @@
 #   Still  1920x1080, 2 spatial x 16 temporal samples, the shot's still frame
 #   Look   960x540, 4 temporal samples, the same frame (fast look-dev)
 #   Final  1920x1080, 8 temporal samples, the whole shot
+#   Preview 960x540, 4 temporal samples, the whole shot (a fast sanity check)
 # Frames land in /tmp/ob-city/frames/MRQ_<Q>_<shot>/. The board replays /tmp/ob-city/track.bin on
 # the camera plan's clock (/tmp/ob-city/cameras.json), both written by build_city.sh.
 # Extra UE args: $OB_EXTRA (default: the MetaHuman skater rider). For OB_CityHill use

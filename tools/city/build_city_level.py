@@ -894,6 +894,8 @@ if cams:
         make_config("MRQ_Still_" + shot["name"], (1920, 1080), 2, 16, frame_range=(still, still + 1))
         make_config("MRQ_Look_" + shot["name"], (960, 540), 1, 4, png=False, warmup=32, frame_range=(still, still + 1))
         make_config("MRQ_Final_" + shot["name"], (1920, 1080), 1, 8, frame_range=(shot["start"], end))
+        # a fast whole-shot preview for sanity checks
+        make_config("MRQ_Preview_" + shot["name"], (960, 540), 1, 4, png=False, warmup=32, frame_range=(shot["start"], end))
 
 log("DONE")
 _log.close()

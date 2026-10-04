@@ -109,3 +109,6 @@ Content/MSPresets/
 Content/Building/
 Content/Environment/
 Content/Vehicle/
+
+# The X7 concept board skin: imported from overboard-viz-kit (proxy geometry, not committed there yet)
+Content/ThirdParty/X7/

@@ -256,7 +256,11 @@ protected:
 	float RenderRiderLeanGain = 1.5f;
 	// Render rider placement trims: feet forward of the axle (cm, toward the nose), and the ball
 	// bone height over the deck top (cm; the sole sits below the ball bone).
-	float RenderRiderFwdCm = 4.f;
+	float RenderRiderFwdCm = 0.f;
+	// The deck top under the render rider's feet, cm over the axle: the Pint skin's 8.3, or the
+	// X7 skin's pad top (-ObBoardSkin=x7).
+	float RenderDeckTopCm = 8.3f;
+	bool bX7Skin = false;
 	float RenderBallAboveDeckCm = -11.f;  // measured in a side view: the ball bone sits ~12 cm over the shoe sole
 	FVector SmoothedLeanWorld = FVector::ZeroVector;
 	float SmoothedTurn = 0.f;

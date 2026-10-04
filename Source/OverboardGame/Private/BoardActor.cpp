@@ -655,6 +655,33 @@ void ABoardActor::BeginPlay()
 		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: Pint skin requested but its meshes did not resolve; keeping Openwheel geometry."));
 	}
 
+	// -ObBoardSkin=x7: the hardware track's X7 build (overboard-viz-kit, overboard_x7_exterior_dark.glb).
+	// It is CONCEPT proxy geometry, not CAD. The GLB was split in Blender into the static frame and the
+	// spinning motor, both with the axle as origin; its nose is +X, so the skin root turns 180 degrees.
+	FString SkinName;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ObBoardSkin="), SkinName) && SkinName.Equals(TEXT("x7"), ESearchCase::IgnoreCase))
+	{
+		UStaticMesh* X7Frame = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/ThirdParty/X7/x7_frame/StaticMeshes/x7_frame.x7_frame"));
+		UStaticMesh* X7Motor = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/ThirdParty/X7/x7_motor/StaticMeshes/x7_motor.x7_motor"));
+		if (X7Frame && X7Motor)
+		{
+			PintFrameMesh->SetStaticMesh(X7Frame);
+			PintWheelTireMesh->SetStaticMesh(X7Motor);
+			PintWheelHubMesh->SetStaticMesh(nullptr);
+			PintAssemblyRoot->SetRelativeRotation(FRotator(0.f, 180.f, 0.f));
+			BoxMesh->SetVisibility(false, true);
+			MeshAssemblyRoot->SetVisibility(false, true);
+			PintAssemblyRoot->SetVisibility(true, true);
+			bX7Skin = true;
+			RenderDeckTopCm = 5.9f;   // pad top over the axle, measured on the GLB
+			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: X7 concept skin visible (proxy geometry, not CAD); deck top %.1f cm."), RenderDeckTopCm);
+		}
+		else
+		{
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: -ObBoardSkin=x7 but /Game/ThirdParty/X7 did not load; keeping the current skin."));
+		}
+	}
+
 	// Rider stand-in -- see docs/mannequin-rider.md. All-or-nothing: a rider stuck in the
 	// default T-pose (mesh resolved, animation didn't, or vice versa) is worse than no rider.
 	// Three tiers, most-wanted first, each falling through to the next: authored riding stance ->
@@ -1073,7 +1100,9 @@ void ABoardActor::UpdatePoseFromHistory()
 
 	if (bSpinPintWheel && bUsePintSkin && bPintSkinLoaded)
 	{
-		const FRotator WheelSpin(FMath::RadiansToDegrees(History.Last().State.WheelAngleRad), 0.f, 0.f);
+		// Under the X7 skin's 180-degree root yaw, the same world spin needs the opposite pitch.
+		const float SpinSign = bX7Skin ? -1.f : 1.f;
+		const FRotator WheelSpin(SpinSign * FMath::RadiansToDegrees(History.Last().State.WheelAngleRad), 0.f, 0.f);
 		PintWheelTireMesh->SetRelativeRotation(WheelSpin);
 		PintWheelHubMesh->SetRelativeRotation(WheelSpin);
 	}
@@ -1641,7 +1670,7 @@ void ABoardActor::UpdateRenderRider()
 		const FVector FootR = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("foot_r")));
 		const FVector Mid = 0.5f * (FootL + FootR);
 		const float LowZ = FMath::Min(BallL.Z, BallR.Z);
-		const float ErrZ = (kRiderDeckHeightCm + RenderBallAboveDeckCm) - LowZ;
+		const float ErrZ = (RenderDeckTopCm + RenderBallAboveDeckCm) - LowZ;
 		const bool bCalibrating = RenderRiderCalibrationTicks < 14;
 		const float Gain = bCalibrating ? 0.8f : (Dt > 0.0 ? 1.f - FMath::Exp(-static_cast<float>(Dt) / 0.15f) : 0.f);
 		RenderBodyOffsetCm.Z += Gain * ErrZ;
@@ -1656,7 +1685,7 @@ void ABoardActor::UpdateRenderRider()
 		{
 			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: feet tick %d. Body offset (%.1f, %.1f, %.1f) cm; ball L z %.1f R z %.1f, foot L (%.1f, %.1f, %.1f) R (%.1f, %.1f, %.1f) in board frame; deck %.1f."),
 				RenderRiderCalibrationTicks, RenderBodyOffsetCm.X, RenderBodyOffsetCm.Y, RenderBodyOffsetCm.Z, BallL.Z, BallR.Z,
-				FootL.X, FootL.Y, FootL.Z, FootR.X, FootR.Y, FootR.Z, kRiderDeckHeightCm);
+				FootL.X, FootL.Y, FootL.Z, FootR.X, FootR.Y, FootR.Z, RenderDeckTopCm);
 		}
 	}
 

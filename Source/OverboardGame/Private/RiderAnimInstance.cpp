@@ -185,17 +185,21 @@ bool FRiderAnimInstanceProxy::Evaluate(FPoseContext& Output)
 	// 6. Upper body leads the carve: a twist about the vertical, towards the turn.
 	W.RotateAbout(Spine04, FQuat(Up, FMath::DegreesToRadians(9.f * Inputs.TurnSigned)), W.Loc(Spine04));
 
-	// 7. Arms: out from the body for balance, more in a hard carve, with a slow flutter.
+	// 7. Arms: relaxed. The authored pose holds the arms out wide, as for a hard trick; a rider in
+	// comfort lets them hang. Each upper arm turns so the shoulder-to-hand line hangs ArmHangDeg out
+	// from vertical (a little more in a hard carve). The authored elbow bend stays. No flutter.
 	for (int32 s = 0; s < 2; ++s)
 	{
 		const FVector Shoulder = W.Loc(UpperArm[s]);
 		const FVector ArmDir = (W.Loc(Hand[s]) - Shoulder).GetSafeNormal();
 		const FVector Out = Horizontal(Shoulder - W.Loc(Spine05));
-		const float Flutter = 2.5f * FMath::Sin(2.f * PI * (0.55f + 0.13f * s) * T + 1.7f * s);
-		const float Abduct = 10.f + 16.f * TurnAbs + Flutter;
-		W.RotateAbout(UpperArm[s], RotTowards(ArmDir, Out, Abduct), Shoulder);
-		// Swing slightly towards the direction of travel with the turn.
-		W.RotateAbout(UpperArm[s], RotTowards(ArmDir, Travel, 6.f * Inputs.TurnSigned * (s == 0 ? 1.f : -1.f)), Shoulder);
+		const float HangDeg = 15.f + 8.f * TurnAbs;
+		const FVector Target = (-Up * FMath::Cos(FMath::DegreesToRadians(HangDeg))
+			+ Out * FMath::Sin(FMath::DegreesToRadians(HangDeg))).GetSafeNormal();
+		W.RotateAbout(UpperArm[s], FQuat::FindBetweenNormals(ArmDir, Target), Shoulder);
+		// A small swing with the turn, towards the direction of travel.
+		const FVector NewDir = (W.Loc(Hand[s]) - Shoulder).GetSafeNormal();
+		W.RotateAbout(UpperArm[s], RotTowards(NewDir, Travel, 4.f * Inputs.TurnSigned * (s == 0 ? 1.f : -1.f)), Shoulder);
 	}
 
 	// 8. Head looks down the road: yaw towards the travel direction, a little pitch down.
