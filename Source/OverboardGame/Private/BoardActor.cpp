@@ -17,6 +17,8 @@
 #include "Misc/Paths.h"
 #include "Logging/LogMacros.h"
 #include "Misc/CommandLine.h"
+#include "RiderAnimInstance.h"
+#include "Components/SpotLightComponent.h"
 #include "Misc/Parse.h"
 #include "Misc/FileHelper.h"
 #include "EngineUtils.h"
@@ -292,6 +294,31 @@ ABoardActor::ABoardActor()
 	{
 		RiderRidingBlendSpace = RidingBlendSpaceFinder.Object;
 	}
+
+	// Render rider: created always, hidden, and only used when the command line asks (BeginPlay).
+	RenderBodyMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("RenderBodyMesh"));
+	RenderBodyMesh->SetupAttachment(SceneRoot);
+	RenderHeadMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("RenderHeadMesh"));
+	RenderHeadMesh->SetupAttachment(RenderBodyMesh);
+	for (USkeletalMeshComponent* Part : {RenderBodyMesh.Get(), RenderHeadMesh.Get()})
+	{
+		Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Part->SetSimulatePhysics(false);
+		Part->SetEnableGravity(false);
+		Part->SetMobility(EComponentMobility::Movable);
+		Part->SetVisibility(false, true);
+	}
+	RiderKeyLight = CreateDefaultSubobject<USpotLightComponent>(TEXT("RiderKeyLight"));
+	RiderKeyLight->SetupAttachment(SceneRoot);
+	RiderRimLight = CreateDefaultSubobject<USpotLightComponent>(TEXT("RiderRimLight"));
+	RiderRimLight->SetupAttachment(SceneRoot);
+	for (USpotLightComponent* Light : {RiderKeyLight.Get(), RiderRimLight.Get()})
+	{
+		Light->SetMobility(EComponentMobility::Movable);
+		Light->SetVisibility(false);
+		Light->SetUsingAbsoluteLocation(true);
+		Light->SetUsingAbsoluteRotation(true);
+	}
 }
 
 bool ABoardActor::TryStartRidingAnim()
@@ -468,6 +495,7 @@ void ABoardActor::UpdateRidingAnimParams()
 	const float AxisXValue = MapNormalisedToAxis(TurnAxisDriver, RidingAxisMin.X, RidingAxisMax.X);
 	const float AxisYValue = MapNormalisedToAxis(ForwardAxisDriver, RidingAxisMin.Y, RidingAxisMax.Y);
 	SingleNode->SetBlendSpacePosition(FVector(AxisXValue, AxisYValue, 0.f));
+	LastRidingBlendPos = FVector2D(AxisXValue, AxisYValue);
 
 	// One-shot placement diagnostic. First real footage showed the rider and the board plainly not
 	// belonging to each other, and "looks about a foot too high" is not a number anyone can fix a
@@ -672,6 +700,11 @@ void ABoardActor::BeginPlay()
 		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: rider requested (bShowRider) but the mannequin mesh/animation did not resolve -- Content/Characters/Mannequins/ is most likely not copied in locally (see docs/mannequin-rider.md). Board renders without a rider."));
 	}
 
+	if (FParse::Param(FCommandLine::Get(), TEXT("ObRenderRider")))
+	{
+		SetupRenderRider();
+	}
+
 	// Offline replay replaces the UDP stream entirely -- see the header. No socket is bound, so a
 	// render can never be disturbed by a live sender that happens to be running.
 	if (LoadReplayFromCommandLine())
@@ -699,6 +732,7 @@ bool ABoardActor::LoadReplayFromCommandLine()
 		return false;
 	}
 	FParse::Value(FCommandLine::Get(), TEXT("ObReplayOffset="), ReplayTimeOffsetS);
+	FParse::Value(FCommandLine::Get(), TEXT("ObReplayRate="), ReplayRate);
 
 	TArray<uint8> Bytes;
 	if (!FFileHelper::LoadFileToArray(Bytes, *Path))
@@ -741,10 +775,10 @@ double ABoardActor::GetReplayClockSeconds() const
 			const ULevelSequencePlayer* Player = It->GetSequencePlayer();
 			if (Player && Player->IsPlaying())
 			{
-				return ReplayTimeOffsetS + Player->GetCurrentTime().AsSeconds();
+				return ReplayTimeOffsetS + ReplayRate * Player->GetCurrentTime().AsSeconds();
 			}
 		}
-		return ReplayTimeOffsetS + (World->GetTimeSeconds() - ReplayWorldStartS);
+		return ReplayTimeOffsetS + ReplayRate * (World->GetTimeSeconds() - ReplayWorldStartS);
 	}
 	return ReplayTimeOffsetS;
 }
@@ -784,6 +818,10 @@ void ABoardActor::Tick(float DeltaSeconds)
 		return;
 	}
 	UpdatePoseFromHistory();
+	if (bRenderRiderActive)
+	{
+		UpdateRenderRider();
+	}
 }
 
 void ABoardActor::PollForHandoffRelease()
@@ -1026,6 +1064,8 @@ void ABoardActor::UpdatePoseFromHistory()
 	LatestRiderForeAftM = History.Last().State.RiderForeAftM;
 	LatestRiderLateralM = History.Last().State.RiderLateralM;
 	LatestWheelRateRadS = History.Last().State.WheelRateRadS;
+	LatestState = History.Last().State;
+	bHaveLatestState = true;
 
 	if (bSpinPintWheel && bUsePintSkin && bPintSkinLoaded)
 	{
@@ -1315,4 +1355,179 @@ bool ABoardActor::BuildPartFromStl(UProceduralMeshComponent* Component, const FS
 	Component->SetMobility(EComponentMobility::Movable);
 
 	return true;
+}
+
+void ABoardActor::SetupRenderRider()
+{
+	USkeletalMesh* Body = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Character/Player/Female/Meshes/SKM_PlayerFemale_Body.SKM_PlayerFemale_Body"));
+	USkeletalMesh* HeadMeshAsset = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Character/Player/Female/Meshes/SKM_PlayerFemale_Head.SKM_PlayerFemale_Head"));
+	if (!Body || !RiderRidingBlendSpace || !Body->GetSkeleton() || !RiderRidingBlendSpace->GetSkeleton())
+	{
+		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor RENDER RIDER: body mesh or riding blendspace missing (City Sample subset not copied? see docs/carve-render.md); keeping the mannequin."));
+		return;
+	}
+	USkeleton* BodySkeleton = Body->GetSkeleton();
+	USkeleton* AnimSkeleton = RiderRidingBlendSpace->GetSkeleton();
+	BodySkeleton->AddCompatibleSkeleton(AnimSkeleton);
+	AnimSkeleton->AddCompatibleSkeleton(BodySkeleton);
+
+	RenderBodyMesh->SetSkeletalMesh(Body);
+	RenderBodyMesh->SetDisablePostProcessBlueprint(true);
+	RenderBodyMesh->SetAnimationMode(EAnimationMode::AnimationBlueprint);
+	RenderBodyMesh->SetAnimInstanceClass(URiderAnimInstance::StaticClass());
+	URiderAnimInstance* Inst = Cast<URiderAnimInstance>(RenderBodyMesh->GetAnimInstance());
+	if (!Inst)
+	{
+		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor RENDER RIDER: URiderAnimInstance did not instantiate; keeping the mannequin."));
+		return;
+	}
+	Inst->SetAnimationAsset(RiderRidingBlendSpace, /*bIsLooping=*/true);
+	Inst->SetPlaying(true);
+	if (Inst->GetAnimationAsset() != RiderRidingBlendSpace)
+	{
+		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor RENDER RIDER: blendspace refused by %s; keeping the mannequin."), *BodySkeleton->GetName());
+		return;
+	}
+
+	if (HeadMeshAsset)
+	{
+		RenderHeadMesh->SetSkeletalMesh(HeadMeshAsset);
+		RenderHeadMesh->SetDisablePostProcessBlueprint(true);
+		RenderHeadMesh->SetLeaderPoseComponent(RenderBodyMesh);
+	}
+
+	float Scale = 1.f;
+	FParse::Value(FCommandLine::Get(), TEXT("ObRiderScale="), Scale);
+	FParse::Value(FCommandLine::Get(), TEXT("ObRiderLeanGain="), RenderRiderLeanGain);
+	RenderBodyOffsetCm = FVector(0.f, 0.f, kRiderDeckHeightCm);
+	RenderBodyMesh->SetRelativeLocation(RenderBodyOffsetCm);
+	RenderBodyMesh->SetRelativeRotation(FRotator(0.f, RiderRidingYawDeg, 0.f));
+	RenderBodyMesh->SetRelativeScale3D(FVector(Scale));
+
+	RiderMesh->SetVisibility(false, true);
+	RenderBodyMesh->SetVisibility(true, true);
+	bRenderRiderActive = true;
+	UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: dressed rider %s (+head %s), skeleton %s, blendspace bound, scale %.3f, lean gain %.2f."),
+		*Body->GetName(), HeadMeshAsset ? *HeadMeshAsset->GetName() : TEXT("none"), *BodySkeleton->GetName(), Scale, RenderRiderLeanGain);
+
+	if (FParse::Param(FCommandLine::Get(), TEXT("ObRiderLights")))
+	{
+		float KeyCd = 30.f, RimCd = 60.f;
+		FParse::Value(FCommandLine::Get(), TEXT("ObKeyCd="), KeyCd);
+		FParse::Value(FCommandLine::Get(), TEXT("ObRimCd="), RimCd);
+		auto Configure = [](USpotLightComponent* Light, float Candelas, const FLinearColor& Color)
+		{
+			Light->SetIntensityUnits(ELightUnits::Candelas);
+			Light->SetIntensity(Candelas);
+			Light->SetLightColor(Color);
+			Light->SetAttenuationRadius(900.f);
+			Light->SetInnerConeAngle(16.f);
+			Light->SetOuterConeAngle(34.f);
+			Light->SetSourceRadius(25.f);
+			Light->SetSoftSourceRadius(40.f);
+			Light->SetCastShadows(true);
+			// Channel 2 only: these lights touch the rider and the board, never the park.
+			Light->SetLightingChannels(false, false, true);
+			Light->SetVisibility(true);
+		};
+		Configure(RiderKeyLight, KeyCd, FLinearColor(1.0f, 0.86f, 0.72f));
+		Configure(RiderRimLight, RimCd, FLinearColor(1.0f, 0.72f, 0.45f));
+		for (UPrimitiveComponent* Lit : TArray<UPrimitiveComponent*>{RenderBodyMesh, RenderHeadMesh, PintFrameMesh, PintWheelTireMesh, PintWheelHubMesh})
+		{
+			Lit->SetLightingChannels(true, false, true);
+		}
+		bRiderLightsActive = true;
+		UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: key %.0f cd and rim %.0f cd on lighting channel 2 (rider and board only)."), KeyCd, RimCd);
+	}
+}
+
+void ABoardActor::UpdateRenderRider()
+{
+	if (!bHaveLatestState)
+	{
+		return;
+	}
+	URiderAnimInstance* Inst = Cast<URiderAnimInstance>(RenderBodyMesh->GetAnimInstance());
+	if (!Inst)
+	{
+		return;
+	}
+	const double Clock = bReplayActive ? GetReplayClockSeconds() : GetWorld()->GetTimeSeconds();
+	const double Dt = LastRenderRiderClock < 0.0 ? 0.0 : FMath::Clamp(Clock - LastRenderRiderClock, 0.0, 0.1);
+	LastRenderRiderClock = Clock;
+
+	const OverboardWire::FBoardState& S = LatestState;
+	const FQuat OriginYaw(FRotator(0.f, WorldOriginYawDeg, 0.f));
+	auto MjVecToUe = [&OriginYaw](float X, float Y, float Z) { return OriginYaw.RotateVector(FVector(X, -Y, Z)); };
+
+	// SIMULATED: centripetal acceleration from the sim's velocity and yaw rate (MuJoCo frame,
+	// right-handed, converted like a position). Drives how hard the rider works in the carve:
+	// crouch depth, arm balance, the upper-body lead. The mapping from it is a declared choice.
+	const FVector Up(0.f, 0.f, 1.f);
+	const float Wz = S.AngVel[2];
+	const FVector AccUe = MjVecToUe(-Wz * S.LinVel[1], Wz * S.LinVel[0], 0.f);
+	FVector TravelW = -GetActorForwardVector(); // the nose is local -X
+	TravelW.Z = 0.f;
+	TravelW = TravelW.GetSafeNormal();
+	const FVector SideW = FVector::CrossProduct(Up, TravelW);
+	const float TurnTarget = FMath::Clamp(FVector::DotProduct(AccUe, SideW) / (0.15f * 9.81f), -1.f, 1.f);
+
+	// SIMULATED: the ballast displacement (rider_fore_aft_m, rider_lateral_m) in the board frame,
+	// shown as a lean of the body over the feet: lean = asin(shift / 0.9 m hip height) x gain.
+	// The board's own roll reaches the rider through the attachment, untouched.
+	FVector ShiftW = GetActorQuat().RotateVector(FVector(S.RiderForeAftM, -S.RiderLateralM, 0.f));
+	ShiftW.Z = 0.f;
+	const float LeanDeg = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(ShiftW.Size() / 0.9f, 0.f, 0.5f))) * RenderRiderLeanGain;
+	const FVector LeanTargetW = ShiftW.GetSafeNormal() * LeanDeg;
+
+	// A body has inertia; the sim's ballast is a point. A 0.12 s first-order lag is the only
+	// smoothing, and it is applied to the rider's pose only, never to the board.
+	const float Alpha = Dt > 0.0 ? 1.f - FMath::Exp(-static_cast<float>(Dt) / 0.12f) : 1.f;
+	SmoothedLeanWorld = FMath::Lerp(SmoothedLeanWorld, LeanTargetW, Alpha);
+	SmoothedTurn = FMath::Lerp(SmoothedTurn, TurnTarget, Alpha);
+	SmoothedCrouch = FMath::Lerp(SmoothedCrouch, 5.f + 7.f * FMath::Abs(TurnTarget), Alpha);
+
+	const FTransform CT = RenderBodyMesh->GetComponentTransform();
+	Inst->Inputs.bEnabled = true;
+	Inst->Inputs.LeanVecCS = CT.InverseTransformVectorNoScale(SmoothedLeanWorld);
+	Inst->Inputs.TravelDirCS = CT.InverseTransformVectorNoScale(TravelW);
+	// TurnSigned is "towards +Side" in world; the same side expressed in component space.
+	Inst->Inputs.TurnSigned = SmoothedTurn;
+	Inst->Inputs.CrouchCm = SmoothedCrouch;
+	Inst->Inputs.TimeS = static_cast<float>(Clock);
+	Inst->SetBlendSpacePosition(FVector(LastRidingBlendPos.X, LastRidingBlendPos.Y, 0.f));
+
+	// Feet onto the deck: a few frames of calibration once posed, then frozen. Target: the ball
+	// bones 3 cm above the deck top, the feet centred on the axle.
+	if (RenderRiderCalibrationTicks < 14)
+	{
+		++RenderRiderCalibrationTicks;
+		if (RenderRiderCalibrationTicks >= 3)
+		{
+			const FTransform AT = GetActorTransform();
+			const FVector BallL = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("ball_l")));
+			const FVector BallR = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("ball_r")));
+			const FVector FootL = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("foot_l")));
+			const FVector FootR = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("foot_r")));
+			const FVector Mid = 0.5f * (FootL + FootR);
+			const float LowZ = FMath::Min(BallL.Z, BallR.Z);
+			RenderBodyOffsetCm += 0.8f * FVector(-Mid.X, -Mid.Y, (kRiderDeckHeightCm + 3.f) - LowZ);
+			RenderBodyMesh->SetRelativeLocation(RenderBodyOffsetCm);
+			if (RenderRiderCalibrationTicks == 14)
+			{
+				UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: feet calibrated. Body offset (%.1f, %.1f, %.1f) cm; feet L (%.1f, %.1f, %.1f) R (%.1f, %.1f, %.1f) in board frame."),
+					RenderBodyOffsetCm.X, RenderBodyOffsetCm.Y, RenderBodyOffsetCm.Z, FootL.X, FootL.Y, FootL.Z, FootR.X, FootR.Y, FootR.Z);
+			}
+		}
+	}
+
+	if (bRiderLightsActive)
+	{
+		const FVector Board = GetActorLocation();
+		const FVector KeyPos = Board - 260.f * TravelW - 160.f * SideW + 230.f * Up;
+		const FVector RimPos = Board + 300.f * TravelW + 190.f * SideW + 200.f * Up;
+		const FVector Aim = Board + 110.f * Up;
+		RiderKeyLight->SetWorldLocationAndRotation(KeyPos, (Aim - KeyPos).Rotation());
+		RiderRimLight->SetWorldLocationAndRotation(RimPos, (Aim - RimPos).Rotation());
+	}
 }

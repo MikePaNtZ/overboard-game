@@ -76,3 +76,13 @@ Content/MonoWheel_Board/
 
 # macOS Finder noise.
 .DS_Store
+
+# Epic's City Sample (Fab), imported locally for the offline carve render only -- the dressed
+# rider (SKM_PlayerFemale_Body/Head) and the dependency closure those meshes pull in. Licensed
+# to Mike's Epic account, not redistributable in this PUBLIC repo; same reasoning as
+# Content/CityPark/. ~2.9 GB. See docs/carve-render.md for the copy command.
+Content/Character/
+Content/Crowd/
+Content/Material/
+Content/Megascans/
+Content/Textures/

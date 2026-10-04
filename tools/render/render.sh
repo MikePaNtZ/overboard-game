@@ -9,7 +9,7 @@
 set -u
 CFG=$1; shift
 HERE="$(cd "$(dirname "$0")/../.." && pwd)"
-REPLAY="${OB_REPLAY:-/tmp/ob-render/a03.bin}"
+REPLAY="${OB_REPLAY:-/tmp/ob-render/a05.bin}"
 OFFSET="${OB_REPLAY_OFFSET:-3.0}"
 FRAMES="${OB_FRAMES_DIR:-/tmp/ob-render/frames}"
 LOG="/tmp/ob-render/render_${CFG}.log"

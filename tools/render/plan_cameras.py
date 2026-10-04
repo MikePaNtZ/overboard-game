@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Plan the carve-render camera moves from a recorded track. Runs OUTSIDE Unreal (numpy).
 
-Reads the npz track, maps it into UE world space with the same rule ABoardActor uses
-(metres -> cm, mirror Y, rotate by the origin yaw, then translate), and bakes per-frame keys
-for each shot's CineCamera: location, rotation and manual focus distance. The editor script
-build_carve_level.py turns this JSON into a Level Sequence.
+Every camera is derived from the track, so any track on this road renders without hand keys:
 
-The cameras only LOOK at the board. Nothing here changes where the board is drawn -- that comes
-from the replay file, through ABoardActor, at render time.
+  * an ANCHOR follows the board through a critically damped spring (it lags in each carve, so
+    the board swings across the frame), and a HEADING follows the smoothed direction of travel
+    (the camera swings a little with the line);
+  * each shot places the camera behind the anchor (distance, height, side offset), looks
+    forward past the rider at the road ahead, and keys manual focus on the rider;
+  * a shot may run in slow motion: its replay rate is written out per shot, and the render
+    passes it to ABoardActor (-ObReplayRate / -ObReplayOffset) so the board and the camera
+    keep the same clock.
+
+Mapping into UE space is the one ABoardActor uses (metres -> cm, mirror Y, rotate by the origin
+yaw, then translate). The cameras only LOOK at the board; nothing here moves the board.
 """
 import argparse
 import json
@@ -17,10 +23,23 @@ import numpy as np
 
 ORIGIN_CM = np.array([-47725.0, -30575.0, -6.2003])
 ORIGIN_YAW_DEG = -37.6
-SIM_T0 = 3.0          # sim time at sequence time 0
-SIM_T1 = 21.5         # sim time at the end of the sequence
 FPS = 24
-BOARD_GROUND_CM = 15.04  # board origin height above the road at rest (pz at t=0)
+AXLE_ABOVE_GROUND_CM = 15.04  # board origin height above the road at rest
+
+# Shot list: name, sim start, sim end, replay rate, framing. Times are clipped to the track.
+# Framing: dist/height/side in cm relative to the damped anchor and heading; look_ahead in cm.
+SHOTS = [
+    dict(name="S1_crane_in", t0=3.0, t1=7.0, rate=1.0, focal=28.0, fstop=2.8,
+         dist=(950.0, 380.0), height=(820.0, 160.0), side=(0.0, 60.0), look_ahead=1400.0, shake=0.03),
+    dict(name="S2_chase", t0=7.0, t1=12.5, rate=1.0, focal=35.0, fstop=2.0,
+         dist=(380.0, 380.0), height=(160.0, 160.0), side=(60.0, 60.0), look_ahead=1200.0, shake=0.12),
+    dict(name="S3_low_ots", t0=12.5, t1=16.5, rate=1.0, focal=24.0, fstop=1.8,
+         dist=(230.0, 230.0), height=(95.0, 95.0), side=(-55.0, -55.0), look_ahead=900.0, shake=0.18),
+    dict(name="S4_slowmo", t0=16.5, t1=19.0, rate=0.4, focal=40.0, fstop=1.8,
+         dist=(330.0, 330.0), height=(120.0, 120.0), side=(45.0, 45.0), look_ahead=1000.0, shake=0.08),
+    dict(name="S5_chase_stop", t0=19.0, t1=24.0, rate=1.0, focal=35.0, fstop=2.2,
+         dist=(380.0, 620.0), height=(160.0, 300.0), side=(60.0, 90.0), look_ahead=1200.0, shake=0.1),
+]
 
 
 def to_ue(px, py, pz):
@@ -37,11 +56,22 @@ def gauss_smooth(a, sigma_samples):
     return np.stack([np.convolve(pad[:, i], k, mode="valid") for i in range(a.shape[1])], axis=1)
 
 
-def look_rot(cam, tgt):
-    d = tgt - cam
-    yaw = math.degrees(math.atan2(d[1], d[0]))
-    pitch = math.degrees(math.atan2(d[2], math.hypot(d[0], d[1])))
-    return pitch, yaw
+def damped_follow(t, x, omega):
+    """Critically damped spring: the anchor chases x with natural frequency omega (rad/s)."""
+    y = np.empty_like(x)
+    y[0] = x[0]
+    v = np.zeros(x.shape[1])
+    for i in range(1, len(t)):
+        dt = t[i] - t[i - 1]
+        acc = omega * omega * (x[i] - y[i - 1]) - 2.0 * omega * v
+        v = v + acc * dt
+        y[i] = y[i - 1] + v * dt
+    return y
+
+
+def smoothstep(u):
+    u = min(max(u, 0.0), 1.0)
+    return u * u * (3 - 2 * u)
 
 
 def shake(t, amp, seed):
@@ -60,101 +90,82 @@ def main():
     d = np.load(a.npz)
     t = d["t"]
     board = to_ue(d["px"], d["py"], d["pz"])
+    hz = 1.0 / np.median(np.diff(t))
 
-    # Frame-rate samples of the board and of a heavily smoothed "path" that ignores the carve weave.
-    n_frames = int(round((SIM_T1 - SIM_T0) * FPS))
-    ft = SIM_T0 + np.arange(n_frames + 1) / FPS
-    bf = np.stack([np.interp(ft, t, board[:, i]) for i in range(3)], axis=1)
-    # Smooth over the whole run (500 Hz), then sample.
-    path_full = gauss_smooth(board, sigma_samples=500 * 1.6)
-    path = np.stack([np.interp(ft, t, path_full[:, i]) for i in range(3)], axis=1)
-    aim_full = gauss_smooth(board, sigma_samples=500 * 0.25)
-    aim = np.stack([np.interp(ft, t, aim_full[:, i]) for i in range(3)], axis=1)
+    anchor = damped_follow(t, board, omega=2.2)
+    # Heading of travel: smoothed velocity direction, held when the board is (nearly) stopped.
+    vel = np.gradient(gauss_smooth(board, hz * 0.9), t, axis=0)
+    speed = np.hypot(vel[:, 0], vel[:, 1])
+    heading = np.arctan2(vel[:, 1], vel[:, 0])
+    for i in range(1, len(t)):
+        if speed[i] < 40.0:
+            heading[i] = heading[i - 1]
+    first_moving = int(np.argmax(speed > 40.0))
+    heading[:first_moving] = heading[first_moving]
+    heading = np.unwrap(heading)
+    heading = gauss_smooth(heading[:, None], hz * 0.6)[:, 0]
+    ground = board[:, 2] - AXLE_ABOVE_GROUND_CM
 
-    # Arc length along the smoothed path, over the whole run, for "N metres ahead on the road".
-    seg = np.linalg.norm(np.diff(path_full[:, :2], axis=0), axis=1)
-    s_full = np.concatenate([[0.0], np.cumsum(seg)])
-    s_board = np.interp(ft, t, s_full)
+    def at(arr, ts):
+        ts = min(max(ts, t[0]), t[-1])
+        if arr.ndim == 1:
+            return float(np.interp(ts, t, arr))
+        return np.array([np.interp(ts, t, arr[:, i]) for i in range(arr.shape[1])])
 
-    def path_at_s(s):
-        s = np.clip(s, s_full[0], s_full[-1])
-        return np.array([np.interp(s, s_full, path_full[:, i]) for i in range(3)])
+    def ground_under(xy):
+        i = int(np.argmin(np.hypot(board[:, 0] - xy[0], board[:, 1] - xy[1])))
+        return ground[i]
 
-    def heading_at_s(s, ds=150.0):
-        p0, p1 = path_at_s(s - ds), path_at_s(s + ds)
-        v = p1 - p0
-        h = math.atan2(v[1], v[0])
-        return np.array([math.cos(h), math.sin(h), 0.0]), np.array([-math.sin(h), math.cos(h), 0.0])
-
-    shots = []
-
-    def add_shot(name, f0, f1, focal, fstop, place, aim_z=70.0, shake_deg=0.0, seed=0):
-        keys = []
-        prev_yaw = None
-        for f in range(f0, f1 + 1):
-            cam = place(f)
-            tgt = 0.7 * aim[f] + 0.3 * bf[f]
-            tgt = tgt + np.array([0, 0, aim_z])
-            pitch, yaw = look_rot(cam, tgt)
+    shots, frame = [], 0
+    for k, sh in enumerate(SHOTS):
+        t0, t1 = max(sh["t0"], t[0]), min(sh["t1"], t[-1])
+        if t1 <= t0:
+            continue
+        n = int(round((t1 - t0) / sh["rate"] * FPS))
+        keys, prev_yaw = [], None
+        for j in range(n + 1):
+            u = j / max(1, n)
+            ts = t0 + (j / FPS) * sh["rate"]
+            h = at(heading, ts)
+            fwd = np.array([math.cos(h), math.sin(h), 0.0])
+            side = np.array([-math.sin(h), math.cos(h), 0.0])
+            e = smoothstep(u)
+            dist = sh["dist"][0] + (sh["dist"][1] - sh["dist"][0]) * e
+            hgt = sh["height"][0] + (sh["height"][1] - sh["height"][0]) * e
+            sid = sh["side"][0] + (sh["side"][1] - sh["side"][0]) * e
+            anc = at(anchor, ts)
+            cam = anc - fwd * dist + side * sid
+            cam[2] = ground_under(cam) + hgt
+            b = at(board, ts)
+            ahead = anc + fwd * sh["look_ahead"]
+            ahead[2] = ground_under(ahead) + 40.0
+            tgt = 0.45 * (b + np.array([0, 0, 95.0])) + 0.55 * ahead
+            dv = tgt - cam
+            yaw = math.degrees(math.atan2(dv[1], dv[0]))
+            pitch = math.degrees(math.atan2(dv[2], math.hypot(dv[0], dv[1])))
             roll = 0.0
-            if shake_deg:
-                tt = f / FPS
-                pitch += shake(tt, shake_deg, seed)
-                yaw += shake(tt, shake_deg, seed + 1)
-                roll += shake(tt, shake_deg * 0.5, seed + 2)
+            if sh["shake"]:
+                tt = (frame + j) / FPS
+                pitch += shake(tt, sh["shake"], 10 * k)
+                yaw += shake(tt, sh["shake"], 10 * k + 1)
+                roll += shake(tt, sh["shake"] * 0.5, 10 * k + 2)
             if prev_yaw is not None:
                 while yaw - prev_yaw > 180: yaw -= 360
                 while yaw - prev_yaw < -180: yaw += 360
             prev_yaw = yaw
-            focus = float(np.linalg.norm((bf[f] + [0, 0, 80]) - cam))
-            keys.append([f, *map(float, cam), roll, pitch, yaw, focus])
-        shots.append(dict(name=name, start=f0, end=f1, focal=focal, fstop=fstop, keys=keys))
+            focus = float(np.linalg.norm(b + np.array([0, 0, 100.0]) - cam))
+            keys.append([frame + j, *map(float, cam), roll, pitch, yaw, focus])
+        shots.append(dict(name=sh["name"], start=frame, end=frame + n, focal=sh["focal"], fstop=sh["fstop"],
+                          sim_t0=t0, sim_t1=t1, replay_rate=sh["rate"],
+                          replay_offset=t0 - (frame / FPS) * sh["rate"], keys=keys))
+        frame += n
 
-    # Shot A -- wide establishing, high above the road ahead, slow drift back and down.
-    A0, A1 = 0, int(5.0 * FPS)
-    sA = s_board[A1] + 1700.0
-    def place_a(f):
-        u = (f - A0) / max(1, A1 - A0)
-        s = sA - 300.0 * u
-        p = path_at_s(s)
-        fwd, left = heading_at_s(s)
-        return p + left * 300.0 + np.array([0, 0, 650.0 - 150.0 * u - BOARD_GROUND_CM])
-    add_shot("A_wide", A0, A1, focal=70.0, fstop=4.0, place=place_a, aim_z=60.0, shake_deg=0.04, seed=10)
-
-    # Shot B -- low tracking shot near road level, ahead of the board, looking back at the carves.
-    B0, B1 = A1, int(10.5 * FPS)
-    def place_b(f):
-        s = s_board[f] + 650.0
-        p = path_at_s(s)
-        fwd, left = heading_at_s(s)
-        return p + left * (-120.0) + np.array([0, 0, 45.0 - BOARD_GROUND_CM])
-    add_shot("B_low_track", B0, B1, focal=50.0, fstop=1.8, place=place_b, aim_z=60.0, shake_deg=0.2, seed=20)
-
-    # Shot D -- close side tracking at wheel height, on the sun side, slightly ahead.
-    D0, D1 = B1, int(14.0 * FPS)
-    def place_d(f):
-        s = s_board[f] + 120.0
-        p = path_at_s(s)
-        fwd, left = heading_at_s(s)
-        return p + left * 300.0 + np.array([0, 0, 30.0 - BOARD_GROUND_CM])
-    add_shot("D_side", D0, D1, focal=28.0, fstop=2.0, place=place_d, aim_z=55.0, shake_deg=0.15, seed=40)
-
-    # Shot C -- chase from behind and to the side, easing to a stop and rising as the board halts.
-    C0, C1 = D1, n_frames
-    def place_c(f):
-        u = (f - C0) / max(1, C1 - C0)
-        s = s_board[f] - 520.0
-        p = path_at_s(s)
-        fwd, left = heading_at_s(s)
-        return p + left * 160.0 + np.array([0, 0, 120.0 + 120.0 * u * u - BOARD_GROUND_CM])
-    add_shot("C_chase", C0, C1, focal=35.0, fstop=2.2, place=place_c, aim_z=75.0, shake_deg=0.2, seed=30)
-
-    out = dict(fps=FPS, frames=n_frames, sim_t0=SIM_T0, origin_cm=ORIGIN_CM.tolist(), origin_yaw_deg=ORIGIN_YAW_DEG,
-               board=[list(map(float, p)) for p in bf], shots=shots)
+    out = dict(fps=FPS, frames=frame, origin_cm=ORIGIN_CM.tolist(), origin_yaw_deg=ORIGIN_YAW_DEG, shots=shots)
     json.dump(out, open(a.out, "w"))
-    print("frames", n_frames, "shots", [(s["name"], s["start"], s["end"]) for s in shots])
-    for f in (0, A1, B1, D1, n_frames):
-        print("frame", f, "board", bf[f].round(1), "path", path[f].round(1))
+    for s in shots:
+        print("%-14s frames %4d..%4d  sim %.2f..%.2f  rate %.2f  offset %.4f" % (
+            s["name"], s["start"], s["end"], s["sim_t0"], s["sim_t1"], s["replay_rate"], s["replay_offset"]))
+    print("total frames", frame, "=", frame / FPS, "s")
 
 
 if __name__ == "__main__":

@@ -35,9 +35,9 @@ LOOK_DEFAULTS = dict(
     fog_falloff=0.25,
     vol_fog=True,
     vol_fog_extinction=0.6,
-    exposure_bias=0.3,
-    ev_min=4.0,
-    ev_max=7.0,
+    exposure_bias=0.4,
+    ev_min=3.5,
+    ev_max=5.8,
     clouds=True,
 )
 L = dict(LOOK_DEFAULTS, **LOOK)
@@ -334,4 +334,6 @@ for shot in cams["shots"]:
     end = min(shot["end"], cams["frames"])
     make_config("MRQ_Final_" + shot["name"], (1920, 1080), 1, 8, png=True, warmup=64, cvars=True,
                 frame_range=(shot["start"], end), out_dir="MRQ_Final_shots")
+    make_config("MRQ_Preview_" + shot["name"], (960, 540), 1, 1, png=False, warmup=16, cvars=False,
+                frame_range=(shot["start"], end), out_dir="MRQ_Preview_shots")
 log("DONE")

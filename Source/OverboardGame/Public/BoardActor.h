@@ -138,6 +138,7 @@ protected:
 	// time at sequence time 0). Without a sequence, world time since BeginPlay. The sequence clock
 	// keeps the board locked to the camera keys, warm-up frames and temporal sub-samples included.
 	bool bReplayActive = false;
+	double ReplayRate = 1.0; // -ObReplayRate=<x>: sim seconds per sequence second (slow motion < 1)
 	TArray<FTimestampedBoardState> ReplaySamples; // ArrivalTimeSeconds holds the sample's sim time
 	double ReplayTimeOffsetS = 0.0;
 	double ReplayWorldStartS = 0.0;
@@ -224,6 +225,36 @@ protected:
 	// Zero by default, so OB_Main and every existing capture are unchanged. See SetWorldOriginYawDeg.
 	UPROPERTY(EditAnywhere, Category = "Board|Level")
 	float WorldOriginYawDeg = 0.f;
+
+	// --- Render rider (offline render path only, -ObRenderRider) -------------------------------
+	//
+	// A dressed character (City Sample's player body + head, gitignored local content) drawn
+	// INSTEAD of the mannequin, playing the same riding blendspace through URiderAnimInstance,
+	// which adds a procedural layer: lean over planted feet, crouch with leg IK, arms, breathing,
+	// head look. See UpdateRenderRider for which inputs come from the sim. Off unless the command
+	// line asks for it, so the live game is unchanged.
+	UPROPERTY(VisibleAnywhere, Category = "Board|RenderRider")
+	TObjectPtr<USkeletalMeshComponent> RenderBodyMesh;
+	UPROPERTY(VisibleAnywhere, Category = "Board|RenderRider")
+	TObjectPtr<USkeletalMeshComponent> RenderHeadMesh;
+	UPROPERTY(VisibleAnywhere, Category = "Board|RenderRider")
+	TObjectPtr<class USpotLightComponent> RiderKeyLight;
+	UPROPERTY(VisibleAnywhere, Category = "Board|RenderRider")
+	TObjectPtr<class USpotLightComponent> RiderRimLight;
+	bool bRenderRiderActive = false;
+	bool bRiderLightsActive = false;
+	int32 RenderRiderCalibrationTicks = 0;
+	FVector RenderBodyOffsetCm = FVector::ZeroVector;
+	float RenderRiderLeanGain = 1.5f;
+	FVector SmoothedLeanWorld = FVector::ZeroVector;
+	float SmoothedTurn = 0.f;
+	float SmoothedCrouch = 0.f;
+	double LastRenderRiderClock = -1.0;
+	FVector2D LastRidingBlendPos = FVector2D::ZeroVector;
+	OverboardWire::FBoardState LatestState;
+	bool bHaveLatestState = false;
+	void SetupRenderRider();
+	void UpdateRenderRider();
 
 	// --- Rider stand-in ------------------------------------------------------------------------
 	//
