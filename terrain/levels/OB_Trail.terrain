@@ -1,7 +1,7 @@
 level      Content/Maps/OB_Trail.umap
 level_hash fab39a2e2c992d30
 
-note Render-track level (blog renders): the board pose comes only from a replay file (ADR-0009), so nothing here reaches the physics. Declared by the game play track so the check stays honest; the render track owns the content.
+note Render-track level (blog renders): the board pose comes only from a replay file (ADR-0009), so nothing here reaches the physics. tools/trail/verify_trail.py checks the tyre against the generated surface along the track (within 7.5 mm of the course heightfield); that check is outside the ADR-0011 pipeline, so the status stays unverified. Declared by the game play track so the check stays honest; the render track owns the content.
 
 surface trail_ground
   kind      external
