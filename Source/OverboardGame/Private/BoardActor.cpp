@@ -1,5 +1,7 @@
 #include "BoardActor.h"
 
+#include "Kismet/GameplayStatics.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/BoxComponent.h"
@@ -1642,8 +1644,21 @@ void ABoardActor::UpdateRenderRider()
 	if (bRiderLightsActive)
 	{
 		const FVector Board = GetActorLocation();
-		const FVector KeyPos = Board - 260.f * TravelW - 160.f * SideW + 230.f * Up;
-		const FVector RimPos = Board + 300.f * TravelW + 190.f * SideW + 200.f * Up;
+		FVector KeyPos = Board - 260.f * TravelW - 160.f * SideW + 230.f * Up;
+		FVector RimPos = Board + 300.f * TravelW + 190.f * SideW + 200.f * Up;
+		// With a camera, both lights follow it: the key 40 degrees to the side of the camera and above
+		// it, so the side the camera sees is lit in every shot (also in shade); the rim faces the camera.
+		if (const APlayerCameraManager* Pcm = UGameplayStatics::GetPlayerCameraManager(this, 0))
+		{
+			FVector ToCam = Pcm->GetCameraLocation() - Board;
+			ToCam.Z = 0.f;
+			if (ToCam.Normalize())
+			{
+				const FVector KeyDir = ToCam.RotateAngleAxis(40.f, FVector::UpVector);
+				KeyPos = Board + 280.f * KeyDir + 200.f * Up;
+				RimPos = Board - 300.f * ToCam.RotateAngleAxis(-25.f, FVector::UpVector) + 210.f * Up;
+			}
+		}
 		const FVector Aim = Board + 110.f * Up;
 		RiderKeyLight->SetWorldLocationAndRotation(KeyPos, (Aim - KeyPos).Rotation());
 		RiderRimLight->SetWorldLocationAndRotation(RimPos, (Aim - RimPos).Rotation());

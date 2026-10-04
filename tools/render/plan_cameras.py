@@ -25,7 +25,8 @@ import numpy as np
 ORIGIN_CM = np.array([-47725.0, -30575.0, -6.2003])
 ORIGIN_YAW_DEG = -37.6
 FPS = 24
-AXLE_ABOVE_GROUND_CM = 15.04  # board origin height above the road at rest
+AXLE_ABOVE_GROUND_CM = 15.04
+HANDLE = 12  # trail pre-roll frames per shot (see main)  # board origin height above the road at rest
 
 # Shot list: name, sim start, sim end, replay rate, framing. Times are clipped to the track.
 # Framing: dist/height/side in cm relative to the damped anchor and heading; look_ahead in cm.
@@ -56,16 +57,19 @@ if os.environ.get("OB_HEAD_CHECK") == "1":
 # on the trail track. A shot with "fixed" holds the camera at a MuJoCo point (x, y, z in m) and
 # turns to keep the rider in frame. "still" is the sim time of the frame MRQ_Still_<shot> renders.
 SHOTS_TRAIL = [
-    # Aerial push-in: starts 24 m over the board and ends 5 m up and 7 m behind it, on the path corridor.
-    dict(name="T1_valley", t0=4.0, t1=9.0, rate=1.0, focal=24.0, fstop=8.0,
-         dist=(2200.0, 700.0), height=(2400.0, 500.0), side=(0.0, 0.0), look_ahead=0.0,
-         shake=0.0, still=6.0),
+    # Aerial push-in: starts 13 m over the board and ends 4.2 m up and 6 m behind it, on the path
+    # corridor. The move is short and the lens long, so the rider reads from the first frame and the
+    # foliage at the frame edge does not smear. Motion blur is lower on this shot for the same reason.
+    dict(name="T1_valley", t0=4.0, t1=9.0, rate=1.0, focal=32.0, fstop=8.0,
+         dist=(1400.0, 600.0), height=(1300.0, 420.0), side=(0.0, 0.0), look_ahead=0.0,
+         shake=0.0, still=6.0, motion_blur=0.2),
     dict(name="T2_chase", t0=10.5, t1=16.5, rate=1.0, focal=35.0, fstop=2.8,
          dist=(380.0, 380.0), height=(160.0, 160.0), side=(60.0, 60.0), look_ahead=1200.0, shake=0.1, still=13.5),
     # The board crosses the bridge (x 8.9 to 2.1 m) at sim 16.3 to 17.8 s. The camera is low, on the
-    # verge beside the span, and follows the board.
-    dict(name="T3_bridge", t0=15.3, t1=19.3, rate=1.0, focal=30.0, fstop=5.6, ev100=10.6,
-         cam_fixed_ground=(10.5, -3.6, 70.0), dist=(0.0, 0.0), height=(0.0, 0.0),
+    # verge beside the span, and follows the board. It aims 1 m over the deck with a 24 mm lens, so the
+    # head stays in frame at the closest approach.
+    dict(name="T3_bridge", t0=15.3, t1=19.3, rate=1.0, focal=24.0, fstop=5.6, ev100=10.6,
+         cam_fixed_ground=(10.5, -3.6, 70.0), cam_aim_cm=100.0, dist=(0.0, 0.0), height=(0.0, 0.0),
          side=(0.0, 0.0), look_ahead=0.0, shake=0.0, still=17.0),
     dict(name="T4_front", t0=27.0, t1=33.5, rate=1.0, focal=40.0, fstop=2.8,
          dist=(-560.0, -420.0), height=(120.0, 120.0), side=(-170.0, -170.0), look_ahead=0.0, shake=0.06,
@@ -206,15 +210,20 @@ def main():
         return ground[i]
 
     scat = load_scatter(os.environ.get("OB_SCATTER", "/tmp/ob-trail/valley_gentle/scatter.json"))
+    # Pre-roll: each trail shot gets HANDLE frames on its own camera before its first rendered frame.
+    # The shutter is centred on the frame, so frame "start" takes half its temporal samples from
+    # start - 0.5. Without the pre-roll those samples see the previous shot's camera: a ghost at the cut.
+    handle = HANDLE if a.shots == "trail" else 0
     shots, frame = [], 0
     for k, sh in enumerate(SHOTS):
         t0, t1 = max(sh["t0"], t[0]), min(sh["t1"], t[-1])
         if t1 <= t0:
             continue
         n = int(round((t1 - t0) / sh["rate"] * FPS))
+        start = frame + handle
         keys, prev_yaw = [], None
-        for j in range(n + 1):
-            u = j / max(1, n)
+        for j in range(-handle, n + 1):
+            u = max(j, 0) / max(1, n)
             ts = t0 + (j / FPS) * sh["rate"]
             h = at(heading, ts)
             fwd = np.array([math.cos(h), math.sin(h), 0.0])
@@ -248,7 +257,7 @@ def main():
                 cx, cy, ch = sh["cam_fixed_ground"]
                 cam = to_ue(cx, cy, 0.0)
                 cam[2] = ground_under(cam) + ch
-                tgt = b + np.array([0, 0, 70.0])
+                tgt = b + np.array([0, 0, sh.get("cam_aim_cm", 70.0)])
             if scat is not None and a.shots == "trail":
                 aim = b + np.array([0, 0, 90.0])
                 for _ in range(40):
@@ -262,7 +271,7 @@ def main():
             pitch = math.degrees(math.atan2(dv[2], math.hypot(dv[0], dv[1])))
             roll = 0.0
             if sh["shake"]:
-                tt = (frame + j) / FPS
+                tt = (start + j) / FPS
                 pitch += shake(tt, sh["shake"], 10 * k)
                 yaw += shake(tt, sh["shake"], 10 * k + 1)
                 roll += shake(tt, sh["shake"] * 0.5, 10 * k + 2)
@@ -271,14 +280,14 @@ def main():
                 while yaw - prev_yaw < -180: yaw += 360
             prev_yaw = yaw
             focus = float(np.linalg.norm((tgt if (sh.get("look_at_head") or sh.get("fixed_rel")) else b + np.array([0, 0, 100.0])) - cam))
-            keys.append([frame + j, *map(float, cam), roll, pitch, yaw, focus])
-        extra = {k: sh[k] for k in ("ev100",) if k in sh}
+            keys.append([start + j, *map(float, cam), roll, pitch, yaw, focus])
+        extra = {k: sh[k] for k in ("ev100", "motion_blur") if k in sh}
         if "still" in sh:
-            extra["still"] = frame + int(round((min(max(sh["still"], t0), t1) - t0) / sh["rate"] * FPS))
-        shots.append(dict(name=sh["name"], start=frame, end=frame + n, focal=sh["focal"], fstop=sh["fstop"], **extra,
-                          sim_t0=t0, sim_t1=t1, replay_rate=sh["rate"],
-                          replay_offset=t0 - (frame / FPS) * sh["rate"], keys=keys))
-        frame += n
+            extra["still"] = start + int(round((min(max(sh["still"], t0), t1) - t0) / sh["rate"] * FPS))
+        shots.append(dict(name=sh["name"], pre=frame, start=start, end=start + n, focal=sh["focal"], fstop=sh["fstop"],
+                          **extra, sim_t0=t0, sim_t1=t1, replay_rate=sh["rate"],
+                          replay_offset=t0 - (start / FPS) * sh["rate"], keys=keys))
+        frame = start + n
 
     out = dict(fps=FPS, frames=frame, origin_cm=ORIGIN_CM.tolist(), origin_yaw_deg=ORIGIN_YAW_DEG, shots=shots)
     json.dump(out, open(a.out, "w"))

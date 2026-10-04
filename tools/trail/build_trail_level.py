@@ -726,6 +726,12 @@ if cams:
             pp.set_editor_property("auto_exposure_bias", -shot["ev100"])
             setp(cc, "post_process_settings", pp)
             setp(cc, "post_process_blend_weight", 1.0)
+        if "motion_blur" in shot:  # a per-shot motion blur amount (a fast aerial move smears the foliage)
+            pp = cc.get_editor_property("post_process_settings")
+            pp.set_editor_property("override_motion_blur_amount", True)
+            pp.set_editor_property("motion_blur_amount", shot["motion_blur"])
+            setp(cc, "post_process_settings", pp)
+            setp(cc, "post_process_blend_weight", 1.0)
         cam_actors[shot["name"]] = cam
 
 if not unreal.EditorLoadingAndSavingUtils.save_map(world, MAP):
@@ -744,7 +750,8 @@ if cams:
         b = seq.add_possessable(cam)
         tr = b.add_track(unreal.MovieScene3DTransformTrack)
         sec = tr.add_section()
-        sec.set_range(shot["start"], shot["end"] + 1)
+        pre = shot.get("pre", shot["start"])  # the pre-roll frames run on this camera; see plan_cameras.py
+        sec.set_range(pre, shot["end"] + 1)
         chans = {str(c.channel_name): c for c in sec.get_all_channels()}
         order = ["Location.X", "Location.Y", "Location.Z", "Rotation.X", "Rotation.Y", "Rotation.Z"]
         for key in shot["keys"]:
@@ -757,12 +764,12 @@ if cams:
         ft = cb.add_track(unreal.MovieSceneFloatTrack)
         ft.set_property_name_and_path("ManualFocusDistance", "FocusSettings.ManualFocusDistance")
         fsec = ft.add_section()
-        fsec.set_range(shot["start"], shot["end"] + 1)
+        fsec.set_range(pre, shot["end"] + 1)
         fch = fsec.get_all_channels()[0]
         for key in shot["keys"]:
             fch.add_key(unreal.FrameNumber(key[0]), key[7], interpolation=INTERP)
         cut = cut_track.add_section()
-        cut.set_range(shot["start"], min(shot["end"], cams["frames"]))
+        cut.set_range(pre, min(shot["end"], cams["frames"]))
         cut.set_camera_binding_id(seq.get_binding_id(b))
         log("shot %s: frames %d..%d" % (shot["name"], shot["start"], shot["end"]))
     eal.save_asset(seq.get_path_name())
