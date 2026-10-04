@@ -251,7 +251,7 @@ def main():
     handle = HANDLE if a.shots in ("trail", "follow") else 0
     shots, frame = [], 0
     for k, sh in enumerate(SHOTS):
-        t1_req = sh["t1"] if sh["t1"] >= 0 else t[-1] + sh["t1"]
+        t1_req = sh["t1"] if sh["t1"] > 0 else t[-1] + sh["t1"]   # t1 <= 0 counts from the track end
         t0, t1 = max(sh["t0"], t[0]), min(t1_req, t[-1])
         if t1 <= t0:
             continue
