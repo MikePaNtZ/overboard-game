@@ -76,7 +76,22 @@ With sim-host's real-time loop thread (controls 880a2b2):
 Missed sim deadlines: 0 of 15 402 ticks (`--stats-path`, jitter p99 0). Before the real-time
 fix: about 70 % missed, jitter p99 12 ms, packet gaps up to 21 ms.
 
+## Demo video
+
+`tools/play/make_demo_video.sh` records a live ride: the demo rider (`-ObDemoRider`) plays the pad,
+and the game records its own viewport (`-ObRecordVideo`, 720p, 30 fps, VideoToolbox).
+Take of 2026-10-04 (sim 400ee0f): 4/4 flags, 14.6 mph, tail stop, finish 82.5 s, 1 600 points,
+96.5 % unique frames. Tailnet: https://mikes-macbook-pro.tail2cbb82.ts.net:8448/game/overboard-demo-full-2026-10-04.mp4
+
 ## Open faults and next
+
+- Pull-away after a tail-brake stop (controls). `-ObDemoQuickRestart` 3-ride test:
+  8add160: a nose strike in 3/3; e487142 (pad mode): 0 nose strikes, but 35 deg tilt falls,
+  and new roll falls in the slalom. The demo uses a slow restart (3 s ease-off, 7 s settle).
+  The sim is pinned at 400ee0f until a build passes.
+- A full L2 stop on the flat tips the board over the tail (rigid rider model; c4). Keep L2 <= 0.6.
+- Only the handoff (bit 4) is a fall in the game; bit 2 is pitch past 20 deg (c4 8ef0a7d also
+  stops setting it for a tail drag).
 
 - OB_CityHill needs gitignored City Sample art in `Content/` (docs/city-level.md lists the
   folders). Known render-track state: plain facades, dress shoes on the rider.

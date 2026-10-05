@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Start sim-host for live play on the city_hill course.
 # sim-host owns all board physics. Unreal only sends inputs and draws the state.
-# Flags confirmed with the controls track (c4), 2026-10-04. Needs sim-host from
-# feat/controls/downhill-carve at 671ab05 or later (--plant x7, the 40 A cap fix,
-# --hold-until-arm, --balance-comp, the real-time loop thread, and --rider-reach at 400ee0f).
+# Flags confirmed with the controls track (c4), 2026-10-04. sim-host is built from
+# feat/controls/downhill-carve, PINNED at 400ee0f: the build of the clean recorded demo ride.
+# Later builds (8add160, e487142) fail the tail-stop pull-away test (35 deg tilt falls, and roll
+# falls in the slalom); move the pin when a build passes (docs/playable-status.md).
 # Extra arguments go to sim-host (for example --trace-csv PATH or --host-stats PATH).
 set -euo pipefail
 STATE_OUT=${STATE_OUT:-127.0.0.1:9601}
