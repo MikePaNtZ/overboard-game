@@ -3,8 +3,9 @@
 // Why this class exists: UE 5.7's Mac controller layer (AppleControllerInterface.h) implements
 // SetForceFeedbackChannelValue as an EMPTY function, so every standard Unreal rumble call is
 // silently dropped on a Mac. On Mac this class drives the pad itself through Apple's
-// GameController haptics (GCController.haptics -> Core Haptics): one looping continuous event
-// whose intensity is changed live. On other platforms it uses
+// GameController haptics (GCController.haptics -> Core Haptics) with plain pattern players:
+// a held level is a train of short overlapping buzzes (the advanced player, which could change
+// the intensity live, is refused by macOS for a DualSense). On other platforms it uses
 // APlayerController::PlayDynamicForceFeedback on the large (low-frequency) motors.
 //
 // The level is a pure output cue. Nothing here reads or changes board physics.
@@ -36,7 +37,7 @@ private:
 
 #if PLATFORM_MAC
 	void* HapticEngine = nullptr; // CHHapticEngine*, retained
-	void* HapticPlayer = nullptr; // id<CHHapticAdvancedPatternPlayer>, retained
+	double NextBuzzSeconds = 0.0;
 	bool StartNative();
 	void StopNative();
 #else

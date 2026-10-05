@@ -15,8 +15,9 @@ namespace
 	// Low sharpness = a dull, low-frequency buzz, the nearest a pad gets to the real board's
 	// ~70 Hz motor buzz.
 	constexpr float kSharpness = 0.1f;
-	// The continuous event loops; its own length only sets how often the loop restarts.
-	constexpr double kEventSeconds = 30.0;
+	// One buzz, and how often a held level starts the next one (they overlap, so it reads as one).
+	constexpr double kBuzzSeconds = 0.12;
+	constexpr double kBuzzEverySeconds = 0.10;
 	constexpr double kRetryEverySeconds = 2.0;
 }
 
@@ -44,7 +45,6 @@ bool FPadRumble::StartNative()
 		{
 			return false;
 		}
-
 		CHHapticEngine* Engine = [Pad.haptics createEngineWithLocality:GCHapticsLocalityDefault];
 		if (Engine == nil)
 		{
@@ -52,42 +52,13 @@ bool FPadRumble::StartNative()
 			return false;
 		}
 		Engine.playsHapticsOnly = YES;
-
 		NSError* Error = nil;
 		if (![Engine startAndReturnError:&Error])
 		{
 			UE_LOG(LogOverboardRumble, Warning, TEXT("PadRumble: haptic engine did not start: %s"), *FString(Error.localizedDescription));
 			return false;
 		}
-
-		CHHapticEventParameter* Intensity = [[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1.0f] autorelease];
-		CHHapticEventParameter* Sharpness = [[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:kSharpness] autorelease];
-		CHHapticEvent* Event = [[[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
-		                                                      parameters:@[Intensity, Sharpness]
-		                                                    relativeTime:0
-		                                                        duration:kEventSeconds] autorelease];
-		CHHapticPattern* Pattern = [[[CHHapticPattern alloc] initWithEvents:@[Event] parameters:@[] error:&Error] autorelease];
-		id<CHHapticAdvancedPatternPlayer> Player = Pattern ? [Engine createAdvancedPlayerWithPattern:Pattern error:&Error] : nil;
-		if (Player == nil)
-		{
-			UE_LOG(LogOverboardRumble, Warning, TEXT("PadRumble: no pattern player: %s"), Error ? *FString(Error.localizedDescription) : TEXT("unknown"));
-			[Engine stopWithCompletionHandler:nil];
-			return false;
-		}
-		Player.loopEnabled = YES;
-
-		// Start silent; SetLevel raises the intensity.
-		CHHapticDynamicParameter* Zero = [[[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl value:0.f relativeTime:0] autorelease];
-		[Player sendParameters:@[Zero] atTime:CHHapticTimeImmediate error:nil];
-		if (![Player startAtTime:CHHapticTimeImmediate error:&Error])
-		{
-			UE_LOG(LogOverboardRumble, Warning, TEXT("PadRumble: pattern player did not start: %s"), *FString(Error.localizedDescription));
-			[Engine stopWithCompletionHandler:nil];
-			return false;
-		}
-
 		HapticEngine = [Engine retain];
-		HapticPlayer = [Player retain];
 		UE_LOG(LogOverboardRumble, Log, TEXT("PadRumble: native haptics running on '%s'."), *FString(Pad.vendorName ? Pad.vendorName : @"pad"));
 		return true;
 	}
@@ -97,13 +68,6 @@ void FPadRumble::StopNative()
 {
 	@autoreleasepool
 	{
-		if (HapticPlayer)
-		{
-			id<CHHapticAdvancedPatternPlayer> Player = (id<CHHapticAdvancedPatternPlayer>)HapticPlayer;
-			[Player stopAtTime:CHHapticTimeImmediate error:nil];
-			[Player release];
-			HapticPlayer = nullptr;
-		}
 		if (HapticEngine)
 		{
 			CHHapticEngine* Engine = (CHHapticEngine*)HapticEngine;
@@ -117,41 +81,55 @@ void FPadRumble::StopNative()
 
 void FPadRumble::SetLevel(APlayerController* /*PC*/, float Level)
 {
+	// A DualSense on macOS (Bluetooth, tested 2026-10-05 with tools/play/haptics_probe) accepts
+	// the PLAIN pattern player and rejects the ADVANCED one ("Couldn't communicate with a helper
+	// application", then every later player fails). A plain player cannot change its intensity
+	// once started, so a held level is a train of short overlapping buzzes, each started at the
+	// level asked for at that moment.
 	Level = FMath::Clamp(Level, 0.f, 1.f);
+	const double Now = FPlatformTime::Seconds();
+	if (Level <= 0.f)
+	{
+		return; // the last buzz ends by itself within kBuzzSeconds
+	}
 	if (!bNativeReady)
 	{
-		const double Now = FPlatformTime::Seconds();
-		if (Level <= 0.f || Now < NextRetrySeconds)
+		if (Now < NextRetrySeconds)
 		{
-			return; // nothing to play, or a recent start failed -- do not hammer the framework
+			return;
 		}
 		NextRetrySeconds = Now + kRetryEverySeconds;
 		bNativeReady = StartNative();
-		LastLevel = -1.f;
 		if (!bNativeReady)
 		{
 			return;
 		}
 	}
-	if (FMath::Abs(Level - LastLevel) < 0.01f)
+	if (Now < NextBuzzSeconds)
 	{
 		return;
 	}
+	NextBuzzSeconds = Now + kBuzzEverySeconds;
 
 	@autoreleasepool
 	{
-		id<CHHapticAdvancedPatternPlayer> Player = (id<CHHapticAdvancedPatternPlayer>)HapticPlayer;
-		CHHapticDynamicParameter* Param = [[[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl value:Level relativeTime:0] autorelease];
+		CHHapticEngine* Engine = (CHHapticEngine*)HapticEngine;
+		CHHapticEventParameter* Intensity = [[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:Level] autorelease];
+		CHHapticEventParameter* Sharpness = [[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:kSharpness] autorelease];
+		CHHapticEvent* Event = [[[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
+		                                                      parameters:@[Intensity, Sharpness]
+		                                                    relativeTime:0
+		                                                        duration:kBuzzSeconds] autorelease];
 		NSError* Error = nil;
-		if (![Player sendParameters:@[Param] atTime:CHHapticTimeImmediate error:&Error])
+		CHHapticPattern* Pattern = [[[CHHapticPattern alloc] initWithEvents:@[Event] parameters:@[] error:&Error] autorelease];
+		id<CHHapticPatternPlayer> Player = Pattern ? [Engine createPlayerWithPattern:Pattern error:&Error] : nil;
+		if (Player == nil || ![Player startAtTime:CHHapticTimeImmediate error:&Error])
 		{
-			// Usually the pad disconnected or the engine was stopped by the system. Start again later.
-			UE_LOG(LogOverboardRumble, Log, TEXT("PadRumble: lost the haptic engine (%s); will retry."), Error ? *FString(Error.localizedDescription) : TEXT("unknown"));
+			// Usually the pad disconnected or the system stopped the engine. Start again later.
+			UE_LOG(LogOverboardRumble, Log, TEXT("PadRumble: buzz failed (%s); will retry."), Error ? *FString(Error.localizedDescription) : TEXT("unknown"));
 			StopNative();
-			return;
 		}
 	}
-	LastLevel = Level;
 }
 
 #else // !PLATFORM_MAC

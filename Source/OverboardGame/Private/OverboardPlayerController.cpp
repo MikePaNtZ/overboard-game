@@ -19,6 +19,7 @@
 #include "EngineUtils.h"
 #include "HAL/PlatformTime.h"
 #include "UnrealClient.h"
+#include <stdio.h>
 #include "Components/SkeletalMeshComponent.h"
 #include "Logging/LogMacros.h"
 #include "Misc/CommandLine.h"
@@ -70,6 +71,22 @@ void AOverboardPlayerController::BeginPlay()
 	}
 
 	SpawnCourseElements();
+
+	FString RideLogPath;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ObRideLog="), RideLogPath))
+	{
+		RideLog = fopen(TCHAR_TO_UTF8(*RideLogPath), "w");
+		if (RideLog)
+		{
+			fprintf(RideLog, "t_s,pad_lean,pad_steer,l2,sent_fore_aft,sent_steer,arm,reset,x_m,y_m,speed_mps,pitch_rad,yaw_rad,current_a,flags,handoff\n");
+			RideLogStartSeconds = FPlatformTime::Seconds();
+			UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController: ride log to %s"), *RideLogPath);
+		}
+	}
+
+	// -ObRiderSkill=raw: the old direct stick-to-body mapping, with no rider body layer.
+	FString Skill;
+	bRawRider = FParse::Value(FCommandLine::Get(), TEXT("ObRiderSkill="), Skill) && Skill.Equals(TEXT("raw"), ESearchCase::IgnoreCase);
 
 	if (FParse::Param(FCommandLine::Get(), TEXT("ObDemoRider")))
 	{
@@ -145,6 +162,11 @@ void AOverboardPlayerController::SpawnCourseElements()
 void AOverboardPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	Rumble.Shutdown();
+	if (RideLog)
+	{
+		fclose(RideLog);
+		RideLog = nullptr;
+	}
 	if (Recorder)
 	{
 		Recorder->Finish();
@@ -482,6 +504,25 @@ void AOverboardPlayerController::ProbeWipeout(const ABoardActor* Board)
 		RiderPos.X, RiderPos.Y, RiderPos.Z, RiderSpeed);
 }
 
+void AOverboardPlayerController::WriteRideLog(float SentForeAft, float SentSteer)
+{
+	// -ObRideLog=<csv>: one row per frame, so a ride can be diagnosed afterwards (what the thumbs
+	// did, what the rider body sent, what the board did). Read-only.
+	if (!RideLog)
+	{
+		return;
+	}
+	OverboardWire::FBoardState State;
+	const ABoardActor* Board = FindBoard();
+	const bool bHave = Board && Board->GetLatestState(State);
+	fprintf(RideLog, "%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%.3f,%.3f,%.3f,%.4f,%.4f,%.2f,%u,%d\n",
+		FPlatformTime::Seconds() - RideLogStartSeconds, PadLean, PadSteer, TailBrake, SentForeAft, SentSteer,
+		bArmHeld ? 1 : 0, bResetHeld ? 1 : 0,
+		bHave ? State.Pos[0] : 0.f, bHave ? State.Pos[1] : 0.f, bHave ? State.WheelRateRadS * 0.146f : 0.f,
+		bHave ? State.PitchRad : 0.f, bHave ? State.YawRad : 0.f, bHave ? State.MotorCurrentA : 0.f,
+		bHave ? static_cast<unsigned>(State.Flags) : 0u, Board && Board->IsPhysicsHandoff() ? 1 : 0);
+}
+
 void AOverboardPlayerController::UpdateRumble(const ABoardActor* Board)
 {
 	const double Now = FPlatformTime::Seconds();
@@ -542,7 +583,27 @@ void AOverboardPlayerController::SendInputPacket(float DeltaTime)
 	SmoothedKeySteer = FMath::FInterpTo(SmoothedKeySteer, KeySteer, DeltaTime, KeyboardRampSpeed);
 
 	float ForeAft = FMath::Clamp(bDemoOverride ? DemoForeAft : ShapeLean(PadLean) + SmoothedKeyLean, -1.f, 1.f);
-	const float Steer = FMath::Clamp(bDemoOverride ? DemoSteer : ShapeSteer(PadSteer) + SmoothedKeySteer, -1.f, 1.f);
+	float Steer = FMath::Clamp(bDemoOverride ? DemoSteer : ShapeSteer(PadSteer) + SmoothedKeySteer, -1.f, 1.f);
+
+	// The rider's body (not the demo, not -ObRiderSkill=raw). A thumb moves a stick end to end in
+	// ~50 ms; a rider shifts weight over ~0.6 s and swings the hips over ~0.4 s, and carves less
+	// sharply at speed. Without this, every thumb twitch at 8 m/s reached the board at once and
+	// the carve felt twitchy (Mike, first ride, 2026-10-05). Input only: no board physics here.
+	if (!bDemoOverride && !bRawRider)
+	{
+		float SpeedMps = 0.f;
+		OverboardWire::FBoardState State;
+		if (const ABoardActor* Board = FindBoard(); Board && Board->GetLatestState(State))
+		{
+			SpeedMps = FMath::Abs(State.WheelRateRadS) * 0.146f;
+		}
+		const float SpeedScale = FMath::GetMappedRangeValueClamped(FVector2f(CarveFullBelowMps, CarveHalfAboveMps), FVector2f(1.f, 0.5f), SpeedMps);
+		Steer *= SpeedScale;
+		BodySteer = FMath::FInterpConstantTo(BodySteer, Steer, DeltaTime, CarveRatePerS);
+		BodyLean = FMath::FInterpConstantTo(BodyLean, ForeAft, DeltaTime, LeanRatePerS);
+		ForeAft = BodyLean;
+		Steer = BodySteer;
+	}
 
 	// Tail brake (L2): fore_aft = min(stick, -L2). A full pull is always -1, whatever the stick.
 	const float BrakeTravel = FMath::Clamp(TailBrake, 0.f, 1.f);
@@ -550,10 +611,18 @@ void AOverboardPlayerController::SendInputPacket(float DeltaTime)
 	{
 		const float Brake = (BrakeTravel - TriggerDeadzone) / (1.f - TriggerDeadzone);
 		ForeAft = FMath::Min(ForeAft, -Brake);
+		if (!bDemoOverride && !bRawRider)
+		{
+			// A hard lean back is a fast, deliberate move: let the brake lead the body, and do not
+			// let the body lag pull the lean forward again when L2 is released.
+			BodyLean = FMath::Min(BodyLean, FMath::FInterpConstantTo(BodyLean, -Brake, DeltaTime, BrakeRatePerS));
+			ForeAft = FMath::Min(ForeAft, BodyLean);
+		}
 	}
 
 	LastSentForeAft = ForeAft;
 	LastSentSteer = Steer;
+	WriteRideLog(ForeAft, Steer);
 
 	if (!SendSocket || !HostAddr.IsValid())
 	{
