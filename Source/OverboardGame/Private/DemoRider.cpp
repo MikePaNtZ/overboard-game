@@ -57,6 +57,8 @@ FDemoRider::FDemoRider()
 	// -ObDemoQuickRestart: the old fast pull-away after the tail stop (1.5 s ease-off, 3 s
 	// settle), kept as the controls track's regression case for the nose strike on pull-away.
 	bQuickRestart = FParse::Param(FCommandLine::Get(), TEXT("ObDemoQuickRestart"));
+	// -ObDemoFullBrake: a full L2 pull in the stop box (the tail tip-over test case).
+	bFullBrake = FParse::Param(FCommandLine::Get(), TEXT("ObDemoFullBrake"));
 }
 
 FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHaveState, const OverboardWire::FBoardState& State,
@@ -137,7 +139,7 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 		// limit (reported to the controls track).
 		// Ease the brake as the board slows: at walking speed a firm tail drag lets the motor drive
 		// the board over its tail pivot (controls track).
-		Out.TailBrake = static_cast<float>(FMath::Clamp(0.25 + 0.2 * FMath::Abs(V), 0.25, 0.6));
+		Out.TailBrake = bFullBrake ? 1.f : static_cast<float>(FMath::Clamp(0.25 + 0.2 * FMath::Abs(V), 0.25, 0.6));
 		if (FMath::Abs(V) < 0.15 && T > 0.5) { Enter(EPhase::Hold, Seconds); }
 		break;
 	case EPhase::Hold:

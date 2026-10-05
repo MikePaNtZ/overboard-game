@@ -83,7 +83,21 @@ and the game records its own viewport (`-ObRecordVideo`, 720p, 30 fps, VideoTool
 Take of 2026-10-04 (sim 400ee0f): 4/4 flags, 14.6 mph, tail stop, finish 82.5 s, 1 600 points,
 96.5 % unique frames. Tailnet: https://mikes-macbook-pro.tail2cbb82.ts.net:8448/game/overboard-demo-full-2026-10-04.mp4
 
+## Wipeouts (ADR-0012 ragdoll vs MuJoCo)
+
+`tools/play/wipeouts/run_wipeout.sh <case>` replays a MuJoCo wipeout (controls track reference,
+`tools/play/wipeouts/reference/`) into the game over the normal wire and compares rest points.
+Rider rest point vs MuJoCo (2026-10-04): carve_fall 1.4 m, kerb_hit 0.8 m, nosedive 0.5 m
+(target <= 2 m; a second crash after a reset: 0.7 m). Board: 2-5 m. The MetaHuman ragdolls.
+
 ## Open faults and next
+
+- Step-off at low speed: MuJoCo's rider steps 0.5 m to the side; the game ragdolls it. A step-off
+  animation is next.
+- The board's rest point in a nosedive is 3-5 m short (its nose sticks at the strike point).
+- Balance gains e39e8ff (Kp 420): the tail no longer drags under a full lean back, so braking is
+  weak (~1.2 m/s^2) and the board cannot stop in the stop box. Reported to controls; the game
+  stays on e487142.
 
 - Pull-away after a tail-brake stop (controls). `-ObDemoQuickRestart` 3-ride test:
   8add160: a nose strike in 3/3; e487142 (pad mode): 0 nose strikes. The remaining falls were

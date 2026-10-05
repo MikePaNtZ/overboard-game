@@ -273,6 +273,8 @@ protected:
 	TWeakObjectPtr<USkeletalMeshComponent> RagdollBody;
 	TWeakObjectPtr<USceneComponent> RagdollSavedParent;
 	FTransform RagdollSavedRelative;
+	TEnumAsByte<ECollisionResponse> SavedRiderToBoardResponse = ECR_Block;
+	TEnumAsByte<ECollisionResponse> SavedBoardToRiderResponse = ECR_Block;
 	UPROPERTY(Transient)
 	TObjectPtr<class UPhysicalMaterial> RiderSlideMaterial;
 	UPROPERTY(Transient)

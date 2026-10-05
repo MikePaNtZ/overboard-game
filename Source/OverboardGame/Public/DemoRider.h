@@ -46,6 +46,7 @@ private:
 	double StalledSeconds = 0.0;
 	int32 SmoothFrames = 0;
 	bool bQuickRestart = false;
+	bool bFullBrake = false;
 	bool bFellInRide = false;
 	int32 Retries = 0;
 	double LastLog = -1.0;

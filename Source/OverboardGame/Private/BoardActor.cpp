@@ -1077,6 +1077,8 @@ void ABoardActor::OnPhysicsHandoffBegan(const FVector& BoardLinearVelocityCmS)
 	// solver's push-apart launched the rider 1.6 m up and far down the street.
 	if (UPrimitiveComponent* Sim = GetSimulatedBodyComponent())
 	{
+		SavedRiderToBoardResponse = Body->GetCollisionResponseToChannel(Sim->GetCollisionObjectType());
+		SavedBoardToRiderResponse = Sim->GetCollisionResponseToChannel(Body->GetCollisionObjectType());
 		Body->SetCollisionResponseToChannel(Sim->GetCollisionObjectType(), ECR_Ignore);
 		Sim->SetCollisionResponseToChannel(Body->GetCollisionObjectType(), ECR_Ignore);
 	}
@@ -1127,6 +1129,12 @@ void ABoardActor::OnPhysicsHandoffEnded()
 	}
 	Body->SetAllBodiesSimulatePhysics(false);
 	Body->SetPhysMaterialOverride(nullptr);
+	// Restore the rider/board responses, so a second crash starts from the same state as the first.
+	if (UPrimitiveComponent* Sim = GetSimulatedBodyComponent())
+	{
+		Body->SetCollisionResponseToChannel(Sim->GetCollisionObjectType(), SavedRiderToBoardResponse);
+		Sim->SetCollisionResponseToChannel(Body->GetCollisionObjectType(), SavedBoardToRiderResponse);
+	}
 	Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Body->SetEnableGravity(false);
 	if (USceneComponent* Parent = RagdollSavedParent.Get())
@@ -1779,6 +1787,10 @@ void ABoardActor::UpdateRenderRider()
 	if (!bHaveLatestState)
 	{
 		return;
+	}
+	if (RagdollBody.IsValid())
+	{
+		return; // ADR-0012 wipeout: physics owns the body until the reset (OnPhysicsHandoffEnded)
 	}
 	URiderAnimInstance* Inst = Cast<URiderAnimInstance>(RenderBodyMesh->GetAnimInstance());
 	if (!Inst)

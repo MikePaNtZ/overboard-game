@@ -61,6 +61,7 @@ def main():
     ap.add_argument("--lead", type=float, default=2.0, help="seconds of ride before the crash")
     ap.add_argument("--hold", type=float, default=8.0, help="seconds to hold the latch")
     ap.add_argument("--wait", type=float, default=0.0, help="seconds to send the first frame first (game load)")
+    ap.add_argument("--repeat", type=int, default=1, help="crash this many times; the latch clears between (a reset)")
     a = ap.parse_args()
 
     rows = load(a.case)
@@ -81,6 +82,19 @@ def main():
         seq += 1
         time.sleep(0.02)
 
+    for n in range(a.repeat):
+        if n > 0:
+            # The reset: the latch clears and the board is back at the first frame, as after a
+            # sim-host reset; the game ends its handoff and puts the rider back on the deck.
+            t_end = time.perf_counter() + 3.0
+            while time.perf_counter() < t_end:
+                s.sendto(packet(seq, rows[start][0], FLAG_ARMED | FLAG_VALID, p0, q0, (0, 0, 0), (0, 0, 0)), dst)
+                seq += 1
+                time.sleep(0.02)
+        seq = crash(s, dst, seq, rows, start, ho, dt, board, a)
+
+
+def crash(s, dst, seq, rows, start, ho, dt, board, a):
     t0 = time.perf_counter()
     for i in range(start, ho + 1):
         p, q = board(rows[i])
@@ -101,6 +115,7 @@ def main():
         s.sendto(packet(seq, rows[ho][0], FLAG_ARMED | FLAG_VALID | FLAG_HANDOFF | FLAG_FALLEN, p, q, lin, ang), dst)
         seq += 1
         time.sleep(0.02)
+    return seq
 
 
 if __name__ == "__main__":
