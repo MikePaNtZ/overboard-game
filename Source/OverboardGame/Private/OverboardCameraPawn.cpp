@@ -18,7 +18,7 @@ AOverboardCameraPawn::AOverboardCameraPawn()
 	SpringArm->SetRelativeRotation(FRotator(ArmPitchDeg, 0.f, 0.f));
 	SpringArm->bDoCollisionTest = false; // W2: no scene geometry worth colliding the boom against yet
 	SpringArm->bEnableCameraLag = true;
-	SpringArm->CameraLagSpeed = 8.f;
+	SpringArm->CameraLagSpeed = 15.f; // was 8: stacked with the follow lag, too soft for live play
 
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
 	Camera->SetupAttachment(SpringArm, USpringArmComponent::SocketName);

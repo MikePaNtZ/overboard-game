@@ -11,8 +11,8 @@ DEFINE_LOG_CATEGORY_STATIC(LogOverboardHud, Log, All);
 
 namespace
 {
-	constexpr int32 kListenPort = 9603;      // host SENDS the HUD packet here, so we BIND/LISTEN
-	constexpr int32 kRecvBufferBytes = 256;  // the HUD packet is 56 bytes; generous headroom
+	constexpr int32 kHudListenPort = 9603;      // host SENDS the HUD packet here, so we BIND/LISTEN
+	constexpr int32 kHudRecvBufferBytes = 256;  // the HUD packet is 56 bytes; generous headroom
 
 	// Mirrors hud.rs: HUD_MAGIC = b"OBHD" read little-endian, HUD_SCHEMA_VERSION = 1, 56 bytes.
 	constexpr uint32 kHudMagic = static_cast<uint32>('O') | (static_cast<uint32>('B') << 8)
@@ -50,13 +50,13 @@ bool FHudPacketClient::StartListening()
 		.AsNonBlocking()
 		.AsReusable()
 		.BoundToAddress(FIPv4Address(127, 0, 0, 1))
-		.BoundToPort(kListenPort)
+		.BoundToPort(kHudListenPort)
 		.WithReceiveBufferSize(64 * 1024)
 		.Build();
 
 	if (Socket == nullptr)
 	{
-		UE_LOG(LogOverboardHud, Error, TEXT("HudPacketClient: failed to bind 127.0.0.1:%d"), kListenPort);
+		UE_LOG(LogOverboardHud, Error, TEXT("HudPacketClient: failed to bind 127.0.0.1:%d"), kHudListenPort);
 		return false;
 	}
 
@@ -70,7 +70,7 @@ bool FHudPacketClient::StartListening()
 		return false;
 	}
 
-	UE_LOG(LogOverboardHud, Log, TEXT("HudPacketClient: listening on 127.0.0.1:%d"), kListenPort);
+	UE_LOG(LogOverboardHud, Log, TEXT("HudPacketClient: listening on 127.0.0.1:%d"), kHudListenPort);
 	return true;
 }
 
@@ -98,7 +98,7 @@ void FHudPacketClient::Stop()
 uint32 FHudPacketClient::Run()
 {
 	TArray<uint8> Buf;
-	Buf.SetNumUninitialized(kRecvBufferBytes);
+	Buf.SetNumUninitialized(kHudRecvBufferBytes);
 
 	while (!bRequestStop)
 	{

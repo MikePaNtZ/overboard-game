@@ -19,7 +19,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogRideGame, Log, All);
 namespace
 {
 	// The X7 tyre rolling radius (controls track). Speed = |wheel rate| x radius.
-	constexpr double kWheelRadiusM = 0.146;
+	constexpr double kElementsWheelRadiusM = 0.146;
 	// A jump back along the course larger than this is a reset, not a ride.
 	constexpr double kResetJumpM = 5.0;
 	constexpr double kToastSeconds = 2.5;
@@ -318,7 +318,7 @@ void ARideCourseElements::Tick(float DeltaSeconds)
 	}
 	const double S = StartX - State.Pos[0];
 	const double Y = State.Pos[1];
-	const double Speed = FMath::Abs(State.WheelRateRadS) * kWheelRadiusM;
+	const double Speed = FMath::Abs(State.WheelRateRadS) * kElementsWheelRadiusM;
 	// The ride ends at the handoff (bit 4). Bit 2 alone is |pitch| > 20 deg, which a tail-brake
 	// stop reaches on purpose.
 	const bool bDown = Board->IsPhysicsHandoff();

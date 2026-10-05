@@ -115,7 +115,7 @@ namespace
 	constexpr float kMarginEdgeAlpha0 = 0.35f, kMarginEdgeAlpha1 = 0.9f;
 
 	// live-source constants (task spec)
-	constexpr float kWheelRadiusM = 0.146f;       // speed_mph = |wheel_rate| x radius, in mph
+	constexpr float kHudWheelRadiusM = 0.146f;       // speed_mph = |wheel_rate| x radius, in mph
 	constexpr float kMsToMph = 2.2369363f;
 	constexpr float kMotorKt = 0.658f;            // torque = Kt x current
 	constexpr float kMotorCurrentLimitA = 90.f;   // torque limit = Kt x 90 A
@@ -375,7 +375,7 @@ void AOverboardHUD::DrawRiderCues(const ABoardActor& Board)
 	// --- live values ----------------------------------------------------------------------------
 	OverboardWire::FBoardState State;
 	const bool bHaveState = Board.GetLatestState(State);
-	const float RawSpeedMph = bHaveState ? FMath::Abs(State.WheelRateRadS) * kWheelRadiusM * kMsToMph : 0.f;
+	const float RawSpeedMph = bHaveState ? FMath::Abs(State.WheelRateRadS) * kHudWheelRadiusM * kMsToMph : 0.f;
 	const float RawTorqueNm = bHaveState ? kMotorKt * State.MotorCurrentA : 0.f;
 	const float TorqueLimitNm = kMotorKt * kMotorCurrentLimitA;
 

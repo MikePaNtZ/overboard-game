@@ -1,13 +1,15 @@
 #include "DemoRider.h"
 
 #include "RideCourseElements.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogDemoRider, Log, All);
 
 namespace
 {
 	constexpr double kStartX = 90.0;        // city_hill: s = 90 - MuJoCo x
-	constexpr double kWheelRadiusM = 0.146;
+	constexpr double kDemoWheelRadiusM = 0.146;
 	constexpr double kKappaMax = 0.25;      // lean-steer full-stick curvature, 1/m (sim-host)
 	constexpr double kLookaheadM = 4.0;
 	constexpr double kStopBoxEnterS = 90.5;
@@ -50,6 +52,13 @@ double FDemoRider::TargetSpeed(double S)
 	return 2.5;                              // crest
 }
 
+FDemoRider::FDemoRider()
+{
+	// -ObDemoQuickRestart: the old fast pull-away after the tail stop (1.5 s ease-off, 3 s
+	// settle), kept as the controls track's regression case for the nose strike on pull-away.
+	bQuickRestart = FParse::Param(FCommandLine::Get(), TEXT("ObDemoQuickRestart"));
+}
+
 FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHaveState, const OverboardWire::FBoardState& State,
 	bool bDown, const FRideGameReadout* Readout)
 {
@@ -60,7 +69,7 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 	}
 	const double S = kStartX - State.Pos[0];
 	const double Y = State.Pos[1];
-	const double V = State.WheelRateRadS * kWheelRadiusM; // positive = forward
+	const double V = State.WheelRateRadS * kDemoWheelRadiusM; // positive = forward
 	const double T = Seconds - PhaseStart;
 
 	auto RideControl = [&](double TargetV)
@@ -105,11 +114,15 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 	switch (Phase)
 	{
 	case EPhase::Wait:
-		if (Seconds > 2.5) { Enter(EPhase::Arm, Seconds); }
+		// Arm only once the game runs smoothly: while it loads it can run at ~1 fps, and a short
+		// arm press then falls between two frames and never reaches the sim.
+		SmoothFrames = DeltaSeconds < 0.1f ? SmoothFrames + 1 : 0;
+		if (Seconds > 2.5 && SmoothFrames >= 30) { Enter(EPhase::Arm, Seconds); }
 		break;
 	case EPhase::Arm:
-		Out.bArm = T < 0.3;
-		if (T > 0.5) { Enter(EPhase::Ride, Seconds); }
+		// Hold Cross until the sim releases the board (it moves), or 2 s at most.
+		Out.bArm = true;
+		if ((T > 0.3 && FMath::Abs(V) > 0.05) || T > 2.0) { Enter(EPhase::Ride, Seconds); }
 		break;
 	case EPhase::Ride:
 		RideControl(TargetSpeed(S));
@@ -128,8 +141,11 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 	case EPhase::Hold:
 		// Stand on the brake for a moment, then ease off over 2 s: a sudden release swings the
 		// nose down and starts a rock that the 10 cm reach makes worse.
-		Out.TailBrake = static_cast<float>(0.25 * FMath::Clamp(1.0 - T / 1.5, 0.0, 1.0));
-		if (T > 3.0) { SpeedIntegral = 0.f; RampedTargetV = 0.0; Enter(EPhase::Ride2, Seconds); }
+		// Ease off the tail over 3 s and let the board settle before pulling away: a quick
+		// restart from a tail-down stop ended in a nose strike every time (reported to controls).
+		Out.TailBrake = static_cast<float>(0.25 * FMath::Clamp(1.0 - T / (bQuickRestart ? 1.5 : 3.0), 0.0, 1.0));
+		Out.Lean = bQuickRestart ? 0.f : -0.05f;
+		if (T > (bQuickRestart ? 3.0 : 7.0)) { SpeedIntegral = 0.f; RampedTargetV = 0.0; FilteredV = 0.0; Enter(EPhase::Ride2, Seconds); }
 		break;
 	case EPhase::Ride2:
 		RideControl(TargetSpeed(S));

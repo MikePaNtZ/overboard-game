@@ -31,6 +31,7 @@ struct FDemoPadOutput
 class OVERBOARDGAME_API FDemoRider
 {
 public:
+	FDemoRider();
 	// Seconds = time since the demo started. bDown = fallen or in a handoff.
 	FDemoPadOutput Update(double Seconds, float DeltaSeconds, bool bHaveState, const OverboardWire::FBoardState& State,
 		bool bDown, const FRideGameReadout* Readout);
@@ -43,6 +44,8 @@ private:
 	double RampedTargetV = 0.0;
 	double FilteredV = 0.0;
 	double StalledSeconds = 0.0;
+	int32 SmoothFrames = 0;
+	bool bQuickRestart = false;
 	bool bFellInRide = false;
 	int32 Retries = 0;
 	double LastLog = -1.0;

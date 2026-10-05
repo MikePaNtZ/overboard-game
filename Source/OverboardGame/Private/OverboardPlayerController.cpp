@@ -374,7 +374,10 @@ void AOverboardPlayerController::PlayerTick(float DeltaTime)
 		if (!Recorder)
 		{
 			Recorder = MakeUnique<FGameVideoRecorder>();
-			if (!Recorder->Start(RecordVideoPath, RecordFps))
+			FIntPoint VideoSize(1280, 720);
+			FParse::Value(FCommandLine::Get(), TEXT("ObRecordW="), VideoSize.X);
+			FParse::Value(FCommandLine::Get(), TEXT("ObRecordH="), VideoSize.Y);
+			if (!Recorder->Start(RecordVideoPath, RecordFps, VideoSize))
 			{
 				RecordVideoPath.Reset();
 			}
