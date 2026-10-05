@@ -47,6 +47,9 @@ private:
 	int32 SmoothFrames = 0;
 	bool bQuickRestart = false;
 	bool bFullBrake = false;
+	bool bCarveTest = false;
+	double CarvePeakSpeed = 0.0;
+	bool bCarveRight = true;
 	bool bFellInRide = false;
 	int32 Retries = 0;
 	double LastLog = -1.0;

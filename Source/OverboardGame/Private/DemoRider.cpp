@@ -61,6 +61,12 @@ FDemoRider::FDemoRider()
 	bQuickRestart = !FParse::Param(FCommandLine::Get(), TEXT("ObDemoSlowRestart"));
 	// -ObDemoFullBrake: a full L2 pull in the stop box (the tail tip-over test case).
 	bFullBrake = FParse::Param(FCommandLine::Get(), TEXT("ObDemoFullBrake"));
+	// -ObDemoCarveTest (INCONCLUSIVE as a test, 2026-10-05: on the 15 % descent the demo cannot hold
+	// 6 m/s with its lean caps and drifts to the street edge; kept for a flatter level): the whole descent at a target of 6.5 m/s (8 m/s is the pushback limit on 15 %:
+	// a nosedive whatever the carve), and from s 40 m to the
+	// end of the speed trap, carve reversals every 1.5 s at the game's 0.4 g cap (the 6-8 m/s
+	// carve check for the controls track's carving model).
+	bCarveTest = FParse::Param(FCommandLine::Get(), TEXT("ObDemoCarveTest"));
 }
 
 FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHaveState, const OverboardWire::FBoardState& State,
@@ -103,7 +109,7 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 		// Gains halved for the 10 cm reach (controls track: one stick unit now moves the rider twice
 		// as far, so the old gains made the demo's own speed loop rock the board).
 		Out.Lean = FMath::Clamp(0.11f * Err + 0.04f * SpeedIntegral, -LeanCap, LeanCap);
-		if (S >= kSpeedTrapS0 && S < kSpeedTrapS1)
+		if (S >= kSpeedTrapS0 && S < kSpeedTrapS1 && !bCarveTest)
 		{
 			// Top-speed run: commit a steady forward lean, as a rider tucks in.
 			Out.Lean = FMath::Clamp(0.35f + 0.11f * Err, -LeanCap, LeanCap);
@@ -117,12 +123,27 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 		// Carve along the line by pure pursuit. Heading: yaw positive = left, so the rightward
 		// heading angle is -yaw; positive steer turns right.
 		const double Ahead = FMath::Max(kLookaheadM, 1.2 * FMath::Abs(V));
-		const double Theta = FMath::Atan2(TargetY(S + Ahead) - Y, Ahead);
+		// Carve test: a straight line; the only carving is the timed reversals below (the slalom
+		// line at 6-7 m/s needs far more than 0.4 g and is not what the test checks).
+		const double LineY = bCarveTest ? 0.0 : TargetY(S + Ahead);
+		const double Theta = FMath::Atan2(LineY - Y, Ahead);
 		const double Alpha = Theta + State.YawRad;
 		const double Kappa = 2.0 * FMath::Sin(Alpha) / Ahead;
 		// At most 0.6 stick: full steer at 3-4 m/s on the 15 % descent is past the carve limit and
 		// rolls the board over (controls track, same in every sim build).
 		Out.Steer = static_cast<float>(FMath::Clamp(Kappa / kKappaMax, -0.6, 0.6));
+		if (bCarveTest && S >= 40.0 && S < kSpeedTrapS1)
+		{
+			// Same cap as the rider body: 0.4 g of the sim's full-stick curvature min(0.25, 0.6 g / v^2).
+			const double V2 = FMath::Max(V * V, 0.01);
+			const double Cap = FMath::Min(1.0, (0.4 * 9.81 / V2) / FMath::Min(0.25, 0.6 * 9.81 / V2));
+			// Reverse on position, not on a timer (a timer drifted the board into the kerb at
+			// y = 6 m): carve right until 1.5 m right of the centre line, then left, and so on.
+			if (Y > 1.0) { bCarveRight = false; }
+			if (Y < -1.0) { bCarveRight = true; }
+			Out.Steer = static_cast<float>(bCarveRight ? Cap : -Cap);
+			CarvePeakSpeed = FMath::Max(CarvePeakSpeed, V);
+		}
 	};
 
 	switch (Phase)
@@ -139,7 +160,7 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 		if ((T > 0.3 && FMath::Abs(V) > 0.05) || T > 2.0) { Enter(EPhase::Ride, Seconds); }
 		break;
 	case EPhase::Ride:
-		RideControl(TargetSpeed(S));
+		RideControl(bCarveTest && S < kSpeedTrapS1 ? (S < 8.0 ? 2.5 : 6.0) : TargetSpeed(S));
 		if (bDown) { bFellInRide = true; Enter(EPhase::Down, Seconds); }
 		else if (S >= kStopBoxEnterS) { Enter(EPhase::StopBox, Seconds); }
 		break;
