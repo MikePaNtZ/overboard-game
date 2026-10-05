@@ -86,7 +86,10 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 		const double A = 1.0 - FMath::Exp(-DeltaSeconds / 0.25);
 		FilteredV += A * (V - FilteredV);
 		const float Err = static_cast<float>(RampedTargetV - FilteredV);
-		SpeedIntegral = FMath::Clamp(SpeedIntegral + Err * DeltaSeconds, -3.f, 3.f);
+		// No windup at a standstill: a board held still (on its pad, or settling) must not meet a
+		// lean that grew while it stood.
+		const float IntegralCap = FMath::Abs(V) < 0.3 ? 0.5f : 3.f;
+		SpeedIntegral = FMath::Clamp(SpeedIntegral + Err * DeltaSeconds, -IntegralCap, IntegralCap);
 		// In the speed trap the board is already rolling, so the rider commits more weight.
 		const bool bClimb = S >= 112.0 && S < 167.0;
 		const float LeanCap = (S >= kSpeedTrapS0 && S < kSpeedTrapS1) ? 0.5f : (bClimb ? 0.35f : 0.3f);
