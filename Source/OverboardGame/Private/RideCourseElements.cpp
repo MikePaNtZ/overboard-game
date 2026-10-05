@@ -435,10 +435,14 @@ void ARideCourseElements::Tick(float DeltaSeconds)
 			{
 				break;
 			}
+			// The tail drag starts on the approach: count it from 8 m before the box.
+			if (S >= E.S0 - 8.0 && S <= E.S1)
+			{
+				E.bTailSeen |= State.PitchRad > E.TailPitchRad; // nose up = tail pad down
+			}
 			if (bInside && FMath::Abs(Y) <= E.HalfWidth)
 			{
 				Readout.ZoneLabel = E.Label;
-				E.bTailSeen |= State.PitchRad > E.TailPitchRad; // nose up = tail pad down
 				if (Speed < E.StopSpeed)
 				{
 					E.bDone = true;

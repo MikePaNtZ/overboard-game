@@ -1,0 +1,6 @@
+# type,id,x_m,y_m,lx_m,ly_m,lz_m,yaw_deg  (from /Users/mike/projects/overboard-game-play/tools/play/elements/city_hill.json)
+cone,cone1,-9.000,0.000,0.3,0.3,0.45,0.0
+cone,cone2,-14.000,1.600,0.3,0.3,0.45,0.0
+cone,cone3,-19.000,0.400,0.3,0.3,0.45,0.0
+cone,cone4,-23.000,1.800,0.3,0.3,0.45,0.0
+debris,debris1,-40.000,2.200,0.8,0.5,0.12,20.0
