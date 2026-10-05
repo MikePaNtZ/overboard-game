@@ -96,10 +96,6 @@ protected:
 	float CarveRatePerS = 5.0f;  // full carve one way to the other in ~0.4 s
 	UPROPERTY(EditAnywhere, Category = "Board|Rider body")
 	float BrakeRatePerS = 8.0f;  // a hard lean back (L2) is fast
-	UPROPERTY(EditAnywhere, Category = "Board|Rider body")
-	float CarveFullBelowMps = 3.0f;
-	UPROPERTY(EditAnywhere, Category = "Board|Rider body")
-	float CarveHalfAboveMps = 8.0f;
 
 	// Rumble levels, 0..1.
 	UPROPERTY(EditAnywhere, Category = "Board|Rumble")

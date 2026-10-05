@@ -25,10 +25,12 @@ void FDemoRider::Enter(EPhase Next, double Seconds)
 }
 
 // The line through the slalom: 0.4 m outside each flag (flags at |y| = 1.8 m, alternating).
+// Then onto y = -1.2 m before the stop box: a pull-away at ~1 m/s barely carves, and the old line
+// (moving over after the box) rode into cone 1 at (s 99, y 0).
 double FDemoRider::TargetY(double S)
 {
 	static const double Pts[][2] = {
-		{ 0.0, 0.0 }, { 12.0, 0.0 }, { 20.0, 2.2 }, { 30.0, -2.2 }, { 40.0, 2.2 }, { 50.0, -2.2 }, { 58.0, 0.0 }, { 94.0, 0.0 }, { 97.0, -1.2 }, { 112.0, -1.2 }, { 116.0, 0.0 }, { 400.0, 0.0 },
+		{ 0.0, 0.0 }, { 12.0, 0.0 }, { 20.0, 2.2 }, { 30.0, -2.2 }, { 40.0, 2.2 }, { 50.0, -2.2 }, { 58.0, 0.0 }, { 78.0, 0.0 }, { 86.0, -1.2 }, { 112.0, -1.2 }, { 116.0, 0.0 }, { 400.0, 0.0 },
 	};
 	for (int32 i = 1; i < UE_ARRAY_COUNT(Pts); ++i)
 	{
