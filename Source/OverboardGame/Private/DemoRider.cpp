@@ -86,7 +86,10 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 		const double A = 1.0 - FMath::Exp(-DeltaSeconds / 0.25);
 		FilteredV += A * (V - FilteredV);
 		const float Err = static_cast<float>(RampedTargetV - FilteredV);
-		SpeedIntegral = FMath::Clamp(SpeedIntegral + Err * DeltaSeconds, -3.f, 3.f);
+		// No windup at a standstill: a board held still (on its pad, or settling) must not meet a
+		// lean that grew while it stood.
+		const float IntegralCap = FMath::Abs(V) < 0.3 ? 0.5f : 3.f;
+		SpeedIntegral = FMath::Clamp(SpeedIntegral + Err * DeltaSeconds, -IntegralCap, IntegralCap);
 		// In the speed trap the board is already rolling, so the rider commits more weight.
 		const bool bClimb = S >= 112.0 && S < 167.0;
 		const float LeanCap = (S >= kSpeedTrapS0 && S < kSpeedTrapS1) ? 0.5f : (bClimb ? 0.35f : 0.3f);
@@ -160,8 +163,10 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 		else if (S >= kFinishS + 2.0) { Enter(EPhase::AfterFinish, Seconds); }
 		break;
 	case EPhase::AfterFinish:
-		RideControl(0.0); // ease to a stop on the crest
-		if (T > 3.0) { Enter(EPhase::Kick, Seconds); }
+		// Stop on the short crest before the fall test, or the wipeout slides off the street end.
+		RideControl(0.0);
+		Out.TailBrake = FMath::Abs(V) > 0.3 ? 0.6f : 0.f;
+		if ((FMath::Abs(V) < 0.3 && T > 1.0) || T > 6.0) { Enter(EPhase::Kick, Seconds); }
 		break;
 	case EPhase::Kick:
 		Out.bKick = T < 0.1; // the fall test: one disturbance, then the board goes over
