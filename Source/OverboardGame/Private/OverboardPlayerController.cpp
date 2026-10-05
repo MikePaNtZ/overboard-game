@@ -459,8 +459,11 @@ void AOverboardPlayerController::ProbeWipeout(const ABoardActor* Board)
 	{
 		if (const USkeletalMeshComponent* Sk = Cast<USkeletalMeshComponent>(P))
 		{
-			// A ragdoll simulates from the pelvis down; its root bone does not, so ask "any".
-			if (!Sk->IsAnySimulatingPhysics())
+			// A ragdoll simulates from the pelvis down (its root bone does not, so ask "any"); a
+			// rider who stepped off does not simulate but is detached from the board.
+			const bool bRagdoll = Sk->IsAnySimulatingPhysics();
+			const bool bSteppedOff = !bRagdoll && Sk->IsVisible() && Sk->GetAttachParent() == nullptr && Sk->GetNumBones() > 0;
+			if (!bRagdoll && !bSteppedOff)
 			{
 				continue;
 			}
