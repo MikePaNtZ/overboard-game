@@ -77,6 +77,7 @@ namespace
 	const TCHAR* kStepOffLeftAnim = TEXT("/Game/MetaHumans/Skater/Anims/StepOff/MF_Unarmed_Walk_Left_MH.MF_Unarmed_Walk_Left_MH");
 	const TCHAR* kStepOffRightAnim = TEXT("/Game/MetaHumans/Skater/Anims/StepOff/MF_Unarmed_Walk_Right_MH.MF_Unarmed_Walk_Right_MH");
 	const TCHAR* kStepOffIdleAnim = TEXT("/Game/MetaHumans/Skater/Anims/StepOff/MM_Idle_MH.MM_Idle_MH");
+	constexpr float kBoardHandoffLiftCm = 8.f;
 	// Cap on the solver's push-apart speed for a ragdoll body that starts inside the street.
 	constexpr float kRiderMaxDepenetrationCmS = 100.0f;
 
@@ -1038,6 +1039,9 @@ void ABoardActor::OnPhysicsHandoffBegan(const FVector& BoardLinearVelocityCmS)
 		{
 			BI->SetMaxDepenetrationVelocity(kRiderMaxDepenetrationCmS);
 		}
+		// Start it clear of the street: in a nosedive the nose box starts inside the asphalt and
+		// stuck there (the board came to rest 3-5 m short of MuJoCo's).
+		Sim->AddWorldOffset(FVector(0.f, 0.f, kBoardHandoffLiftCm), false, nullptr, ETeleportType::TeleportPhysics);
 	}
 
 	// The rider lights follow the board, not the rider; in a crash they would light the street.
