@@ -86,9 +86,11 @@ Take of 2026-10-04 (sim 400ee0f): 4/4 flags, 14.6 mph, tail stop, finish 82.5 s,
 ## Open faults and next
 
 - Pull-away after a tail-brake stop (controls). `-ObDemoQuickRestart` 3-ride test:
-  8add160: a nose strike in 3/3; e487142 (pad mode): 0 nose strikes, but 35 deg tilt falls,
-  and new roll falls in the slalom. The demo uses a slow restart (3 s ease-off, 7 s settle).
-  The sim is pinned at 400ee0f until a build passes.
+  8add160: a nose strike in 3/3; e487142 (pad mode): 0 nose strikes. The remaining falls were
+  (a) roll falls in the slalom from FULL steer at 3-4 m/s on 15 %: past the carve limit in every
+  build (c4 reproduced it in 400ee0f), so the demo steers at most 0.6; and (b) a tilt back over
+  the tail at a stop: the rigid rider model (an ankle model is a later controls job).
+  The sim is pinned at e487142.
 - A full L2 stop on the flat tips the board over the tail (rigid rider model; c4). Keep L2 <= 0.6.
 - Only the handoff (bit 4) is a fall in the game; bit 2 is pitch past 20 deg (c4 8ef0a7d also
   stops setting it for a tail drag).

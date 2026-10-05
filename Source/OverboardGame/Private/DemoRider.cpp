@@ -87,7 +87,7 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 		SpeedIntegral = FMath::Clamp(SpeedIntegral + Err * DeltaSeconds, -3.f, 3.f);
 		// In the speed trap the board is already rolling, so the rider commits more weight.
 		const bool bClimb = S >= 112.0 && S < 167.0;
-		const float LeanCap = (S >= kSpeedTrapS0 && S < kSpeedTrapS1) ? 0.5f : (bClimb ? 0.45f : 0.3f);
+		const float LeanCap = (S >= kSpeedTrapS0 && S < kSpeedTrapS1) ? 0.5f : (bClimb ? 0.35f : 0.3f);
 		// Gains halved for the 10 cm reach (controls track: one stick unit now moves the rider twice
 		// as far, so the old gains made the demo's own speed loop rock the board).
 		Out.Lean = FMath::Clamp(0.11f * Err + 0.04f * SpeedIntegral, -LeanCap, LeanCap);
@@ -108,7 +108,9 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 		const double Theta = FMath::Atan2(TargetY(S + Ahead) - Y, Ahead);
 		const double Alpha = Theta + State.YawRad;
 		const double Kappa = 2.0 * FMath::Sin(Alpha) / Ahead;
-		Out.Steer = static_cast<float>(FMath::Clamp(Kappa / kKappaMax, -1.0, 1.0));
+		// At most 0.6 stick: full steer at 3-4 m/s on the 15 % descent is past the carve limit and
+		// rolls the board over (controls track, same in every sim build).
+		Out.Steer = static_cast<float>(FMath::Clamp(Kappa / kKappaMax, -0.6, 0.6));
 	};
 
 	switch (Phase)
