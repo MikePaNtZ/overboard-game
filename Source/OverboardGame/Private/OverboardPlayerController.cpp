@@ -591,17 +591,20 @@ void AOverboardPlayerController::SendInputPacket(float DeltaTime)
 	// the carve felt twitchy (Mike, first ride, 2026-10-05). Input only: no board physics here.
 	if (!bDemoOverride && !bRawRider)
 	{
+		constexpr float kMaxCarveG = 0.35f;
 		float SpeedMps = 0.f;
 		OverboardWire::FBoardState State;
 		if (const ABoardActor* Board = FindBoard(); Board && Board->GetLatestState(State))
 		{
 			SpeedMps = FMath::Abs(State.WheelRateRadS) * 0.146f;
 		}
-		// Cap the carve by sideways acceleration (controls track): the sim's turn model holds about
-		// 0.2 g, so the commanded curvature is at most min(0.25, 2.0 / v^2) per metre, with 0.25
-		// per metre at full stick. At 3 m/s that is ~0.9 stick, at 8 m/s ~0.12. Past it the
-		// rider's hips run out of reach and the board rolls over (Mike's falls at 6-8 m/s).
-		const float MaxSteer = SpeedMps > 0.1f ? FMath::Min(1.f, (2.0f / (SpeedMps * SpeedMps)) / 0.25f) : 1.f;
+		// Cap the carve by sideways acceleration. Since controls fc30fab (camber steer force-limited
+		// like a motorcycle tyre) full stick asks for 0.6 g at speed and 0.35 g reversals hold at
+		// 8 m/s (controls test); the game allows kMaxCarveG = 0.35 g, the value verified there. Full stick
+		// curvature in the sim: min(0.25 1/m, 0.6 g / v^2), so the stick cap is the ratio.
+		const float V2 = FMath::Max(SpeedMps * SpeedMps, 0.01f);
+		const float FullStickKappa = FMath::Min(0.25f, 0.6f * 9.81f / V2);
+		const float MaxSteer = FMath::Min(1.f, (kMaxCarveG * 9.81f / V2) / FullStickKappa);
 		Steer = FMath::Clamp(Steer, -MaxSteer, MaxSteer);
 		BodySteer = FMath::FInterpConstantTo(BodySteer, Steer, DeltaTime, CarveRatePerS);
 		BodyLean = FMath::FInterpConstantTo(BodyLean, ForeAft, DeltaTime, LeanRatePerS);
