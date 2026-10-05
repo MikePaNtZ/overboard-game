@@ -160,8 +160,10 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 		else if (S >= kFinishS + 2.0) { Enter(EPhase::AfterFinish, Seconds); }
 		break;
 	case EPhase::AfterFinish:
-		RideControl(0.0); // ease to a stop on the crest
-		if (T > 3.0) { Enter(EPhase::Kick, Seconds); }
+		// Stop on the short crest before the fall test, or the wipeout slides off the street end.
+		RideControl(0.0);
+		Out.TailBrake = FMath::Abs(V) > 0.3 ? 0.6f : 0.f;
+		if ((FMath::Abs(V) < 0.3 && T > 1.0) || T > 6.0) { Enter(EPhase::Kick, Seconds); }
 		break;
 	case EPhase::Kick:
 		Out.bKick = T < 0.1; // the fall test: one disturbance, then the board goes over
