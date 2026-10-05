@@ -1256,9 +1256,11 @@ void ABoardActor::OnPhysicsHandoffEnded()
 		}
 		if (RiderMesh && !bRenderRiderActive) { RiderMesh->SetVisibility(true); }
 	}
-	else if (RiderIdleAnim)
+	else if (RiderRidingBlendSpace)
 	{
-		Body->PlayAnimation(RiderIdleAnim, /*bLooping=*/true);
+		// Back to the riding pose (the old code played a standing idle here, so after a reset the
+		// mannequin stood upright on the deck).
+		Body->PlayAnimation(RiderRidingBlendSpace, /*bLooping=*/true);
 	}
 }
 

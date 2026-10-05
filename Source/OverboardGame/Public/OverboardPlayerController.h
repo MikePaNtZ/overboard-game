@@ -89,6 +89,18 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Board|Input", meta = (ClampMin = "0.5", ClampMax = "20.0"))
 	float KeyboardRampSpeed = 3.0f;
 
+	// The rider's body between the pad and the wire (see SendInputPacket). Stick units per second.
+	UPROPERTY(EditAnywhere, Category = "Board|Rider body")
+	float LeanRatePerS = 3.3f;   // full lean back to full forward (2 units) in ~0.6 s
+	UPROPERTY(EditAnywhere, Category = "Board|Rider body")
+	float CarveRatePerS = 5.0f;  // full carve one way to the other in ~0.4 s
+	UPROPERTY(EditAnywhere, Category = "Board|Rider body")
+	float BrakeRatePerS = 8.0f;  // a hard lean back (L2) is fast
+	UPROPERTY(EditAnywhere, Category = "Board|Rider body")
+	float CarveFullBelowMps = 3.0f;
+	UPROPERTY(EditAnywhere, Category = "Board|Rider body")
+	float CarveHalfAboveMps = 8.0f;
+
 	// Rumble levels, 0..1.
 	UPROPERTY(EditAnywhere, Category = "Board|Rumble")
 	float RumblePulsedLevel = 0.55f;
@@ -137,6 +149,12 @@ private:
 	float SmoothedKeySteer = 0.f;
 
 	float LastSentForeAft = 0.f;
+	float BodyLean = 0.f;
+	float BodySteer = 0.f;
+	bool bRawRider = false;
+	FILE* RideLog = nullptr;
+	double RideLogStartSeconds = 0.0;
+	void WriteRideLog(float SentForeAft, float SentSteer);
 	float LastSentSteer = 0.f;
 
 	FSocket* SendSocket = nullptr;

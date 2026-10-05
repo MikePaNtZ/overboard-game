@@ -29,9 +29,14 @@ if ! kill -0 $SIM 2>/dev/null; then
 fi
 echo "sim-host running (pid $SIM, log $LOG). Opening the game..."
 
+# The MetaHuman skater on the X7 board, as in the renders (the game's default is the mannequin),
+# and a per-frame ride log of the last ride for diagnosis (/tmp/overboard-ride.csv).
+LOOK="-ObRenderRider -ObBoardSkin=x7 -ObRideLog=/tmp/overboard-ride.csv"
 if [[ "${1:-}" == "--game" ]]; then
-  "$UE" "$HERE/OverboardGame.uproject" /Game/Maps/OB_CityHill -game -windowed -ResX=1920 -ResY=1080
+  # shellcheck disable=SC2086
+  "$UE" "$HERE/OverboardGame.uproject" /Game/Maps/OB_CityHill -game -windowed -ResX=1920 -ResY=1080 $LOOK
 else
-  "$UE" "$HERE/OverboardGame.uproject"
+  # shellcheck disable=SC2086
+  "$UE" "$HERE/OverboardGame.uproject" $LOOK
 fi
 echo "Game closed; stopping sim-host."
