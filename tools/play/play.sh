@@ -11,7 +11,7 @@ HERE="$(cd "$(dirname "$0")/../.." && pwd)"
 UE="/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor"
 LOG=/tmp/overboard-play-sim.log
 
-if pgrep -f "target/release/sim-host" > /dev/null; then
+if pgrep -f "sim-host.*127.0.0.1:9601" > /dev/null; then
   echo "A sim-host is already running (it holds port 9601/9602). Stop it first:"
   pgrep -fl "target/release/sim-host"
   exit 1

@@ -1,4 +1,5 @@
 #include "BoardActor.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -42,18 +43,31 @@ namespace
 	// UpdatePoseFromHistory's per-tick offset cannot drift apart the way they briefly did here.
 	constexpr float kRiderDeckHeightCm = 8.3f;
 
-	// ADR-0012 rider ragdoll. UE5 mannequin skeleton bone names -- "pelvis" is the ragdoll root
-	// (everything below it simulates), "spine_03" is the upper chest, chosen as the impulse
-	// point because an impulse through the centre of mass slides the rider forward standing bolt
-	// upright instead of pitching them over the nose.
+	// ADR-0012 rider ragdoll. "pelvis" is the ragdoll root (everything below it simulates) on
+	// both the UE5 mannequin and the MetaHuman skater skeleton.
 	const FName kRiderRagdollRootBone(TEXT("pelvis"));
-	const FName kRiderImpulseBone(TEXT("spine_03"));
-	// Impulse = floor + per-(cm/s) * board speed, in UE impulse units (kg*cm/s). The floor keeps
-	// a low-speed topple from looking like the rider simply melts; the speed term is what makes
-	// a fast strike throw them further than a slow one, which is the whole reason the wire
-	// carries a velocity at all.
-	constexpr float kRiderPitchImpulsePerCmS = 12.0f;
-	constexpr float kRiderPitchImpulseFloor = 4000.0f;
+	// Wipeout tuning, checked against MuJoCo's own falls on city_hill (controls track reference,
+	// tools/play/wipeouts/: kerb_hit, nosedive, carve_fall). No impulse is added any more: the
+	// old floor + 12 per cm/s threw the rider at ~22 m/s from a 10 m/s crash (23.6 m slide where
+	// MuJoCo slides 5.3 m). The bodies take the board's own linear and angular velocity, and the
+	// slide comes from friction: an effective coefficient from v^2 / (2 g d) on MuJoCo's slides,
+	// ~0.55 for the rider and ~0.30 for the board. The tuned values sit higher for the rider (1.2,
+	// with linear damping: the ragdoll tumbles where MuJoCo's two capsules thump and stop) and a
+	// little lower for the board (0.25). "Min" combining keeps the street from raising them.
+	// Result (tools/play/wipeouts/run_wipeout.sh, 2026-10-04): rider rest within 0.4-1.5 m of
+	// MuJoCo in kerb_hit, nosedive and carve_fall; board within 2-5 m.
+	constexpr float kRiderSlideFriction = 1.20f;
+	constexpr float kBoardSlideFriction = 0.25f;
+	constexpr float kWipeoutRestitution = 0.05f;
+	// A small angular damping per ragdoll body, so a slide ends as a slide and not as an endless
+	// roll down the 15 % grade (MuJoCo's two-capsule rider has no limbs to flail).
+	constexpr float kRiderBodyAngularDamping = 2.0f;
+	// MuJoCo's rider keeps ~6.7 m/s for 0.3-0.5 s (airborne), then stops within ~0.3 s of
+	// landing (close to 2 g): a body hitting asphalt, not a ragdoll tumbling on. Linear damping
+	// stands in for that energy loss.
+	constexpr float kRiderBodyLinearDamping = 1.0f;
+	// Cap on the solver's push-apart speed for a ragdoll body that starts inside the street.
+	constexpr float kRiderMaxDepenetrationCmS = 100.0f;
 
 	// Wheel radius, metres -- the MuJoCo primitive cylinder the plant model actually simulates
 	// (145.4 mm; see mesh/README.md, same figure WheelMesh is built at). Turns the wire's
@@ -983,72 +997,155 @@ UPrimitiveComponent* ABoardActor::GetSimulatedBodyComponent() const
 	return PhysicsBody;
 }
 
+USkeletalMeshComponent* ABoardActor::GetActiveRiderBody() const
+{
+	// The MetaHuman skater (-ObRenderRider) when it runs, else the mannequin.
+	if (bRenderRiderActive && RenderBodyMesh && RenderBodyMesh->GetSkeletalMeshAsset())
+	{
+		return RenderBodyMesh;
+	}
+	return (RiderMesh && bRiderLoaded && bShowRider) ? RiderMesh.Get() : nullptr;
+}
+
 void ABoardActor::OnPhysicsHandoffBegan(const FVector& BoardLinearVelocityCmS)
 {
-	if (!RiderMesh || !bRiderLoaded || !bShowRider)
+	// The board slides on its bumpers: low friction, almost no bounce.
+	if (UPrimitiveComponent* Sim = GetSimulatedBodyComponent())
+	{
+		if (!BoardSlideMaterial)
+		{
+			BoardSlideMaterial = NewObject<UPhysicalMaterial>(this, TEXT("BoardSlideMaterial"));
+			BoardSlideMaterial->Friction = kBoardSlideFriction;
+			BoardSlideMaterial->FrictionCombineMode = EFrictionCombineMode::Min;
+			BoardSlideMaterial->Restitution = kWipeoutRestitution;
+			BoardSlideMaterial->RestitutionCombineMode = EFrictionCombineMode::Min;
+		}
+		Sim->SetPhysMaterialOverride(BoardSlideMaterial);
+		// A strike leaves the board's box partly inside the street (a nosedive: 20 deg nose-down);
+		// uncapped, the push-apart threw it 1.7 m up and backwards.
+		if (FBodyInstance* BI = Sim->GetBodyInstance())
+		{
+			BI->SetMaxDepenetrationVelocity(kRiderMaxDepenetrationCmS);
+		}
+	}
+
+	// The rider lights follow the board, not the rider; in a crash they would light the street.
+	if (RiderKeyLight) { RiderKeyLight->SetVisibility(false); }
+	if (RiderRimLight) { RiderRimLight->SetVisibility(false); }
+
+	USkeletalMeshComponent* Body = GetActiveRiderBody();
+	if (!Body)
 	{
 		return;
 	}
-
-	// A skeletal mesh with no physics asset silently ignores SetSimulatePhysics -- it does not
-	// warn, it just keeps playing the animation. That would present as "the ragdoll feature does
-	// not work" with nothing in the log, so it is checked and said out loud instead.
-	if (!RiderMesh->GetPhysicsAsset())
+	if (!Body->GetPhysicsAsset())
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("ABoardActor: rider has no physics asset, so it cannot ragdoll -- the board will "
-				 "crash with the rider still posed on it. Assign a PhysicsAsset to the rider "
-				 "skeletal mesh to enable ADR-0012's rider fall."));
+			TEXT("ABoardActor: rider '%s' has no physics asset, so it cannot ragdoll -- the board will "
+				 "crash with the rider still posed on it."), *Body->GetName());
 		return;
 	}
 
-	// Detach first: a ragdoll still parented to the board is dragged by the board's own tumble
-	// and reads as the rider being welded to the deck through the crash.
-	RiderMesh->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
-	RiderMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-	RiderMesh->SetCollisionResponseToAllChannels(ECR_Block);
-	RiderMesh->SetCollisionProfileName(TEXT("Ragdoll"));
-	RiderMesh->SetEnableGravity(true);
-	RiderMesh->SetAllBodiesBelowSimulatePhysics(kRiderRagdollRootBone, true, /*bIncludeSelf=*/true);
+	// Stop the render rider's procedural layer (leg IK, foot planting): it would fight the physics.
+	if (Body == RenderBodyMesh)
+	{
+		if (URiderAnimInstance* Inst = Cast<URiderAnimInstance>(RenderBodyMesh->GetAnimInstance()))
+		{
+			Inst->Inputs.bEnabled = false;
+		}
+		if (RiderMesh) { RiderMesh->SetVisibility(false); }
+	}
 
-	// Inherit the board's velocity, then add a forward pitch over the nose. Without the
-	// inherited part the rider drops straight down while the board slides out from under them,
-	// which reads as the rider being deleted rather than thrown.
-	RiderMesh->SetAllPhysicsLinearVelocity(BoardLinearVelocityCmS);
+	RagdollBody = Body;
+	RagdollSavedParent = Body->GetAttachParent();
+	RagdollSavedRelative = Body->GetRelativeTransform();
 
-	// Sized FROM the strike rather than dialled in: the faster the board was going, the harder
-	// the rider goes over the front. Applied at the chest so it produces rotation over the nose
-	// and not just translation -- an impulse through the centre of mass would slide the rider
-	// forward standing bolt upright.
-	const float SpeedCmS = BoardLinearVelocityCmS.Size();
-	const FVector Forward = SpeedCmS > KINDA_SMALL_NUMBER
-		? BoardLinearVelocityCmS / SpeedCmS
-		: GetActorForwardVector();
-	const float ImpulseMagnitude = kRiderPitchImpulsePerCmS * SpeedCmS + kRiderPitchImpulseFloor;
-	RiderMesh->AddImpulse(Forward * ImpulseMagnitude, kRiderImpulseBone, /*bVelChange=*/false);
+	if (!RiderSlideMaterial)
+	{
+		RiderSlideMaterial = NewObject<UPhysicalMaterial>(this, TEXT("RiderSlideMaterial"));
+		RiderSlideMaterial->Friction = kRiderSlideFriction;
+		RiderSlideMaterial->FrictionCombineMode = EFrictionCombineMode::Min;
+		RiderSlideMaterial->Restitution = kWipeoutRestitution;
+		RiderSlideMaterial->RestitutionCombineMode = EFrictionCombineMode::Min;
+	}
 
-	UE_LOG(LogTemp, Log,
-		TEXT("ABoardActor: rider ragdolled, board speed %.1f cm/s, pitch impulse %.0f at bone '%s'."),
-		SpeedCmS, ImpulseMagnitude, *kRiderImpulseBone.ToString());
+	Body->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	Body->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	Body->SetCollisionProfileName(TEXT("Ragdoll"));
+	Body->SetPhysMaterialOverride(RiderSlideMaterial);
+	// Rider and board must not collide: the ragdoll starts overlapping the board's box, and the
+	// solver's push-apart launched the rider 1.6 m up and far down the street.
+	if (UPrimitiveComponent* Sim = GetSimulatedBodyComponent())
+	{
+		Body->SetCollisionResponseToChannel(Sim->GetCollisionObjectType(), ECR_Ignore);
+		Sim->SetCollisionResponseToChannel(Body->GetCollisionObjectType(), ECR_Ignore);
+	}
+	Body->SetEnableGravity(true);
+	Body->SetAllBodiesBelowSimulatePhysics(kRiderRagdollRootBone, true, /*bIncludeSelf=*/true);
+	for (FBodyInstance* BI : Body->Bodies)
+	{
+		if (BI)
+		{
+			// Per body: a physics-asset body keeps its own material, so the component-level
+			// override above does not reach it.
+			BI->SetPhysMaterialOverride(RiderSlideMaterial);
+			BI->AngularDamping = kRiderBodyAngularDamping;
+			BI->LinearDamping = kRiderBodyLinearDamping;
+			BI->UpdateDampingProperties();
+			// The ragdoll starts partly inside the street (a nosedive pitches the deck 20 deg
+			// nose-down) and the solver pushed it out at full force: +6 m/s sideways in 0.2 s.
+			BI->SetMaxDepenetrationVelocity(kRiderMaxDepenetrationCmS);
+		}
+	}
+
+	// The rider leaves with the board's velocity. Not its spin: copied onto every body, the
+	// board's 3-4 rad/s made the whole ragdoll roll down the grade like a wheel (2-3x MuJoCo's
+	// slide). No added impulse either -- see kRiderSlideFriction.
+	Body->SetAllPhysicsLinearVelocity(BoardLinearVelocityCmS);
+	// The bodies were following the animation; drop the spin they carry from it (a 38-51 m/s
+	// pelvis spike on the first simulated frame).
+	Body->SetAllPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+
+	UE_LOG(LogTemp, Log, TEXT("ABoardActor: rider '%s' ragdolled at %.1f m/s (no impulse, friction %.2f; board friction %.2f)."),
+		*Body->GetName(), BoardLinearVelocityCmS.Size() / 100.f, kRiderSlideFriction, kBoardSlideFriction);
 }
 
 void ABoardActor::OnPhysicsHandoffEnded()
 {
-	if (!RiderMesh || !bRiderLoaded)
+	if (RiderKeyLight) { RiderKeyLight->SetVisibility(true); }
+	if (RiderRimLight) { RiderRimLight->SetVisibility(true); }
+	if (UPrimitiveComponent* Sim = GetSimulatedBodyComponent())
+	{
+		Sim->SetPhysMaterialOverride(nullptr);
+	}
+
+	USkeletalMeshComponent* Body = RagdollBody.Get();
+	RagdollBody = nullptr;
+	if (!Body)
 	{
 		return;
 	}
-	// Back onto the deck, re-posed, exactly as BeginPlay left it.
-	RiderMesh->SetAllBodiesSimulatePhysics(false);
-	RiderMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	RiderMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
-	RiderMesh->SetEnableGravity(false);
-	RiderMesh->AttachToComponent(SceneRoot, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
-	RiderMesh->SetRelativeLocation(FVector(0.f, 0.f, kRiderDeckHeightCm));
-	RiderMesh->SetRelativeRotation(FRotator::ZeroRotator);
-	if (RiderIdleAnim)
+	Body->SetAllBodiesSimulatePhysics(false);
+	Body->SetPhysMaterialOverride(nullptr);
+	Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Body->SetEnableGravity(false);
+	if (USceneComponent* Parent = RagdollSavedParent.Get())
 	{
-		RiderMesh->PlayAnimation(RiderIdleAnim, /*bLooping=*/true);
+		Body->AttachToComponent(Parent, FAttachmentTransformRules::KeepRelativeTransform);
+	}
+	Body->SetRelativeTransform(RagdollSavedRelative);
+
+	if (Body == RenderBodyMesh)
+	{
+		if (URiderAnimInstance* Inst = Cast<URiderAnimInstance>(RenderBodyMesh->GetAnimInstance()))
+		{
+			Inst->Inputs.bEnabled = true; // UpdateRenderRider drives it again from the next tick
+		}
+		if (RiderMesh && !bRenderRiderActive) { RiderMesh->SetVisibility(true); }
+	}
+	else if (RiderIdleAnim)
+	{
+		Body->PlayAnimation(RiderIdleAnim, /*bLooping=*/true);
 	}
 }
 

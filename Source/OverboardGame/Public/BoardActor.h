@@ -266,6 +266,17 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<class UGroomComponent> RenderHairGroom;
 	bool bRenderRiderActive = false;
+
+	// ADR-0012 wipeout (OnPhysicsHandoffBegan / Ended): the body that ragdolls, where it was
+	// attached, and the slide materials. See kRiderSlideFriction in BoardActor.cpp.
+	USkeletalMeshComponent* GetActiveRiderBody() const;
+	TWeakObjectPtr<USkeletalMeshComponent> RagdollBody;
+	TWeakObjectPtr<USceneComponent> RagdollSavedParent;
+	FTransform RagdollSavedRelative;
+	UPROPERTY(Transient)
+	TObjectPtr<class UPhysicalMaterial> RiderSlideMaterial;
+	UPROPERTY(Transient)
+	TObjectPtr<class UPhysicalMaterial> BoardSlideMaterial;
 	bool bRiderLightsActive = false;
 	int32 RenderRiderCalibrationTicks = 0;
 	FVector RenderBodyOffsetCm = FVector::ZeroVector;

@@ -19,6 +19,7 @@
 #include "EngineUtils.h"
 #include "HAL/PlatformTime.h"
 #include "UnrealClient.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Logging/LogMacros.h"
 #include "Misc/CommandLine.h"
 #include "TimerManager.h"
@@ -365,6 +366,7 @@ void AOverboardPlayerController::PlayerTick(float DeltaTime)
 		CheckForAutoResetOnFall(Board);
 	}
 	UpdateRumble(Board);
+	ProbeWipeout(Board);
 	if (Demo)
 	{
 		UpdateDemo(Board, DeltaTime);
@@ -415,6 +417,66 @@ void AOverboardPlayerController::CheckForAutoResetOnFall(const ABoardActor* Boar
 		bAutoResetPending = true;
 		UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController: fallen flag on for %.1f s with no handoff, sending one Reset."), kFallenAloneResetSeconds);
 	}
+}
+
+void AOverboardPlayerController::ProbeWipeout(const ABoardActor* Board)
+{
+	// Logs where the board and the rider come to rest after a handoff, in the MuJoCo frame (m),
+	// so tools/play/wipeouts/compare_wipeout.py can check the Unreal ragdoll against MuJoCo's
+	// fall. Read-only: it reads component positions and changes nothing.
+	const bool bHandoff = Board && Board->IsPhysicsHandoff();
+	if (!bHandoff)
+	{
+		WipeoutStartSeconds = -1.0;
+		return;
+	}
+	const double Now = FPlatformTime::Seconds();
+	if (WipeoutStartSeconds < 0.0)
+	{
+		WipeoutStartSeconds = Now;
+		WipeoutNextLog = Now;
+	}
+	if (Now < WipeoutNextLog || Now - WipeoutStartSeconds > 8.5)
+	{
+		return;
+	}
+	WipeoutNextLog += (Now - WipeoutStartSeconds < 1.0) ? 0.1 : 0.5;
+
+	const FQuat InvYaw = FRotator(0.f, Board->GetWorldOriginYawDeg(), 0.f).Quaternion().Inverse();
+	auto ToMuJoCo = [&](const FVector& WorldCm)
+	{
+		const FVector L = InvYaw.RotateVector(WorldCm - Board->GetWorldOriginOffsetCm());
+		return FVector(L.X / 100.0, -L.Y / 100.0, L.Z / 100.0);
+	};
+	// The board body that simulates, and the rider body that ragdolls (whichever mesh simulates).
+	FVector BoardPos = ToMuJoCo(Board->GetActorLocation());
+	FVector RiderPos = FVector::ZeroVector;
+	double RiderSpeed = 0.0;
+	bool bRider = false;
+	TArray<UPrimitiveComponent*> Prims;
+	Board->GetComponents<UPrimitiveComponent>(Prims);
+	for (const UPrimitiveComponent* P : Prims)
+	{
+		if (const USkeletalMeshComponent* Sk = Cast<USkeletalMeshComponent>(P))
+		{
+			// A ragdoll simulates from the pelvis down; its root bone does not, so ask "any".
+			if (!Sk->IsAnySimulatingPhysics())
+			{
+				continue;
+			}
+			const FName Pelvis = Sk->GetBoneIndex(TEXT("pelvis")) != INDEX_NONE ? FName(TEXT("pelvis")) : Sk->GetBoneName(0);
+			RiderPos = ToMuJoCo(Sk->GetBoneLocation(Pelvis));
+			RiderSpeed = const_cast<USkeletalMeshComponent*>(Sk)->GetPhysicsLinearVelocity(Pelvis).Size() / 100.0;
+			bRider = true;
+		}
+		else if (P->IsSimulatingPhysics())
+		{
+			BoardPos = ToMuJoCo(P->GetComponentLocation());
+		}
+	}
+	UE_LOG(LogOverboardInput, Log, TEXT("WipeoutProbe: t %.1f board %.2f %.2f %.2f rider %s %.2f %.2f %.2f speed %.2f"),
+		Now - WipeoutStartSeconds, BoardPos.X, BoardPos.Y, BoardPos.Z, bRider ? TEXT("ragdoll") : TEXT("none"),
+		RiderPos.X, RiderPos.Y, RiderPos.Z, RiderSpeed);
 }
 
 void AOverboardPlayerController::UpdateRumble(const ABoardActor* Board)
