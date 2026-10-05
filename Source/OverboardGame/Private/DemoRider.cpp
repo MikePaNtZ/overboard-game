@@ -69,6 +69,11 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 	{
 		return Out;
 	}
+	// Time step from the wall clock, like the real-time sim, not the game's frame delta: without
+	// rendering (-nullrhi) the game clock runs ~3.5x fast, which tripped the stall guard (and
+	// sped up the ramp and the integral) in headless tests.
+	DeltaSeconds = LastUpdateSeconds < 0.0 ? 0.f : static_cast<float>(FMath::Clamp(Seconds - LastUpdateSeconds, 0.0, 0.1));
+	LastUpdateSeconds = Seconds;
 	const double S = kStartX - State.Pos[0];
 	const double Y = State.Pos[1];
 	const double V = State.WheelRateRadS * kDemoWheelRadiusM; // positive = forward
@@ -92,14 +97,14 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 		SpeedIntegral = FMath::Clamp(SpeedIntegral + Err * DeltaSeconds, -IntegralCap, IntegralCap);
 		// In the speed trap the board is already rolling, so the rider commits more weight.
 		const bool bClimb = S >= 112.0 && S < 167.0;
-		const float LeanCap = (S >= kSpeedTrapS0 && S < kSpeedTrapS1) ? 0.5f : (bClimb ? 0.35f : 0.3f);
+		const float LeanCap = (S >= kSpeedTrapS0 && S < kSpeedTrapS1) ? 0.6f : (bClimb ? 0.35f : 0.3f);
 		// Gains halved for the 10 cm reach (controls track: one stick unit now moves the rider twice
 		// as far, so the old gains made the demo's own speed loop rock the board).
 		Out.Lean = FMath::Clamp(0.11f * Err + 0.04f * SpeedIntegral, -LeanCap, LeanCap);
 		if (S >= kSpeedTrapS0 && S < kSpeedTrapS1)
 		{
 			// Top-speed run: commit a steady forward lean, as a rider tucks in.
-			Out.Lean = FMath::Clamp(0.25f + 0.11f * Err, -LeanCap, LeanCap);
+			Out.Lean = FMath::Clamp(0.35f + 0.11f * Err, -LeanCap, LeanCap);
 		}
 		// Coming off the speed trap, the hard lean back (L2) does most of the braking.
 		if (S >= kSpeedTrapS1 && S < kStopBoxEnterS && Err < -0.5f)
@@ -152,12 +157,14 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 		// restart from a tail-down stop ended in a nose strike every time (reported to controls).
 		Out.TailBrake = static_cast<float>(0.25 * FMath::Clamp(1.0 - T / (bQuickRestart ? 1.5 : 3.0), 0.0, 1.0));
 		Out.Lean = bQuickRestart ? 0.f : -0.05f;
-		if (T > (bQuickRestart ? 3.0 : 7.0)) { SpeedIntegral = 0.f; RampedTargetV = 0.0; FilteredV = 0.0; Enter(EPhase::Ride2, Seconds); }
+		if (T > (bQuickRestart ? 3.0 : 7.0)) { SpeedIntegral = 0.f; RampedTargetV = 0.0; FilteredV = 0.0; StalledSeconds = 0.0; Enter(EPhase::Ride2, Seconds); }
 		break;
 	case EPhase::Ride2:
 		RideControl(TargetSpeed(S));
 		// A stall (the 12 % climb at 95 kg can stall): after 8 s stopped, go on to the fall test.
-		StalledSeconds = FMath::Abs(V) < 0.3 ? StalledSeconds + DeltaSeconds : 0.0;
+		// Count only while the rider is asking to go (ramped target >= 1 m/s): a slow pull-away
+		// after a long settle is not a stall, and the guard fired the fall-test kick there.
+		StalledSeconds = (FMath::Abs(V) < 0.3 && RampedTargetV >= 1.0) ? StalledSeconds + DeltaSeconds : 0.0;
 		if (StalledSeconds > 8.0) { UE_LOG(LogDemoRider, Log, TEXT("DemoRider: stalled at s %.1f"), S); Enter(EPhase::Kick, Seconds); }
 		else if (bDown) { bFellInRide = true; Enter(EPhase::Down, Seconds); }
 		else if (S >= kFinishS + 2.0) { Enter(EPhase::AfterFinish, Seconds); }
