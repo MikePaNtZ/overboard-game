@@ -141,7 +141,11 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 			// y = 6 m): carve right until 1.5 m right of the centre line, then left, and so on.
 			if (Y > 1.0) { bCarveRight = false; }
 			if (Y < -1.0) { bCarveRight = true; }
-			Out.Steer = static_cast<float>(bCarveRight ? Cap : -Cap);
+			// Through the same rate limit as the pad's rider body (5 stick units/s): a step from
+			// +cap to -cap at 7.7 m/s from 30 deg of bank threw the board over (controls trace).
+			const float Want = static_cast<float>(bCarveRight ? Cap : -Cap);
+			CarveSteer = FMath::FInterpConstantTo(CarveSteer, Want, DeltaSeconds, 5.f);
+			Out.Steer = CarveSteer;
 			CarvePeakSpeed = FMath::Max(CarvePeakSpeed, V);
 		}
 	};
