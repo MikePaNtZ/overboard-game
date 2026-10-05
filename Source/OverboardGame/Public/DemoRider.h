@@ -50,6 +50,7 @@ private:
 	bool bFellInRide = false;
 	int32 Retries = 0;
 	double LastLog = -1.0;
+	double LastUpdateSeconds = -1.0;
 
 	void Enter(EPhase Next, double Seconds);
 	static double TargetY(double S);
