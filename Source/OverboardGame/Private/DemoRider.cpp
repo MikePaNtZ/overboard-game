@@ -97,14 +97,14 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 		SpeedIntegral = FMath::Clamp(SpeedIntegral + Err * DeltaSeconds, -IntegralCap, IntegralCap);
 		// In the speed trap the board is already rolling, so the rider commits more weight.
 		const bool bClimb = S >= 112.0 && S < 167.0;
-		const float LeanCap = (S >= kSpeedTrapS0 && S < kSpeedTrapS1) ? 0.5f : (bClimb ? 0.35f : 0.3f);
+		const float LeanCap = (S >= kSpeedTrapS0 && S < kSpeedTrapS1) ? 0.6f : (bClimb ? 0.35f : 0.3f);
 		// Gains halved for the 10 cm reach (controls track: one stick unit now moves the rider twice
 		// as far, so the old gains made the demo's own speed loop rock the board).
 		Out.Lean = FMath::Clamp(0.11f * Err + 0.04f * SpeedIntegral, -LeanCap, LeanCap);
 		if (S >= kSpeedTrapS0 && S < kSpeedTrapS1)
 		{
 			// Top-speed run: commit a steady forward lean, as a rider tucks in.
-			Out.Lean = FMath::Clamp(0.25f + 0.11f * Err, -LeanCap, LeanCap);
+			Out.Lean = FMath::Clamp(0.35f + 0.11f * Err, -LeanCap, LeanCap);
 		}
 		// Coming off the speed trap, the hard lean back (L2) does most of the braking.
 		if (S >= kSpeedTrapS1 && S < kStopBoxEnterS && Err < -0.5f)
