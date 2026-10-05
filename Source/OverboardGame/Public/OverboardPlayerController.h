@@ -169,6 +169,9 @@ private:
 	void SpawnCourseElements();
 	void CheckForAutoResetOnFall(const ABoardActor* Board);
 	void UpdateRumble(const ABoardActor* Board);
+	void ProbeWipeout(const ABoardActor* Board);
+	double WipeoutStartSeconds = -1.0;
+	double WipeoutNextLog = 0.0;
 
 	void OnLeanPad(const FInputActionValue& Value);
 	void OnLeanKeys(const FInputActionValue& Value);
