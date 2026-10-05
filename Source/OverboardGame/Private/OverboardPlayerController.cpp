@@ -18,6 +18,7 @@
 #include "RideCourseElements.h"
 #include "EngineUtils.h"
 #include "HAL/PlatformTime.h"
+#include "UnrealClient.h"
 #include "Logging/LogMacros.h"
 #include "Misc/CommandLine.h"
 #include "TimerManager.h"
@@ -68,6 +69,53 @@ void AOverboardPlayerController::BeginPlay()
 	}
 
 	SpawnCourseElements();
+
+	if (FParse::Param(FCommandLine::Get(), TEXT("ObDemoRider")))
+	{
+		Demo = MakeUnique<FDemoRider>();
+		DemoStartSeconds = FPlatformTime::Seconds();
+		UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController: demo rider ON -- a script plays the pad."));
+	}
+	if (FParse::Value(FCommandLine::Get(), TEXT("ObRecordVideo="), RecordVideoPath))
+	{
+		FParse::Value(FCommandLine::Get(), TEXT("ObRecordFps="), RecordFps);
+	}
+}
+
+void AOverboardPlayerController::UpdateDemo(const ABoardActor* Board, float DeltaTime)
+{
+	OverboardWire::FBoardState State;
+	const bool bHave = Board && Board->GetLatestState(State);
+	const bool bDown = Board && Board->IsPhysicsHandoff(); // a fall is the handoff, see CheckForAutoResetOnFall
+	const ARideCourseElements* Game = nullptr;
+	for (TActorIterator<ARideCourseElements> It(GetWorld()); It; ++It)
+	{
+		Game = *It;
+		break;
+	}
+	const FDemoPadOutput Pad = Demo->Update(FPlatformTime::Seconds() - DemoStartSeconds, DeltaTime, bHave, State, bDown,
+		Game ? &Game->GetReadout() : nullptr);
+
+	// The demo outputs the value that goes on the wire (it is its own "shaping"), so it
+	// overrides the shaped pad path instead of feeding the dead zone and curve.
+	bDemoOverride = true;
+	DemoForeAft = Pad.Lean;
+	DemoSteer = Pad.Steer;
+	TailBrake = Pad.TailBrake;
+	if (Pad.bArm) { bArmedOnce = true; }
+	bArmHeld = Pad.bArm;
+	bResetHeld = Pad.bReset;
+	bKickPending |= Pad.bKick;
+	if (Pad.bFinished && !RecordVideoPath.IsEmpty())
+	{
+		UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController: demo finished; closing the video and quitting."));
+		if (Recorder)
+		{
+			Recorder->Finish();
+		}
+		RecordVideoPath.Reset();
+		ConsoleCommand(TEXT("quit"));
+	}
 }
 
 void AOverboardPlayerController::SpawnCourseElements()
@@ -96,6 +144,10 @@ void AOverboardPlayerController::SpawnCourseElements()
 void AOverboardPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	Rumble.Shutdown();
+	if (Recorder)
+	{
+		Recorder->Finish();
+	}
 	if (SendSocket)
 	{
 		ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(SendSocket);
@@ -257,7 +309,7 @@ void AOverboardPlayerController::OnLeanKeys(const FInputActionValue& Value) { Ke
 void AOverboardPlayerController::OnSteerPad(const FInputActionValue& Value) { PadSteer = Value.Get<float>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnSteerPad: %.3f"), PadSteer); }
 void AOverboardPlayerController::OnSteerKeys(const FInputActionValue& Value) { KeySteer = Value.Get<float>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnSteerKeys: %.3f"), KeySteer); }
 void AOverboardPlayerController::OnTailBrake(const FInputActionValue& Value) { TailBrake = Value.Get<float>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnTailBrake: %.3f"), TailBrake); }
-void AOverboardPlayerController::OnArm(const FInputActionValue& Value) { bArmHeld = Value.Get<bool>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnArm: %s"), bArmHeld ? TEXT("true") : TEXT("false")); }
+void AOverboardPlayerController::OnArm(const FInputActionValue& Value) { bArmHeld = Value.Get<bool>(); bArmedOnce |= bArmHeld; UE_LOG(LogOverboardInput, Verbose, TEXT("OnArm: %s"), bArmHeld ? TEXT("true") : TEXT("false")); }
 void AOverboardPlayerController::OnReset(const FInputActionValue& Value) { bResetHeld = Value.Get<bool>(); UE_LOG(LogOverboardInput, Verbose, TEXT("OnReset: %s"), bResetHeld ? TEXT("true") : TEXT("false")); }
 
 void AOverboardPlayerController::OnCameraCycle(const FInputActionValue& Value)
@@ -313,6 +365,25 @@ void AOverboardPlayerController::PlayerTick(float DeltaTime)
 		CheckForAutoResetOnFall(Board);
 	}
 	UpdateRumble(Board);
+	if (Demo)
+	{
+		UpdateDemo(Board, DeltaTime);
+	}
+	if (!RecordVideoPath.IsEmpty())
+	{
+		if (!Recorder)
+		{
+			Recorder = MakeUnique<FGameVideoRecorder>();
+			if (!Recorder->Start(RecordVideoPath, RecordFps))
+			{
+				RecordVideoPath.Reset();
+			}
+		}
+		if (Recorder)
+		{
+			Recorder->Tick();
+		}
+	}
 
 	// Send at frame rate -- no accumulator/throttle. sim-host zeroes an input older than 100 ms,
 	// so the frame rate must stay well above 10 Hz.
@@ -321,23 +392,26 @@ void AOverboardPlayerController::PlayerTick(float DeltaTime)
 
 void AOverboardPlayerController::CheckForAutoResetOnFall(const ABoardActor* Board)
 {
-	// ADR-0012: never auto-reset out of a physics handoff. A handoff almost always comes with
-	// FALLEN; an automatic reset on the next tick would end the crash one frame after it began.
-	// Reset during a handoff is the PLAYER's call (Circle / R).
-	const bool bIsFallenNow = Board->IsFallen();
-	if (Board->IsPhysicsHandoff())
+	// What counts as a fall. With --terrain the ride ends at the ADR-0012 handoff latch (bit 4:
+	// a nose strike or a tilt past 35 deg), and the player resets it (Circle / R) -- never
+	// automatically, or the crash would end one frame after it began.
+	//
+	// StateOut bit 2 ("fallen") is only |pitch| > 20 deg, and a wanted tail-brake drag reaches
+	// that nose-up (the tail strike is ~20.4 deg). Resetting on it ended every tail-brake stop.
+	// So bit 2 alone resets only if it stays on for FallenAloneResetSeconds with no handoff: the
+	// stuck case of a sim run without terrain, where no handoff ever comes.
+	if (Board->IsPhysicsHandoff() || !Board->IsFallen())
 	{
-		bWasFallenLastTick = bIsFallenNow;
+		FallenAloneSeconds = 0.0;
 		return;
 	}
-
-	if (bIsFallenNow && !bWasFallenLastTick)
+	const double Before = FallenAloneSeconds;
+	FallenAloneSeconds += GetWorld()->GetDeltaSeconds();
+	if (Before < kFallenAloneResetSeconds && FallenAloneSeconds >= kFallenAloneResetSeconds)
 	{
-		// Rising edge only -- fires once per fall, not held for as long as Fallen stays set.
 		bAutoResetPending = true;
-		UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController: board fell, sending one Reset."));
+		UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController: fallen flag on for %.1f s with no handoff, sending one Reset."), kFallenAloneResetSeconds);
 	}
-	bWasFallenLastTick = bIsFallenNow;
 }
 
 void AOverboardPlayerController::UpdateRumble(const ABoardActor* Board)
@@ -347,7 +421,7 @@ void AOverboardPlayerController::UpdateRumble(const ABoardActor* Board)
 	if (Board)
 	{
 		const uint16 Flags = Board->GetLatestFlags();
-		const bool bDown = Board->IsPhysicsHandoff() || Board->IsFallen();
+		const bool bDown = Board->IsPhysicsHandoff(); // a fall is the handoff, see CheckForAutoResetOnFall
 		if (bDown && !bWasDownLastTick)
 		{
 			FallJoltUntilSeconds = Now + RumbleFallSeconds;
@@ -399,8 +473,8 @@ void AOverboardPlayerController::SendInputPacket(float DeltaTime)
 	SmoothedKeyLean = FMath::FInterpTo(SmoothedKeyLean, KeyLean, DeltaTime, KeyboardRampSpeed);
 	SmoothedKeySteer = FMath::FInterpTo(SmoothedKeySteer, KeySteer, DeltaTime, KeyboardRampSpeed);
 
-	float ForeAft = FMath::Clamp(ShapeLean(PadLean) + SmoothedKeyLean, -1.f, 1.f);
-	const float Steer = FMath::Clamp(ShapeSteer(PadSteer) + SmoothedKeySteer, -1.f, 1.f);
+	float ForeAft = FMath::Clamp(bDemoOverride ? DemoForeAft : ShapeLean(PadLean) + SmoothedKeyLean, -1.f, 1.f);
+	const float Steer = FMath::Clamp(bDemoOverride ? DemoSteer : ShapeSteer(PadSteer) + SmoothedKeySteer, -1.f, 1.f);
 
 	// Tail brake (L2): fore_aft = min(stick, -L2). A full pull is always -1, whatever the stick.
 	const float BrakeTravel = FMath::Clamp(TailBrake, 0.f, 1.f);
@@ -422,7 +496,9 @@ void AOverboardPlayerController::SendInputPacket(float DeltaTime)
 	Packet.Seq = SendSeq++; // monotonic for the life of the socket, regardless of arm/reset state
 	const bool bSendReset = bResetHeld || bAutoResetPending;
 	bAutoResetPending = false; // one-shot: consumed the instant it's sent, never held
-	Packet.Flags = (bArmHeld ? OverboardWire::EInputFlags::Arm : 0) | (bSendReset ? OverboardWire::EInputFlags::Reset : 0);
+	Packet.Flags = (bArmHeld ? OverboardWire::EInputFlags::Arm : 0) | (bSendReset ? OverboardWire::EInputFlags::Reset : 0)
+		| (bKickPending ? OverboardWire::EInputFlags::Kick : 0);
+	bKickPending = false; // rising edge on the host: send it in one packet only
 	Packet.WeightShiftForeAft = ForeAft;
 	// Under --lean-steer the rider model sets the lateral ballast from steer; the controls track
 	// asks for 0 here so that a later change cannot count the lean twice.

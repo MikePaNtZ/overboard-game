@@ -56,6 +56,18 @@ void AOverboardCameraPawn::Tick(float DeltaSeconds)
 	}
 
 	const FVector TargetLocation = FollowTarget->GetActorLocation() + FVector(0.f, 0.f, FollowHeightOffsetCm);
+
+	// Snap, do not glide, across a large gap: the first frame (this pawn spawns at the world
+	// origin, which on OB_CityHill is 88 m from the board) and a reset (the board jumps back to
+	// the course start). Gliding there filmed empty street for seconds.
+	constexpr double kSnapDistanceCm = 1500.0;
+	if (FVector::Dist(GetActorLocation(), TargetLocation) > kSnapDistanceCm)
+	{
+		SetActorLocation(TargetLocation);
+		SetActorRotation(FRotator(0.f, FollowTarget->GetActorRotation().Yaw + 180.f, 0.f));
+		return;
+	}
+
 	const FVector NewLocation = FMath::VInterpTo(GetActorLocation(), TargetLocation, DeltaSeconds, FollowLocationSpeed);
 	SetActorLocation(NewLocation);
 

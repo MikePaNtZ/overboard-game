@@ -195,6 +195,7 @@
  },
  "scores": {
   "flag": 100,
+  "speed_trap": 200,
   "stop": 300,
   "tail_stop_bonus": 200,
   "slow_clean": 200,
@@ -207,44 +208,46 @@
    "type": "gate",
    "id": "start",
    "label": "START",
-   "s": 14.0
+   "s": 8.0
   },
   {
    "type": "flag",
    "id": "flag1",
-   "s": 26.0,
+   "s": 20.0,
    "y": 1.8
   },
   {
    "type": "flag",
    "id": "flag2",
-   "s": 36.0,
+   "s": 30.0,
    "y": -1.8
   },
   {
    "type": "flag",
    "id": "flag3",
-   "s": 46.0,
+   "s": 40.0,
    "y": 1.8
   },
   {
    "type": "flag",
    "id": "flag4",
-   "s": 56.0,
+   "s": 50.0,
    "y": -1.8
   },
   {
-   "type": "flag",
-   "id": "flag5",
-   "s": 66.0,
-   "y": 1.8
+   "type": "speed_trap",
+   "id": "speed",
+   "label": "SPEED TRAP",
+   "s0": 54.0,
+   "s1": 76.0,
+   "bonus_speed_mps": 7.0
   },
   {
    "type": "stop_box",
    "id": "stop",
    "label": "STOP BOX",
-   "s0": 85.0,
-   "s1": 92.0,
+   "s0": 90.0,
+   "s1": 97.0,
    "half_width": 3.0,
    "stop_speed_mps": 0.3,
    "tail_pitch_rad": 0.25
@@ -253,15 +256,15 @@
    "type": "slow_zone",
    "id": "slow",
    "label": "SLOW 3 m/s",
-   "s0": 95.0,
-   "s1": 110.0,
+   "s0": 100.0,
+   "s1": 112.0,
    "max_speed_mps": 3.0
   },
   {
    "type": "gate",
    "id": "split",
    "label": "SPLIT",
-   "s": 102.0
+   "s": 106.0
   },
   {
    "type": "no_buzz",

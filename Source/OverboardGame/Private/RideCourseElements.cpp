@@ -2,6 +2,7 @@
 
 #include "BoardActor.h"
 #include "OverboardWire.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/TextRenderComponent.h"
 #include "Dom/JsonObject.h"
@@ -90,6 +91,7 @@ bool ARideCourseElements::LoadLayout(const FString& CourseName)
 			: Type == TEXT("flag") ? EKind::Flag
 			: Type == TEXT("stop_box") ? EKind::StopBox
 			: Type == TEXT("slow_zone") ? EKind::SlowZone
+			: Type == TEXT("speed_trap") ? EKind::SpeedTrap
 			: EKind::NoBuzz;
 		E.Id = O->GetStringField(TEXT("id"));
 		O->TryGetStringField(TEXT("label"), E.Label);
@@ -101,6 +103,7 @@ bool ARideCourseElements::LoadLayout(const FString& CourseName)
 		O->TryGetNumberField(TEXT("stop_speed_mps"), E.StopSpeed);
 		O->TryGetNumberField(TEXT("tail_pitch_rad"), E.TailPitchRad);
 		O->TryGetNumberField(TEXT("max_speed_mps"), E.MaxSpeed);
+		O->TryGetNumberField(TEXT("bonus_speed_mps"), E.BonusSpeed);
 		Elements.Add(E);
 	}
 	UE_LOG(LogRideGame, Log, TEXT("RideCourseElements: %d elements loaded from %s."), Elements.Num(), *Path);
@@ -229,6 +232,14 @@ void ARideCourseElements::BuildVisuals()
 			AddLabel(ToWorld(E.S0, PostY, 2.1), E.Label, kSlowColor, 40.f, FaceYaw);
 			break;
 		}
+		case EKind::SpeedTrap:
+		{
+			AddBox(ToWorld(E.S0, 0.0, 0.01), FVector(0.3, 2.0 * LaneHalfWidth, 0.02), kGateColor, FaceYaw);
+			AddBox(ToWorld(E.S1, 0.0, 0.01), FVector(0.3, 2.0 * LaneHalfWidth, 0.02), kGateColor, FaceYaw);
+			AddPole(ToWorld(E.S0, PostY, 0.0), 1.8, 0.05, kPoleColor);
+			AddLabel(ToWorld(E.S0, PostY, 2.1), E.Label, kGateColor, 40.f, FaceYaw);
+			break;
+		}
 		case EKind::NoBuzz:
 		{
 			AddPole(ToWorld(E.S0, -PostY, 0.0), 1.8, 0.05, kPoleColor);
@@ -246,6 +257,7 @@ void ARideCourseElements::ResetRun()
 	for (FElement& E : Elements)
 	{
 		E.bDone = E.bFailed = E.bTailSeen = false;
+		E.PeakSpeed = 0.0;
 	}
 	Readout = FRideGameReadout();
 }
@@ -295,10 +307,21 @@ void ARideCourseElements::Tick(float DeltaSeconds)
 	{
 		return;
 	}
+	if (!bLoggedFrame)
+	{
+		bLoggedFrame = true;
+		const APlayerController* PC = GetWorld()->GetFirstPlayerController();
+		const FVector Cam = PC && PC->PlayerCameraManager ? PC->PlayerCameraManager->GetCameraLocation() : FVector::ZeroVector;
+		UE_LOG(LogRideGame, Log, TEXT("RideCourseElements: first sample -- MuJoCo pos (%.2f, %.2f, %.2f) m, board actor at %s, START gate at %s, camera at %s, origin %s yaw %.1f"),
+			State.Pos[0], State.Pos[1], State.Pos[2], *Board->GetActorLocation().ToString(), *ToWorld(14.0, 0.0, 0.0).ToString(),
+			*Cam.ToString(), *Board->GetWorldOriginOffsetCm().ToString(), Board->GetWorldOriginYawDeg());
+	}
 	const double S = StartX - State.Pos[0];
 	const double Y = State.Pos[1];
 	const double Speed = FMath::Abs(State.WheelRateRadS) * kWheelRadiusM;
-	const bool bDown = Board->IsPhysicsHandoff() || Board->IsFallen();
+	// The ride ends at the handoff (bit 4). Bit 2 alone is |pitch| > 20 deg, which a tail-brake
+	// stop reaches on purpose.
+	const bool bDown = Board->IsPhysicsHandoff();
 	const bool bBuzz = (State.Flags & (OverboardWire::EStateFlags::RiderWarningPulsed | OverboardWire::EStateFlags::RiderWarningSolid)) != 0;
 	const double Now = GetWorld()->GetTimeSeconds();
 
@@ -412,6 +435,25 @@ void ARideCourseElements::Tick(float DeltaSeconds)
 			{
 				E.bDone = true;
 				if (!E.bFailed) { Award(TEXT("slow_clean"), TEXT("SLOW ZONE CLEAN")); }
+			}
+			break;
+
+		case EKind::SpeedTrap:
+			if (!Readout.bRunActive || E.bDone)
+			{
+				break;
+			}
+			if (bInside)
+			{
+				Readout.ZoneLabel = FString::Printf(TEXT("%s  %.1f MPH"), *E.Label, Speed * 2.23694);
+				E.PeakSpeed = FMath::Max(E.PeakSpeed, Speed);
+			}
+			else if (S > E.S1)
+			{
+				E.bDone = true;
+				const FString Text = FString::Printf(TEXT("TOP SPEED %.1f MPH"), E.PeakSpeed * 2.23694);
+				if (E.PeakSpeed >= E.BonusSpeed) { Award(TEXT("speed_trap"), Text); }
+				else { Event(Text); }
 			}
 			break;
 

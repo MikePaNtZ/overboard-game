@@ -127,6 +127,9 @@ namespace OverboardWire
 	{
 		constexpr uint16_t Arm = 1u << 0;
 		constexpr uint16_t Reset = 1u << 1;
+		// sim-host INPUT_FLAG_KICK: a one-shot disturbance (rising edge) that makes a fall
+		// testable. Used by the demo rider's fall test.
+		constexpr uint16_t Kick = 1u << 2;
 	}
 
 	// ---- State packet (host -> game) ------------------------------------------------------

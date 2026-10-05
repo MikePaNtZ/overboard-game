@@ -31,6 +31,8 @@
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
 #include "PadRumble.h"
+#include "DemoRider.h"
+#include "GameVideoRecorder.h"
 #include "OverboardPlayerController.generated.h"
 
 class UInputMappingContext;
@@ -61,6 +63,9 @@ public:
 	float GetLastSentForeAft() const { return LastSentForeAft; }
 	float GetLastSentSteer() const { return LastSentSteer; }
 	bool IsArmSent() const { return bArmHeld; }
+	// True once the player has pressed arm. sim-host --hold-until-arm holds the board until then.
+	// (StateOut bit 0 cannot say this: the host sets it on every packet.)
+	bool HasArmedOnce() const { return bArmedOnce; }
 
 	// The rider-warning cue phase, shared by rumble and HUD so both blink together.
 	// 2 Hz: on for the first 0.25 s of every 0.5 s.
@@ -125,6 +130,7 @@ private:
 	float TailBrake = 0.f;
 	bool bArmHeld = false;
 	bool bResetHeld = false;
+	bool bArmedOnce = false;
 
 	// Keyboard ramps.
 	float SmoothedKeyLean = 0.f;
@@ -138,12 +144,26 @@ private:
 	uint64 SendSeq = 0; // monotonic; never reset while the socket is open, so the host can detect loss
 
 	// Fall handling (bit 2 fallen, bit 4 handoff).
-	bool bWasFallenLastTick = false;
+	double FallenAloneSeconds = 0.0;
+	static constexpr double kFallenAloneResetSeconds = 2.0;
 	bool bAutoResetPending = false;
 	double FallJoltUntilSeconds = 0.0;
 	bool bWasDownLastTick = false;
 
 	FPadRumble Rumble;
+
+	// -ObDemoRider: a scripted player (FDemoRider) drives the pad values. -ObRecordVideo=<mp4>
+	// (and -ObRecordFps=<n>, default 30) records the viewport, HUD included (FGameVideoRecorder).
+	TUniquePtr<FDemoRider> Demo;
+	double DemoStartSeconds = 0.0;
+	bool bDemoOverride = false;
+	float DemoForeAft = 0.f;
+	float DemoSteer = 0.f;
+	bool bKickPending = false;
+	FString RecordVideoPath;
+	float RecordFps = 30.f;
+	TUniquePtr<FGameVideoRecorder> Recorder;
+	void UpdateDemo(const ABoardActor* Board, float DeltaTime);
 
 	const ABoardActor* FindBoard() const;
 	void SpawnCourseElements();

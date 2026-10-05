@@ -1,5 +1,5 @@
 // RideCourseElements -- the game layer on a MuJoCo course: gates with a timer, slalom flags, a
-// stop box, a slow zone and a no-buzz climb, with a score.
+// speed trap, a stop box, a slow zone and a no-buzz climb, with a score.
 //
 // READ-ONLY by rule (ADR-0009 boundary): this actor reads the board's newest StateOut sample
 // (position, speed, pitch, flags) and scores the ride. It puts no force on the board and has no
@@ -47,7 +47,7 @@ public:
 	const FRideGameReadout& GetReadout() const { return Readout; }
 
 private:
-	enum class EKind : uint8 { Gate, Flag, StopBox, SlowZone, NoBuzz };
+	enum class EKind : uint8 { Gate, Flag, StopBox, SlowZone, NoBuzz, SpeedTrap };
 
 	struct FElement
 	{
@@ -55,7 +55,8 @@ private:
 		FString Id;
 		FString Label;
 		double S = 0.0, S0 = 0.0, S1 = 0.0, Y = 0.0, HalfWidth = 0.0;
-		double StopSpeed = 0.3, TailPitchRad = 0.25, MaxSpeed = 3.0;
+		double StopSpeed = 0.3, TailPitchRad = 0.25, MaxSpeed = 3.0, BonusSpeed = 7.0;
+		double PeakSpeed = 0.0;
 		// Run state
 		bool bDone = false;       // scored or missed for this run
 		bool bFailed = false;     // the zone rule was broken in this run
@@ -73,6 +74,7 @@ private:
 	double RunStartSeconds = 0.0;
 	double LastS = -1e9;
 	bool bVisualsBuilt = false;
+	bool bLoggedFrame = false;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UStaticMesh> CubeMesh;
