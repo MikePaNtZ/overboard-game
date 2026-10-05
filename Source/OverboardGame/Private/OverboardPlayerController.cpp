@@ -597,8 +597,12 @@ void AOverboardPlayerController::SendInputPacket(float DeltaTime)
 		{
 			SpeedMps = FMath::Abs(State.WheelRateRadS) * 0.146f;
 		}
-		const float SpeedScale = FMath::GetMappedRangeValueClamped(FVector2f(CarveFullBelowMps, CarveHalfAboveMps), FVector2f(1.f, 0.5f), SpeedMps);
-		Steer *= SpeedScale;
+		// Cap the carve by sideways acceleration (controls track): the sim's turn model holds about
+		// 0.2 g, so the commanded curvature is at most min(0.25, 2.0 / v^2) per metre, with 0.25
+		// per metre at full stick. At 3 m/s that is ~0.9 stick, at 8 m/s ~0.12. Past it the
+		// rider's hips run out of reach and the board rolls over (Mike's falls at 6-8 m/s).
+		const float MaxSteer = SpeedMps > 0.1f ? FMath::Min(1.f, (2.0f / (SpeedMps * SpeedMps)) / 0.25f) : 1.f;
+		Steer = FMath::Clamp(Steer, -MaxSteer, MaxSteer);
 		BodySteer = FMath::FInterpConstantTo(BodySteer, Steer, DeltaTime, CarveRatePerS);
 		BodyLean = FMath::FInterpConstantTo(BodyLean, ForeAft, DeltaTime, LeanRatePerS);
 		ForeAft = BodyLean;
