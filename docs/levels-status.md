@@ -11,14 +11,14 @@ Updated at the end of each work block. The plan is in `docs/levels-plan.md`.
 | Pipeline design | Reviewed by the oracle | `docs/levels-plan.md`, section "Pipeline" |
 | Level 1 layout | Proposed | `tools/levels/parking_lot_layout.py`; lap 526 m closes to 0.00 m |
 | Level 2 route | Proposed (loop A, 1 413 m) | OSM data, own route tool; map on the lab server |
-| sim-host loader (spawn, bounds, boxes) | Done by c4 | cecbd1d on origin/feat/controls/downhill-carve (PR #298) |
+| sim-host loader (spawn, bounds, boxes) | Done by c4 | merged to controls master cd7962d (PR #298) |
 | Kerb ride test | Done by c4 | 4 cm rides over; 8 and 15 cm: nose strike at 2 m/s. Heightfield drops of 0.10/0.12/0.15 m at 2-3 m/s: no fall (tail drag only). Box plank (0.12 m): off the end at 2-3 m/s, no fall; off a side at 10 deg: no fall at 2 m/s, nose-bumper fall at 3 m/s. Decision: keep the box plank (a real skill); the demo rides it centred at <= 2.5 m/s |
 | Build work | Not started | waits for Mike's approval of the plan |
 
 ## Worktrees
 
 - Game: `~/projects/overboard-game-levels` (feat/game/levels from overboard-game master).
-- Controls, read-only build: `~/projects/overboard-levels-controls` (detached).
+- Controls, read-only build: `~/projects/overboard-levels-controls` (detached at origin/master cd7962d, which has the levels loader).
 
 ## Next
 
