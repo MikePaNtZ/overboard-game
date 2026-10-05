@@ -51,7 +51,7 @@ Source: `tools/levels/parking_lot_layout.py`.
 | 4 | Tight turn into the aisles | R 6 m | — |
 | 5 | Cone slalom | 6 cones, 4 m apart, ±1.0 m | cone bodies |
 | 6 | Hairpins x3 | R 6 m (at most 3 m/s, carve limit) | — |
-| 7 | Plank | 12 m long, 0.60 m wide, 0.12 m high, 1.2 m entry ramp; ride off the end or the sides | box (gap under it) + heightfield entry |
+| 7 | Plank | 12 m long, 0.60 m wide, 0.12 m high, 1.2 m entry ramp; ride off the end or the sides | box (gap under it) + heightfield entry. c4 test: a side drop at 3 m/s is a fall, at 2 m/s it is not |
 | 8 | S-carves | painted line, ±1.5 m, 20 m wavelength | — |
 | 9 | Kerb island | kerb up: a 4 cm rolled kerb, and a 10 cm kerb with a kerb-cut ramp; 10 m island; kerb down 0.10 m | boxes |
 | 10 | Obstacles | cart, bin, pallet, ±1.2 m from the lane centre | boxes |
