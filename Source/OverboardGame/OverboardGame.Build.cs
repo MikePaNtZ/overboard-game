@@ -19,7 +19,27 @@ public class OverboardGame : ModuleRules
 			"ProceduralMeshComponent",
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		// HairStrandsCore: the render rider's hair groom (GroomComponent).
+		PrivateDependencyModuleNames.AddRange(new string[] { "LevelSequence", "MovieScene", "AnimationCore", "HairStrandsCore", "Json", "MovieSceneCapture", "Slate", "SlateCore" });
+
+		// Landscape, MeshDescription (+ UnrealEd in the editor): UTrailBuildLibrary, the landscape and mesh import that
+		// tools/trail/build_trail_level.py calls. Editor-only code; the game build links no editor.
+		PrivateDependencyModuleNames.AddRange(new string[] { "Landscape", "MeshDescription", "StaticMeshDescription", "RHI", "RenderCore" });
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.Add("UnrealEd");
+		}
+		// ATrailScatterActor draws the PVE trees through UInstancedSkinnedMeshComponent, which 5.7
+		// marks UE_EXPERIMENTAL. That attribute does not compile on a UCLASS outside the engine, so
+		// the module accepts experimental API (only that component uses it).
+		bValidateExperimentalApi = false;
+
+		// PadRumble drives the gamepad through Apple's haptics directly: UE 5.7's Mac
+		// force-feedback path is an empty stub.
+		if (Target.Platform == UnrealTargetPlatform.Mac)
+		{
+			PublicFrameworks.AddRange(new string[] { "GameController", "CoreHaptics" });
+		}
 
 		// The wire layer (packet decode/encode + the MuJoCo -> Unreal transform) lives at the
 		// repo root in wire/, deliberately outside any UE module, so it stays a small,

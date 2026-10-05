@@ -1,5 +1,8 @@
 #include "BoardActor.h"
 
+#include "Kismet/GameplayStatics.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/BoxComponent.h"
@@ -16,6 +19,17 @@
 #include "HAL/PlatformTime.h"
 #include "Misc/Paths.h"
 #include "Logging/LogMacros.h"
+#include "Misc/CommandLine.h"
+#include "RiderAnimInstance.h"
+#include "GroomComponent.h"
+#include "GroomAsset.h"
+#include "Components/SpotLightComponent.h"
+#include "Misc/Parse.h"
+#include "Misc/FileHelper.h"
+#include "EngineUtils.h"
+#include "Algo/BinarySearch.h"
+#include "LevelSequenceActor.h"
+#include "LevelSequencePlayer.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogOverboardMesh, Log, All);
 
@@ -285,6 +299,31 @@ ABoardActor::ABoardActor()
 	{
 		RiderRidingBlendSpace = RidingBlendSpaceFinder.Object;
 	}
+
+	// Render rider: created always, hidden, and only used when the command line asks (BeginPlay).
+	RenderBodyMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("RenderBodyMesh"));
+	RenderBodyMesh->SetupAttachment(SceneRoot);
+	RenderHeadMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("RenderHeadMesh"));
+	RenderHeadMesh->SetupAttachment(RenderBodyMesh);
+	for (USkeletalMeshComponent* Part : {RenderBodyMesh.Get(), RenderHeadMesh.Get()})
+	{
+		Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Part->SetSimulatePhysics(false);
+		Part->SetEnableGravity(false);
+		Part->SetMobility(EComponentMobility::Movable);
+		Part->SetVisibility(false, true);
+	}
+	RiderKeyLight = CreateDefaultSubobject<USpotLightComponent>(TEXT("RiderKeyLight"));
+	RiderKeyLight->SetupAttachment(SceneRoot);
+	RiderRimLight = CreateDefaultSubobject<USpotLightComponent>(TEXT("RiderRimLight"));
+	RiderRimLight->SetupAttachment(SceneRoot);
+	for (USpotLightComponent* Light : {RiderKeyLight.Get(), RiderRimLight.Get()})
+	{
+		Light->SetMobility(EComponentMobility::Movable);
+		Light->SetVisibility(false);
+		Light->SetUsingAbsoluteLocation(true);
+		Light->SetUsingAbsoluteRotation(true);
+	}
 }
 
 bool ABoardActor::TryStartRidingAnim()
@@ -356,6 +395,43 @@ bool ABoardActor::TryStartRidingAnim()
 		*AxisY.DisplayName, AxisY.Min, AxisY.Max,
 		kRidingFullLeanSpeedMs, kRidingFullLeanLateralM);
 	return true;
+}
+
+void ABoardActor::UpdateX7Lights(const OverboardWire::FBoardState& S)
+{
+	// L1 front bar white and L3 underglow, L4 hub ring teal: always on. L2 rear bar red: a tail light,
+	// bright while the motor brakes (current < 0). L5 amber end segments: the rider warning, pulsed
+	// at 2 Hz on flags bit 5, solid on bit 6 (the same signal as the HUD chip). Strengths are emissive
+	// multipliers sized to read in daylight.
+	const double Clock = bReplayActive ? GetReplayClockSeconds() : GetWorld()->GetTimeSeconds();
+	const bool bBraking = S.MotorCurrentA < -1.f;
+	const bool bSolid = (S.Flags & (1u << 6)) != 0;
+	const bool bPulsed = (S.Flags & (1u << 5)) != 0;
+	float Amber = 0.f;
+	if (bSolid)
+	{
+		Amber = 1.f;
+	}
+	else if (bPulsed)
+	{
+		Amber = 0.5f + 0.5f * FMath::Cos(2.f * PI * 2.f * static_cast<float>(Clock));
+	}
+	if (X7Front) { X7Front->SetScalarParameterValue(TEXT("EmissiveStrength"), 4.f); }
+	if (X7Rear) { X7Rear->SetScalarParameterValue(TEXT("EmissiveStrength"), bBraking ? 8.f : 1.2f); }
+	if (X7Under) { X7Under->SetScalarParameterValue(TEXT("EmissiveStrength"), 3.f); }
+	if (X7Ring) { X7Ring->SetScalarParameterValue(TEXT("EmissiveStrength"), 3.f); }
+	if (X7Amber) { X7Amber->SetScalarParameterValue(TEXT("EmissiveStrength"), 12.f * Amber); }
+}
+
+float ABoardActor::DeckTopAtCm(float XCm) const
+{
+	// The pad surface under a foot, cm over the axle. The X7 pads are kicked: measured on the GLB
+	// centre line, 4.06 cm at 16 cm from the axle, rising 0.0717 cm per cm to 5.35 cm at the end.
+	if (bX7Skin)
+	{
+		return 4.06f + 0.0717f * FMath::Max(FMath::Abs(XCm) - 16.f, 0.f);
+	}
+	return RenderDeckTopCm;
 }
 
 float ABoardActor::GetRiderBaseHeightCm() const
@@ -461,6 +537,7 @@ void ABoardActor::UpdateRidingAnimParams()
 	const float AxisXValue = MapNormalisedToAxis(TurnAxisDriver, RidingAxisMin.X, RidingAxisMax.X);
 	const float AxisYValue = MapNormalisedToAxis(ForwardAxisDriver, RidingAxisMin.Y, RidingAxisMax.Y);
 	SingleNode->SetBlendSpacePosition(FVector(AxisXValue, AxisYValue, 0.f));
+	LastRidingBlendPos = FVector2D(AxisXValue, AxisYValue);
 
 	// One-shot placement diagnostic. First real footage showed the rider and the board plainly not
 	// belonging to each other, and "looks about a foot too high" is not a number anyone can fix a
@@ -616,6 +693,46 @@ void ABoardActor::BeginPlay()
 		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: Pint skin requested but its meshes did not resolve; keeping Openwheel geometry."));
 	}
 
+	// -ObBoardSkin=x7: the hardware track's X7 build (overboard-viz-kit, overboard_x7_exterior_dark.glb).
+	// It is CONCEPT proxy geometry, not CAD. The GLB was split in Blender into the static frame and the
+	// spinning motor, both with the axle as origin; its nose is +X, so the skin root turns 180 degrees.
+	FString SkinName;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ObBoardSkin="), SkinName) && SkinName.Equals(TEXT("x7"), ESearchCase::IgnoreCase))
+	{
+		UStaticMesh* X7Frame = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/ThirdParty/X7/x7_frame/StaticMeshes/x7_frame.x7_frame"));
+		UStaticMesh* X7Motor = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/ThirdParty/X7/x7_motor/StaticMeshes/x7_motor.x7_motor"));
+		if (X7Frame && X7Motor)
+		{
+			PintFrameMesh->SetStaticMesh(X7Frame);
+			PintWheelTireMesh->SetStaticMesh(X7Motor);
+			PintWheelHubMesh->SetStaticMesh(nullptr);
+			PintAssemblyRoot->SetRelativeRotation(FRotator(0.f, 180.f, 0.f));
+			BoxMesh->SetVisibility(false, true);
+			MeshAssemblyRoot->SetVisibility(false, true);
+			PintAssemblyRoot->SetVisibility(true, true);
+			bX7Skin = true;
+			// The board's lights (c4's mapping, shared with the game): a dynamic material per light slot.
+			auto Mid = [](UStaticMeshComponent* C, FName Slot) -> UMaterialInstanceDynamic*
+			{
+				const int32 I = C->GetMaterialIndex(Slot);
+				return I == INDEX_NONE ? nullptr : C->CreateDynamicMaterialInstance(I);
+			};
+			X7Front = Mid(PintFrameMesh, TEXT("sc_front"));
+			X7Rear = Mid(PintFrameMesh, TEXT("sc_rear"));
+			X7Under = Mid(PintFrameMesh, TEXT("sc_led"));
+			X7Amber = Mid(PintFrameMesh, TEXT("led_amber"));
+			X7Ring = Mid(PintWheelTireMesh, TEXT("sc_ring"));
+			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: X7 lights front %d rear %d under %d amber %d ring %d."),
+				X7Front != nullptr, X7Rear != nullptr, X7Under != nullptr, X7Amber != nullptr, X7Ring != nullptr);
+			RenderDeckTopCm = 4.6f;   // pad top under the feet (+-24 cm), measured on the GLB centre line
+			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor: X7 concept skin visible (proxy geometry, not CAD); deck top %.1f cm."), RenderDeckTopCm);
+		}
+		else
+		{
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: -ObBoardSkin=x7 but /Game/ThirdParty/X7 did not load; keeping the current skin."));
+		}
+	}
+
 	// Rider stand-in -- see docs/mannequin-rider.md. All-or-nothing: a rider stuck in the
 	// default T-pose (mesh resolved, animation didn't, or vice versa) is worse than no rider.
 	// Three tiers, most-wanted first, each falling through to the next: authored riding stance ->
@@ -665,11 +782,98 @@ void ABoardActor::BeginPlay()
 		UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor: rider requested (bShowRider) but the mannequin mesh/animation did not resolve -- Content/Characters/Mannequins/ is most likely not copied in locally (see docs/mannequin-rider.md). Board renders without a rider."));
 	}
 
+	if (FParse::Param(FCommandLine::Get(), TEXT("ObRenderRider")))
+	{
+		SetupRenderRider();
+	}
+
+	// Offline replay replaces the UDP stream entirely -- see the header. No socket is bound, so a
+	// render can never be disturbed by a live sender that happens to be running.
+	if (LoadReplayFromCommandLine())
+	{
+		bReplayActive = true;
+		ReplayWorldStartS = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+		// Read the sequence clock AFTER the sequence has evaluated this frame, so the board and the
+		// sequence camera always agree on the time.
+		SetTickGroup(TG_PostUpdateWork);
+		return;
+	}
+
 	StateClient = MakeUnique<FBoardStateClient>();
 	if (!StateClient->StartListening())
 	{
 		UE_LOG(LogTemp, Error, TEXT("ABoardActor: BoardStateClient failed to start; board will not move."));
 	}
+}
+
+bool ABoardActor::LoadReplayFromCommandLine()
+{
+	FString Path;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("ObReplay="), Path) || Path.IsEmpty())
+	{
+		return false;
+	}
+	FParse::Value(FCommandLine::Get(), TEXT("ObReplayOffset="), ReplayTimeOffsetS);
+	FParse::Value(FCommandLine::Get(), TEXT("ObReplayRate="), ReplayRate);
+
+	TArray<uint8> Bytes;
+	if (!FFileHelper::LoadFileToArray(Bytes, *Path))
+	{
+		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor REPLAY: cannot read '%s'; falling back to the live wire."), *Path);
+		return false;
+	}
+
+	const size_t PacketSize = OverboardWire::GetStatePacketWireSize(OverboardWire::kStateSchemaVersionLatest);
+	ReplaySamples.Reset(Bytes.Num() / PacketSize);
+	for (size_t Off = 0; Off + PacketSize <= static_cast<size_t>(Bytes.Num()); Off += PacketSize)
+	{
+		FTimestampedBoardState Sample;
+		std::string Err;
+		if (!OverboardWire::DecodeBoardState(Bytes.GetData() + Off, PacketSize, Sample.State, Err))
+		{
+			UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor REPLAY: bad packet at byte %llu: %s"), static_cast<uint64>(Off), *FString(Err.c_str()));
+			return false;
+		}
+		Sample.ArrivalTimeSeconds = Sample.State.SimTimeS;
+		ReplaySamples.Add(Sample);
+	}
+	if (ReplaySamples.Num() < 2)
+	{
+		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor REPLAY: '%s' holds fewer than two packets."), *Path);
+		return false;
+	}
+	UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor REPLAY: %d samples, sim t %.3f..%.3f s, offset %.3f s, from '%s'. UDP not bound."),
+		ReplaySamples.Num(), ReplaySamples[0].ArrivalTimeSeconds, ReplaySamples.Last().ArrivalTimeSeconds, ReplayTimeOffsetS, *Path);
+	return true;
+}
+
+double ABoardActor::GetReplayClockSeconds() const
+{
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		for (TActorIterator<ALevelSequenceActor> It(World); It; ++It)
+		{
+			const ULevelSequencePlayer* Player = It->GetSequencePlayer();
+			if (Player && Player->IsPlaying())
+			{
+				return ReplayTimeOffsetS + ReplayRate * Player->GetCurrentTime().AsSeconds();
+			}
+		}
+		return ReplayTimeOffsetS + ReplayRate * (World->GetTimeSeconds() - ReplayWorldStartS);
+	}
+	return ReplayTimeOffsetS;
+}
+
+void ABoardActor::GetReplayHistory(TArray<FTimestampedBoardState>& OutHistory, double& OutRenderTime) const
+{
+	OutRenderTime = GetReplayClockSeconds();
+	// First sample strictly after the clock; the bracket is [Upper-1, Upper].
+	int32 Upper = Algo::UpperBoundBy(ReplaySamples, OutRenderTime, &FTimestampedBoardState::ArrivalTimeSeconds);
+	Upper = FMath::Clamp(Upper, 1, ReplaySamples.Num() - 1);
+	OutHistory.Reset(2);
+	OutHistory.Add(ReplaySamples[Upper - 1]);
+	OutHistory.Add(ReplaySamples[Upper]);
 }
 
 void ABoardActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -696,6 +900,10 @@ void ABoardActor::Tick(float DeltaSeconds)
 		return;
 	}
 	UpdatePoseFromHistory();
+	if (bRenderRiderActive)
+	{
+		UpdateRenderRider();
+	}
 }
 
 void ABoardActor::PollForHandoffRelease()
@@ -866,7 +1074,7 @@ void ABoardActor::EndPhysicsHandoff()
 
 void ABoardActor::UpdatePoseFromHistory()
 {
-	if (!StateClient.IsValid())
+	if (!StateClient.IsValid() && !bReplayActive)
 	{
 		return;
 	}
@@ -877,7 +1085,15 @@ void ABoardActor::UpdatePoseFromHistory()
 	// samples here would silently reintroduce the same "history shorter than the render delay"
 	// gap that GetHistorySnapshot's own default already guards against.
 	TArray<FTimestampedBoardState> History;
-	StateClient->GetHistorySnapshot(History);
+	double ReplayRenderTime = 0.0;
+	if (bReplayActive)
+	{
+		GetReplayHistory(History, ReplayRenderTime);
+	}
+	else
+	{
+		StateClient->GetHistorySnapshot(History);
+	}
 	if (History.Num() == 0)
 	{
 		return; // nothing received yet -- hold current pose, do not guess
@@ -930,6 +1146,22 @@ void ABoardActor::UpdatePoseFromHistory()
 	LatestRiderForeAftM = History.Last().State.RiderForeAftM;
 	LatestRiderLateralM = History.Last().State.RiderLateralM;
 	LatestWheelRateRadS = History.Last().State.WheelRateRadS;
+	LatestState = History.Last().State;
+	bHaveLatestState = true;
+
+	if (bSpinPintWheel && bUsePintSkin && bPintSkinLoaded)
+	{
+		// Under the X7 skin's 180-degree root yaw, the same world spin needs the opposite pitch.
+		const float SpinSign = bX7Skin ? -1.f : 1.f;
+		const FRotator WheelSpin(SpinSign * FMath::RadiansToDegrees(History.Last().State.WheelAngleRad), 0.f, 0.f);
+		PintWheelTireMesh->SetRelativeRotation(WheelSpin);
+		PintWheelHubMesh->SetRelativeRotation(WheelSpin);
+	}
+
+	if (bX7Skin)
+	{
+		UpdateX7Lights(History.Last().State);
+	}
 
 	// Blend parameters BEFORE the offset below, so the two stay visibly independent: the offset is
 	// the honest un-amplified ballast displacement and always has been, while the blend parameters
@@ -951,7 +1183,9 @@ void ABoardActor::UpdatePoseFromHistory()
 		RiderMesh->SetRelativeLocation(FVector(OffsetXCm, OffsetYCm, GetRiderBaseHeightCm()));
 	}
 
-	const double RenderTime = FPlatformTime::Seconds() - static_cast<double>(RenderDelaySeconds);
+	const double RenderTime = bReplayActive
+		? ReplayRenderTime
+		: FPlatformTime::Seconds() - static_cast<double>(RenderDelaySeconds);
 
 	// Find the bracket [i, i+1] such that History[i].Arrival <= RenderTime <= History[i+1].Arrival.
 	// One buffer behind, never extrapolate: if RenderTime is older than everything we have, hold
@@ -1210,4 +1444,382 @@ bool ABoardActor::BuildPartFromStl(UProceduralMeshComponent* Component, const FS
 	Component->SetMobility(EComponentMobility::Movable);
 
 	return true;
+}
+
+namespace
+{
+	// The MetaHuman skater (tools/metahuman/build_skater.sh) and what he wears. The Creator has no
+	// wardrobe or grooms until its optional content is installed, so the garments and the hair
+	// come from City Sample's male crowd (copied in by tools/metahuman/copy_vault_closure.py).
+	const TCHAR* kSkaterBody = TEXT("/Game/MetaHumans/Skater/Body/SKM_MHC_Skater_BodyMesh.SKM_MHC_Skater_BodyMesh");
+	const TCHAR* kSkaterFace = TEXT("/Game/MetaHumans/Skater/Face/SKM_MHC_Skater_FaceMesh.SKM_MHC_Skater_FaceMesh");
+	const TCHAR* kSkaterRidingBlendSpace = TEXT("/Game/MetaHumans/Skater/Anims/MonoWheel_Board_Riding_BS_MH.MonoWheel_Board_Riding_BS_MH");
+	// Hair: City Sample's Hair_S_Messy, authored on the crowd head m_002 in that head's own position.
+	// A skinned binding to the skater face cannot be made (no transfer source shares both the
+	// groom's head and the skater face topology; the binding put the hair behind the skull). A short
+	// groom does not need skinning, so it rides rigidly on the head bone: its offset is the inverse
+	// of m_002's head-bone reference pose. The skater face was fitted to m_002, so the skulls match.
+	const TCHAR* kSkaterHairGroom = TEXT("/Game/Crowd/Character/Male/m_002/Hair/Hair/Hair_S_Messy.Hair_S_Messy");
+	const TCHAR* kSkaterHairSourceHead = TEXT("/Game/Crowd/Character/Male/m_002/Face/m_002_nrw_FaceMesh.m_002_nrw_FaceMesh");
+	const FName kHeadBone(TEXT("head"));
+
+	// Component-space reference pose of a bone (the product of the local reference transforms).
+	bool RefPoseComponentSpace(const USkeletalMesh* Mesh, FName Bone, FTransform& Out)
+	{
+		const FReferenceSkeleton& Ref = Mesh->GetRefSkeleton();
+		int32 Index = Ref.FindBoneIndex(Bone);
+		if (Index == INDEX_NONE)
+		{
+			return false;
+		}
+		Out = FTransform::Identity;
+		while (Index != INDEX_NONE)
+		{
+			Out = Out * Ref.GetRefBonePose()[Index];
+			Index = Ref.GetParentIndex(Index);
+		}
+		return true;
+	}
+	const TCHAR* kSkaterGarments[] = {
+		TEXT("/Game/Crowd/Character/Male/NormalWeight/Meshes/m_tal_nrw_crewneck.m_tal_nrw_crewneck"),
+		TEXT("/Game/Crowd/Character/Male/NormalWeight/Meshes/m_tal_nrw_jeans.m_tal_nrw_jeans"),
+		TEXT("/Game/Crowd/Character/Male/NormalWeight/Meshes/m_tal_nrw_loafers.m_tal_nrw_loafers"),
+	};
+}
+
+void ABoardActor::SetupRenderRider()
+{
+	FString RiderSet = TEXT("skater");
+	FParse::Value(FCommandLine::Get(), TEXT("ObRider="), RiderSet);
+	const bool bWantSkater = RiderSet.Equals(TEXT("skater"), ESearchCase::IgnoreCase);
+
+	USkeletalMesh* Body = nullptr;
+	USkeletalMesh* HeadMeshAsset = nullptr;
+	UBlendSpace* RidingBlendSpace = RiderRidingBlendSpace;
+	bool bSkater = false;
+	if (bWantSkater)
+	{
+		USkeletalMesh* SkaterBody = LoadObject<USkeletalMesh>(nullptr, kSkaterBody);
+		UBlendSpace* SkaterBlendSpace = LoadObject<UBlendSpace>(nullptr, kSkaterRidingBlendSpace);
+		if (SkaterBody && SkaterBlendSpace)
+		{
+			Body = SkaterBody;
+			HeadMeshAsset = LoadObject<USkeletalMesh>(nullptr, kSkaterFace);
+			RidingBlendSpace = SkaterBlendSpace; // retargeted to the MetaHuman body, not shared by compatibility
+			bSkater = true;
+		}
+		else
+		{
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RENDER RIDER: MetaHuman skater not built (body %s, retargeted blendspace %s); run tools/metahuman/build_skater.sh. Using the City Sample rider."),
+				SkaterBody ? TEXT("ok") : TEXT("missing"), SkaterBlendSpace ? TEXT("ok") : TEXT("missing"));
+		}
+	}
+	if (!bSkater)
+	{
+		Body = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Character/Player/Female/Meshes/SKM_PlayerFemale_Body.SKM_PlayerFemale_Body"));
+		HeadMeshAsset = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Character/Player/Female/Meshes/SKM_PlayerFemale_Head.SKM_PlayerFemale_Head"));
+	}
+	if (!Body || !RidingBlendSpace || !Body->GetSkeleton() || !RidingBlendSpace->GetSkeleton())
+	{
+		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor RENDER RIDER: body mesh or riding blendspace missing (City Sample subset not copied? see docs/carve-render.md); keeping the mannequin."));
+		return;
+	}
+	USkeleton* BodySkeleton = Body->GetSkeleton();
+	USkeleton* AnimSkeleton = RidingBlendSpace->GetSkeleton();
+	if (BodySkeleton != AnimSkeleton)
+	{
+		BodySkeleton->AddCompatibleSkeleton(AnimSkeleton);
+		AnimSkeleton->AddCompatibleSkeleton(BodySkeleton);
+	}
+
+	RenderBodyMesh->SetSkeletalMesh(Body);
+	RenderBodyMesh->SetDisablePostProcessBlueprint(true);
+	RenderBodyMesh->SetAnimationMode(EAnimationMode::AnimationBlueprint);
+	RenderBodyMesh->SetAnimInstanceClass(URiderAnimInstance::StaticClass());
+	URiderAnimInstance* Inst = Cast<URiderAnimInstance>(RenderBodyMesh->GetAnimInstance());
+	if (!Inst)
+	{
+		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor RENDER RIDER: URiderAnimInstance did not instantiate; keeping the mannequin."));
+		return;
+	}
+	Inst->SetAnimationAsset(RidingBlendSpace, /*bIsLooping=*/true);
+	Inst->SetPlaying(true);
+	if (Inst->GetAnimationAsset() != RidingBlendSpace)
+	{
+		UE_LOG(LogOverboardMesh, Error, TEXT("ABoardActor RENDER RIDER: blendspace refused by %s; keeping the mannequin."), *BodySkeleton->GetName());
+		return;
+	}
+
+	if (HeadMeshAsset)
+	{
+		RenderHeadMesh->SetSkeletalMesh(HeadMeshAsset);
+		RenderHeadMesh->SetDisablePostProcessBlueprint(true);
+		RenderHeadMesh->SetLeaderPoseComponent(RenderBodyMesh);
+	}
+
+	if (bSkater)
+	{
+		// Garments follow the body bone for bone (same MetaHuman bone names).
+		for (const TCHAR* GarmentPath : kSkaterGarments)
+		{
+			USkeletalMesh* Garment = LoadObject<USkeletalMesh>(nullptr, GarmentPath);
+			if (!Garment)
+			{
+				UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RENDER RIDER: garment %s missing; see docs/carve-render.md."), GarmentPath);
+				continue;
+			}
+			USkeletalMeshComponent* Part = NewObject<USkeletalMeshComponent>(this);
+			Part->SetupAttachment(RenderBodyMesh);
+			Part->SetSkeletalMesh(Garment);
+			Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Part->SetDisablePostProcessBlueprint(true);
+			Part->RegisterComponent();
+			Part->SetLeaderPoseComponent(RenderBodyMesh);
+			RenderGarmentMeshes.Add(Part);
+			// The shoes: under leader pose a shoe vertex renders at the MetaHuman foot bone times the
+			// City Sample skeleton's reference pose, so the sole has a fixed offset in each foot's own
+			// frame. Store the heel and toe sole points in that frame (heel under the foot bone, toe
+			// under the ball bone, both at the mesh's lowest point).
+			if (FCString::Strstr(GarmentPath, TEXT("loafers")))
+			{
+				const float SoleZ = Garment->GetBounds().GetBox().Min.Z;
+				const TCHAR* FootBones[2] = {TEXT("foot_l"), TEXT("foot_r")};
+				const TCHAR* BallBones[2] = {TEXT("ball_l"), TEXT("ball_r")};
+				bool bOk = true;
+				for (int32 s = 0; s < 2; ++s)
+				{
+					FTransform FootRef, BallRef;
+					bOk &= RefPoseComponentSpace(Garment, FootBones[s], FootRef) && RefPoseComponentSpace(Garment, BallBones[s], BallRef);
+					const FVector Heel(FootRef.GetLocation().X, FootRef.GetLocation().Y, SoleZ);
+					const FVector Toe(BallRef.GetLocation().X, BallRef.GetLocation().Y, SoleZ);
+					ShoeSoleLocal[s][0] = FootRef.InverseTransformPosition(Heel);
+					ShoeSoleLocal[s][1] = FootRef.InverseTransformPosition(Toe);
+				}
+				bShoeSoleKnown = bOk;
+				UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: shoe soles %s: heel L %s toe L %s (foot frame, cm); sole z %.1f."),
+					bOk ? TEXT("known") : TEXT("NOT FOUND"), *ShoeSoleLocal[0][0].ToString(), *ShoeSoleLocal[0][1].ToString(), SoleZ);
+			}
+		}
+		UGroomAsset* HairGroom = LoadObject<UGroomAsset>(nullptr, kSkaterHairGroom);
+		USkeletalMesh* HairSourceHead = LoadObject<USkeletalMesh>(nullptr, kSkaterHairSourceHead);
+		FTransform SourceHeadRef;
+		if (HairGroom && HairSourceHead && HeadMeshAsset && RefPoseComponentSpace(HairSourceHead, kHeadBone, SourceHeadRef)
+			&& HeadMeshAsset->GetRefSkeleton().FindBoneIndex(kHeadBone) != INDEX_NONE)
+		{
+			RenderHairGroom = NewObject<UGroomComponent>(this);
+			RenderHairGroom->SetupAttachment(RenderHeadMesh, kHeadBone);
+			RenderHairGroom->SetGroomAsset(HairGroom);
+			RenderHairGroom->SetRelativeTransform(SourceHeadRef.Inverse());
+			RenderHairGroom->RegisterComponent();
+		}
+		else
+		{
+			UE_LOG(LogOverboardMesh, Warning, TEXT("ABoardActor RENDER RIDER: hair groom or its source head missing; the skater renders without hair."));
+		}
+	}
+
+	float Scale = 1.f;
+	FParse::Value(FCommandLine::Get(), TEXT("ObRiderScale="), Scale);
+	FParse::Value(FCommandLine::Get(), TEXT("ObRiderLeanGain="), RenderRiderLeanGain);
+	FParse::Value(FCommandLine::Get(), TEXT("ObRiderFwdCm="), RenderRiderFwdCm);
+	FParse::Value(FCommandLine::Get(), TEXT("ObBallAboveDeckCm="), RenderBallAboveDeckCm);
+	if (bPintSkinLoaded && PintFrameMesh->GetStaticMesh())
+	{
+		const FBox Fb = PintFrameMesh->GetStaticMesh()->GetBoundingBox();
+		UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: Pint frame bounds (%.1f, %.1f, %.1f)..(%.1f, %.1f, %.1f) cm, axle origin; deck constant %.1f."),
+			Fb.Min.X, Fb.Min.Y, Fb.Min.Z, Fb.Max.X, Fb.Max.Y, Fb.Max.Z, kRiderDeckHeightCm);
+	}
+	RenderBodyOffsetCm = FVector(0.f, 0.f, kRiderDeckHeightCm);
+	RenderBodyMesh->SetRelativeLocation(RenderBodyOffsetCm);
+	RenderBodyMesh->SetRelativeRotation(FRotator(0.f, RiderRidingYawDeg, 0.f));
+	RenderBodyMesh->SetRelativeScale3D(FVector(Scale));
+
+	RiderMesh->SetVisibility(false, true);
+	RenderBodyMesh->SetVisibility(true, true);
+	bRenderRiderActive = true;
+	UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: %s rider %s (+head %s, %d garments, hair %s), skeleton %s, blendspace %s bound, scale %.3f, lean gain %.2f."),
+		bSkater ? TEXT("MetaHuman skater") : TEXT("City Sample"), *Body->GetName(), HeadMeshAsset ? *HeadMeshAsset->GetName() : TEXT("none"), RenderGarmentMeshes.Num(), RenderHairGroom ? TEXT("yes") : TEXT("no"), *BodySkeleton->GetName(), *RidingBlendSpace->GetName(), Scale, RenderRiderLeanGain);
+
+	if (FParse::Param(FCommandLine::Get(), TEXT("ObRiderLights")))
+	{
+		float KeyCd = 30.f, RimCd = 60.f;
+		FParse::Value(FCommandLine::Get(), TEXT("ObKeyCd="), KeyCd);
+		FParse::Value(FCommandLine::Get(), TEXT("ObRimCd="), RimCd);
+		auto Configure = [](USpotLightComponent* Light, float Candelas, const FLinearColor& Color)
+		{
+			Light->SetIntensityUnits(ELightUnits::Candelas);
+			Light->SetIntensity(Candelas);
+			Light->SetLightColor(Color);
+			Light->SetAttenuationRadius(900.f);
+			Light->SetInnerConeAngle(16.f);
+			Light->SetOuterConeAngle(34.f);
+			Light->SetSourceRadius(25.f);
+			Light->SetSoftSourceRadius(40.f);
+			Light->SetCastShadows(true);
+			// Channel 2 only: these lights touch the rider and the board, never the park.
+			Light->SetLightingChannels(false, false, true);
+			Light->SetVisibility(true);
+		};
+		Configure(RiderKeyLight, KeyCd, FLinearColor(1.0f, 0.86f, 0.72f));
+		Configure(RiderRimLight, RimCd, FLinearColor(1.0f, 0.72f, 0.45f));
+		TArray<UPrimitiveComponent*> LitParts{RenderBodyMesh, RenderHeadMesh, PintFrameMesh, PintWheelTireMesh, PintWheelHubMesh};
+		LitParts.Append(RenderGarmentMeshes);
+		if (RenderHairGroom)
+		{
+			LitParts.Add(RenderHairGroom);
+		}
+		for (UPrimitiveComponent* Lit : LitParts)
+		{
+			Lit->SetLightingChannels(true, false, true);
+		}
+		bRiderLightsActive = true;
+		UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: key %.0f cd and rim %.0f cd on lighting channel 2 (rider and board only)."), KeyCd, RimCd);
+	}
+}
+
+void ABoardActor::UpdateRenderRider()
+{
+	if (!bHaveLatestState)
+	{
+		return;
+	}
+	URiderAnimInstance* Inst = Cast<URiderAnimInstance>(RenderBodyMesh->GetAnimInstance());
+	if (!Inst)
+	{
+		return;
+	}
+	const double Clock = bReplayActive ? GetReplayClockSeconds() : GetWorld()->GetTimeSeconds();
+	const double Dt = LastRenderRiderClock < 0.0 ? 0.0 : FMath::Clamp(Clock - LastRenderRiderClock, 0.0, 0.1);
+	LastRenderRiderClock = Clock;
+
+	const OverboardWire::FBoardState& S = LatestState;
+	const FQuat OriginYaw(FRotator(0.f, WorldOriginYawDeg, 0.f));
+	auto MjVecToUe = [&OriginYaw](float X, float Y, float Z) { return OriginYaw.RotateVector(FVector(X, -Y, Z)); };
+
+	// SIMULATED: centripetal acceleration from the sim's velocity and yaw rate (MuJoCo frame,
+	// right-handed, converted like a position). Drives how hard the rider works in the carve:
+	// crouch depth, arm balance, the upper-body lead. The mapping from it is a declared choice.
+	const FVector Up(0.f, 0.f, 1.f);
+	const float Wz = S.AngVel[2];
+	const FVector AccUe = MjVecToUe(-Wz * S.LinVel[1], Wz * S.LinVel[0], 0.f);
+	FVector TravelW = -GetActorForwardVector(); // the nose is local -X
+	TravelW.Z = 0.f;
+	TravelW = TravelW.GetSafeNormal();
+	const FVector SideW = FVector::CrossProduct(Up, TravelW);
+	const float TurnTarget = FMath::Clamp(FVector::DotProduct(AccUe, SideW) / (0.15f * 9.81f), -1.f, 1.f);
+
+	// SIMULATED: the ballast displacement (rider_fore_aft_m, rider_lateral_m) in the board frame,
+	// shown as a lean of the body over the feet: lean = asin(shift / 0.9 m hip height) x gain.
+	// The board's own roll reaches the rider through the attachment, untouched.
+	FVector ShiftW = GetActorQuat().RotateVector(FVector(S.RiderForeAftM, -S.RiderLateralM, 0.f));
+	ShiftW.Z = 0.f;
+	const float LeanDeg = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(ShiftW.Size() / 0.9f, 0.f, 0.5f))) * RenderRiderLeanGain;
+	const FVector LeanTargetW = ShiftW.GetSafeNormal() * LeanDeg;
+
+	// A body has inertia; the sim's ballast is a point. A 0.12 s first-order lag is the only
+	// smoothing, and it is applied to the rider's pose only, never to the board.
+	const float Alpha = Dt > 0.0 ? 1.f - FMath::Exp(-static_cast<float>(Dt) / 0.12f) : 1.f;
+	SmoothedLeanWorld = FMath::Lerp(SmoothedLeanWorld, LeanTargetW, Alpha);
+	SmoothedTurn = FMath::Lerp(SmoothedTurn, TurnTarget, Alpha);
+	SmoothedCrouch = FMath::Lerp(SmoothedCrouch, 5.f + 7.f * FMath::Abs(TurnTarget), Alpha);
+
+	const FTransform CT = RenderBodyMesh->GetComponentTransform();
+	Inst->Inputs.bEnabled = true;
+	Inst->Inputs.LeanVecCS = CT.InverseTransformVectorNoScale(SmoothedLeanWorld);
+	Inst->Inputs.TravelDirCS = CT.InverseTransformVectorNoScale(TravelW);
+	// TurnSigned is "towards +Side" in world; the same side expressed in component space.
+	Inst->Inputs.TurnSigned = SmoothedTurn;
+	Inst->Inputs.CrouchCm = SmoothedCrouch;
+	Inst->Inputs.TimeS = static_cast<float>(Clock);
+	Inst->SetBlendSpacePosition(FVector(LastRidingBlendPos.X, LastRidingBlendPos.Y, 0.f));
+
+	// Feet onto the deck. The first frames set the body height from the lower foot. After that each
+	// foot is planted on ITS pad: a per-foot lift of the leg-IK target, with a 0.15 s lag, so the ball
+	// bone sits RenderBallAboveDeckCm over the pad surface under that foot. One body height cannot fit
+	// both feet: the authored stance holds them at different heights, and the X7 pads are kicked.
+	// The X/Y centring (feet on the axle plus -ObRiderFwdCm=) is frozen after calibration.
+	++RenderRiderCalibrationTicks;
+	if (RenderRiderCalibrationTicks >= 3)
+	{
+		const FTransform AT = GetActorTransform();
+		// The lowest sole point of each visible shoe (heel or toe), in the board frame. Without the
+		// shoe data, fall back to the MetaHuman ball bones.
+		FVector Ball[2] = {AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("ball_l"))),
+			AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("ball_r")))};
+		if (bShoeSoleKnown)
+		{
+			const FName FootNames[2] = {TEXT("foot_l"), TEXT("foot_r")};
+			for (int32 s = 0; s < 2; ++s)
+			{
+				const FTransform FootW = RenderBodyMesh->GetBoneTransform(RenderBodyMesh->GetBoneIndex(FootNames[s]));
+				const FVector Heel = AT.InverseTransformPosition(FootW.TransformPosition(ShoeSoleLocal[s][0]));
+				const FVector Toe = AT.InverseTransformPosition(FootW.TransformPosition(ShoeSoleLocal[s][1]));
+				Ball[s] = Heel.Z < Toe.Z ? Heel : Toe;
+			}
+		}
+		const FVector FootL = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("foot_l")));
+		const FVector FootR = AT.InverseTransformPosition(RenderBodyMesh->GetBoneLocation(TEXT("foot_r")));
+		const FVector Mid = 0.5f * (FootL + FootR);
+		float Err[2];
+		for (int32 s = 0; s < 2; ++s)
+		{
+			Err[s] = (DeckTopAtCm(Ball[s].X) + RenderBallAboveDeckCm) - Ball[s].Z;
+		}
+		if (RenderRiderCalibrationTicks < 14)
+		{
+			RenderBodyOffsetCm.Z += 0.8f * FMath::Max(Err[0], Err[1]);   // the lower foot onto its pad
+			// The nose is local -X, so a forward trim is a negative X target.
+			RenderBodyOffsetCm.X += 0.8f * (-RenderRiderFwdCm - Mid.X);
+			RenderBodyOffsetCm.Y += 0.8f * (-Mid.Y);
+			RenderBodyMesh->SetRelativeLocation(RenderBodyOffsetCm);
+		}
+		else
+		{
+			// The replay clock stands still in Movie Render Queue's warm-up frames (Dt = 0); a fixed
+			// step per frame then lets the feet settle before the first rendered frame.
+			const float Gain = Dt > 0.0 ? 1.f - FMath::Exp(-static_cast<float>(Dt) / 0.15f) : 0.3f;
+			for (int32 s = 0; s < 2; ++s)
+			{
+				RenderFootLiftCm[s] = FMath::Clamp(RenderFootLiftCm[s] + Gain * Err[s], -15.f, 15.f);
+			}
+		}
+		Inst->Inputs.bFlattenFeet = bShoeSoleKnown;
+		for (int32 s = 0; s < 2; ++s)
+		{
+			Inst->Inputs.SoleLocal[s][0] = ShoeSoleLocal[s][0];
+			Inst->Inputs.SoleLocal[s][1] = ShoeSoleLocal[s][1];
+		}
+		Inst->Inputs.FootLiftCm[0] = RenderFootLiftCm[0];
+		Inst->Inputs.FootLiftCm[1] = RenderFootLiftCm[1];
+		if (RenderRiderCalibrationTicks == 14 || RenderRiderCalibrationTicks % 120 == 0)
+		{
+			UE_LOG(LogOverboardMesh, Log, TEXT("ABoardActor RENDER RIDER: feet tick %d. Body offset (%.1f, %.1f, %.1f) cm; ball L (x %.1f, z %.1f, pad %.1f) R (x %.1f, z %.1f, pad %.1f); lift L %.1f R %.1f cm."),
+				RenderRiderCalibrationTicks, RenderBodyOffsetCm.X, RenderBodyOffsetCm.Y, RenderBodyOffsetCm.Z,
+				Ball[0].X, Ball[0].Z, DeckTopAtCm(Ball[0].X), Ball[1].X, Ball[1].Z, DeckTopAtCm(Ball[1].X),
+				RenderFootLiftCm[0], RenderFootLiftCm[1]);
+		}
+	}
+
+	if (bRiderLightsActive)
+	{
+		const FVector Board = GetActorLocation();
+		FVector KeyPos = Board - 260.f * TravelW - 160.f * SideW + 230.f * Up;
+		FVector RimPos = Board + 300.f * TravelW + 190.f * SideW + 200.f * Up;
+		// With a camera, both lights follow it: the key 40 degrees to the side of the camera and above
+		// it, so the side the camera sees is lit in every shot (also in shade); the rim faces the camera.
+		if (const APlayerCameraManager* Pcm = UGameplayStatics::GetPlayerCameraManager(this, 0))
+		{
+			FVector ToCam = Pcm->GetCameraLocation() - Board;
+			ToCam.Z = 0.f;
+			if (ToCam.Normalize())
+			{
+				const FVector KeyDir = ToCam.RotateAngleAxis(40.f, FVector::UpVector);
+				KeyPos = Board + 280.f * KeyDir + 200.f * Up;
+				RimPos = Board - 300.f * ToCam.RotateAngleAxis(-25.f, FVector::UpVector) + 210.f * Up;
+			}
+		}
+		const FVector Aim = Board + 110.f * Up;
+		RiderKeyLight->SetWorldLocationAndRotation(KeyPos, (Aim - KeyPos).Rotation());
+		RiderRimLight->SetWorldLocationAndRotation(RimPos, (Aim - RimPos).Rotation());
+	}
 }

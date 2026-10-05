@@ -18,7 +18,7 @@ AOverboardCameraPawn::AOverboardCameraPawn()
 	SpringArm->SetRelativeRotation(FRotator(ArmPitchDeg, 0.f, 0.f));
 	SpringArm->bDoCollisionTest = false; // W2: no scene geometry worth colliding the boom against yet
 	SpringArm->bEnableCameraLag = true;
-	SpringArm->CameraLagSpeed = 8.f;
+	SpringArm->CameraLagSpeed = 15.f; // was 8: stacked with the follow lag, too soft for live play
 
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
 	Camera->SetupAttachment(SpringArm, USpringArmComponent::SocketName);
@@ -56,6 +56,18 @@ void AOverboardCameraPawn::Tick(float DeltaSeconds)
 	}
 
 	const FVector TargetLocation = FollowTarget->GetActorLocation() + FVector(0.f, 0.f, FollowHeightOffsetCm);
+
+	// Snap, do not glide, across a large gap: the first frame (this pawn spawns at the world
+	// origin, which on OB_CityHill is 88 m from the board) and a reset (the board jumps back to
+	// the course start). Gliding there filmed empty street for seconds.
+	constexpr double kSnapDistanceCm = 1500.0;
+	if (FVector::Dist(GetActorLocation(), TargetLocation) > kSnapDistanceCm)
+	{
+		SetActorLocation(TargetLocation);
+		SetActorRotation(FRotator(0.f, FollowTarget->GetActorRotation().Yaw + 180.f, 0.f));
+		return;
+	}
+
 	const FVector NewLocation = FMath::VInterpTo(GetActorLocation(), TargetLocation, DeltaSeconds, FollowLocationSpeed);
 	SetActorLocation(NewLocation);
 
@@ -73,4 +85,33 @@ void AOverboardCameraPawn::Tick(float DeltaSeconds)
 	const float TargetYaw = FollowTarget->GetActorRotation().Yaw + 180.f;
 	const FRotator NewRotation = FMath::RInterpTo(GetActorRotation(), FRotator(0.f, TargetYaw, 0.f), DeltaSeconds, FollowYawSpeed);
 	SetActorRotation(FRotator(0.f, NewRotation.Yaw, 0.f));
+}
+
+namespace
+{
+	// The views Options / C steps through. 0 is the original chase view (the class defaults).
+	struct FCameraView
+	{
+		const TCHAR* Name;
+		float ArmLengthCm;
+		float ArmPitchDeg;
+		float HeightOffsetCm;
+	};
+	constexpr FCameraView kViews[] = {
+		{ TEXT("chase"), 480.f, -18.f, 60.f },
+		{ TEXT("close"), 260.f, -10.f, 110.f },  // near the rider's eye line, behind the tail
+		{ TEXT("high"), 1100.f, -38.f, 80.f },   // reads the street ahead: the grade and the gates
+	};
+}
+
+void AOverboardCameraPawn::CycleView()
+{
+	ViewIndex = (ViewIndex + 1) % UE_ARRAY_COUNT(kViews);
+	const FCameraView& View = kViews[ViewIndex];
+	ArmLengthCm = View.ArmLengthCm;
+	ArmPitchDeg = View.ArmPitchDeg;
+	FollowHeightOffsetCm = View.HeightOffsetCm;
+	SpringArm->TargetArmLength = ArmLengthCm;
+	SpringArm->SetRelativeRotation(FRotator(ArmPitchDeg, 0.f, 0.f));
+	UE_LOG(LogTemp, Log, TEXT("AOverboardCameraPawn: view '%s'"), View.Name);
 }

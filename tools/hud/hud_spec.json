@@ -1,0 +1,165 @@
+{
+  "_doc": "The Overboard rider HUD. One spec for the offline renders (tools/hud/render_hud.py) and the game HUD. Sizes are pixels at a 1080-pixel-high frame; scale them by frame height / 1080. Colours are sRGB hex with alpha 0..1. See docs/hud-spec.md.",
+  "version": 4,
+  "fonts": {
+    "_doc": "Roboto ships with Unreal: Engine/Content/Slate/Fonts.",
+    "numeral": "Roboto-Light.ttf",
+    "label": "Roboto-Medium.ttf",
+    "value": "Roboto-Regular.ttf"
+  },
+  "colours": {
+    "panel": [
+      "#0E141B",
+      0.72
+    ],
+    "panel_edge": [
+      "#5FC4CB",
+      0.35
+    ],
+    "text": [
+      "#E8EEF2",
+      1.0
+    ],
+    "muted": [
+      "#A9BAC8",
+      1.0
+    ],
+    "drive": [
+      "#5FC4CB",
+      1.0
+    ],
+    "brake": [
+      "#5FC4CB",
+      1.0
+    ],
+    "track": [
+      "#FFFFFF",
+      0.18
+    ],
+    "tick": [
+      "#FFFFFF",
+      0.45
+    ],
+    "near_limit": [
+      "#FFB23F",
+      1.0
+    ],
+    "over_limit": [
+      "#FF5A4A",
+      1.0
+    ],
+    "warn": [
+      "#FFB23F",
+      1.0
+    ],
+    "warn_text": [
+      "#0E141B",
+      1.0
+    ],
+    "overboard": [
+      "#FF5A4A",
+      1.0
+    ],
+    "battery_ok": [
+      "#E8EEF2",
+      1.0
+    ],
+    "battery_low": [
+      "#FFB23F",
+      1.0
+    ]
+  },
+  "panel": {
+    "anchor": "bottom_left",
+    "margin": [
+      48,
+      48
+    ],
+    "size": [
+      440,
+      236
+    ],
+    "radius": 18,
+    "edge": 1.5,
+    "pad": [
+      28,
+      24
+    ]
+  },
+  "speed": {
+    "field": "speed_mph",
+    "unit": "MPH",
+    "numeral_px": 92,
+    "unit_px": 19,
+    "tracking": 0.18,
+    "decimals": 0,
+    "smooth_s": 0.2
+  },
+  "torque": {
+    "field": "torque_nm",
+    "limit_field": "torque_lim_nm",
+    "label": "TORQUE",
+    "unit": "N·m",
+    "label_px": 16,
+    "value_px": 18,
+    "bar": [
+      384,
+      12
+    ],
+    "bar_gap": 12,
+    "near_limit_frac": 0.85,
+    "smooth_s": 0.08,
+    "_doc": "A centred bar: drive fills right of centre, braking left (both teal; the side and the sign carry the direction). Each end is the motor limit (Kt x i_limit), shown in the value as '+17 / 59 N.m'. Above near_limit_frac the fill turns amber. A torque at over_at_frac of the limit or beyond (a saturating controller never exceeds its limit) pins the fill at the end in red, with a red cap past the end and the value in red. top_px: the torque label's top, from the panel's inner top.",
+    "over_cap_px": 3,
+    "top_px": 104,
+    "over_at_frac": 0.98
+  },
+  "battery": {
+    "soc_field": "batt_soc",
+    "volt_field": "batt_v",
+    "icon": [
+      34,
+      16
+    ],
+    "value_px": 18,
+    "volt_px": 16,
+    "low_soc": 0.2,
+    "decimals": 1,
+    "smooth_s": 0.5
+  },
+  "warning": {
+    "flags_field": "flags",
+    "pulsed_bit": 32,
+    "solid_bit": 64,
+    "handoff_bit": 16,
+    "text": "PUSHBACK",
+    "handoff_text": "OVERBOARD",
+    "chip_px": 17,
+    "chip_pad": [
+      14,
+      7
+    ],
+    "pulse_hz": 2.0,
+    "pulse_min_alpha": 0.55,
+    "_doc": "The same signal as the board's amber L5 LEDs: pulsed at pulse_hz on the pulsed bit, solid on the solid bit; the panel edge turns the chip colour (edge_px, edge_alpha). The handoff bit (Unreal owns the board) shows OVERBOARD in red, the edge red, and dims every value to muted at dim_alpha: the controller no longer rides.",
+    "edge_px": 2.0,
+    "edge_alpha": 0.9,
+    "dim_alpha": 0.6,
+    "dim_fill_alpha": 0.35
+  },
+  "margin": {
+    "field": "margin",
+    "warm_from": 0.45,
+    "warn_at": 0.7,
+    "edge_alpha": [
+      0.35,
+      0.9
+    ],
+    "colour": "warn",
+    "_doc": "'margin' is the authority USED (controls track, control_core::AuthorityMargin): max(|filtered current| / limit, duty / 0.95, predicted grade current / limit); 1.0 = at the limit, and it can exceed 1. The warning (margin_level, with hysteresis) is pulsed on above 0.70 (off below 0.65) and solid on above 0.85 (off below 0.80). The HUD adds no element for it: from warm_from to warn_at the panel edge warms to amber, alpha lerping edge_alpha[0] to edge_alpha[1], clamped at warn_at, so the panel warms before the chip appears."
+  },
+  "text": {
+    "minus": "−",
+    "_doc": "Use U+2212 for the minus sign, so a sign is as wide as '+'."
+  }
+}

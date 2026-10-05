@@ -35,6 +35,9 @@ public:
 
 	virtual void Tick(float DeltaSeconds) override;
 
+	// Steps to the next camera view (chase -> close -> high -> chase). Bound to Options / C.
+	void CycleView();
+
 protected:
 	UPROPERTY(VisibleAnywhere, Category = "Camera")
 	TObjectPtr<USceneComponent> Root;
@@ -61,7 +64,7 @@ protected:
 	float FollowHeightOffsetCm = 60.f;
 
 	UPROPERTY(EditAnywhere, Category = "Board|Camera")
-	float FollowLocationSpeed = 4.f; // FInterpTo speed, position
+	float FollowLocationSpeed = 10.f; // FInterpTo speed, position
 
 	// overboard#162: reduced from 2.0. This reverses an earlier decision, deliberately -- an
 	// intermediate attempt at lagging this same speed was explicitly NOT landed because at the
@@ -75,11 +78,15 @@ protected:
 	// multi-second 162 degree swing was only a few degrees -- not enough to read. Lower is more
 	// lag; tune against real footage, not this reasoning -- this is a starting point, not a
 	// verified value (no display in this environment to check it against).
+	// 2026-10-04, live play (Mike: "it seems so laggy"): 0.6 made the camera swing seconds late in
+	// a slalom carve, which read as lag at 64 fps. 3.0 follows a carve within a fraction of a
+	// second and still smooths the per-frame heading noise.
 	UPROPERTY(EditAnywhere, Category = "Board|Camera")
-	float FollowYawSpeed = 0.6f; // FInterpTo speed, yaw only
+	float FollowYawSpeed = 3.0f; // FInterpTo speed, yaw only
 
 private:
 	TWeakObjectPtr<ABoardActor> FollowTarget;
+	int32 ViewIndex = 0;
 
 	// Finds the board actor lazily rather than requiring GameMode to wire it up, so spawn order
 	// between the camera pawn and the board actor doesn't matter.

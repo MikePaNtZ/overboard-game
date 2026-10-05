@@ -76,3 +76,39 @@ Content/MonoWheel_Board/
 
 # macOS Finder noise.
 .DS_Store
+
+# Epic's City Sample (Fab), imported locally for the offline carve render only -- the dressed
+# rider (SKM_PlayerFemale_Body/Head) and the dependency closure those meshes pull in. Licensed
+# to Mike's Epic account, not redistributable in this PUBLIC repo; same reasoning as
+# Content/CityPark/. ~2.9 GB. See docs/carve-render.md for the copy command.
+Content/Character/
+Content/Crowd/
+Content/Material/
+Content/Megascans/
+Content/Textures/
+
+# The MetaHuman skater rider, generated locally by tools/metahuman/build_skater.sh: the MetaHuman
+# Character asset, the Cinematic build (BP_Skater, meshes, textures), the retargeted riding
+# animation, the IK rigs and the hair binding. /Game/MetaHumans/Common/ is the MetaHuman common
+# content the build copies in. All of it is generated, large, and built from Epic MetaHuman content
+# and City Sample parts that are licensed to Mike's Epic account, not redistributable in this
+# PUBLIC repo; same reasoning as Content/CityPark/. See docs/carve-render.md.
+Content/MetaHumans/
+
+# The OB_Trail level's environment art, copied locally from the City Sample Fab pack (licensed to
+# Mike's Epic account, not redistributable in this PUBLIC repo; same reasoning as Content/CityPark/):
+# the street-tree kits, the dirt texture and the Megascans master materials they pull in. See
+# docs/trail-level.md for the copy command.
+Content/Prop/
+Content/MSPresets/
+
+# The OB_City level's buildings and street art, copied locally from the City Sample Fab pack
+# (licensed to Mike's Epic account, not redistributable in this PUBLIC repo; same reasoning as
+# Content/CityPark/): the SF building kits (packed level actors and their meshes/materials/textures)
+# and the City Sample ground/decal content they pull in. See docs/city-level.md for the copy command.
+Content/Building/
+Content/Environment/
+Content/Vehicle/
+
+# The X7 concept board skin: imported from overboard-viz-kit (proxy geometry, not committed there yet)
+Content/ThirdParty/X7/

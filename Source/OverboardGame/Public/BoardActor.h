@@ -42,6 +42,16 @@ public:
 	// render pose, so it reacts on the tick data actually arrives, not one render-delay later.
 	bool IsFallen() const { return bLatestSampleFallen; }
 
+	// The newest raw sample's whole StateOut flag word (OverboardWire::EStateFlags), for readers
+	// that need a bit this class does not wrap -- the rider-warning rumble and HUD cue read bits 5
+	// and 6 here. 0 before anything has been received.
+	uint16 GetLatestFlags() const { return bHaveLatestState ? LatestState.Flags : 0; }
+
+	// The newest raw StateOut sample (raw MuJoCo frame, untransformed), for read-only cues: the
+	// HUD speed and the game elements. False before anything has been received. Frozen during a
+	// handoff, like the flags.
+	bool GetLatestState(OverboardWire::FBoardState& OutState) const { OutState = LatestState; return bHaveLatestState; }
+
 	// True if the newest received sample had OverboardWire::EStateFlags::AuthorityWarning set --
 	// ADR-0011 exit criterion (c), surfaced by AOverboardHUD (condition 3 of the second
 	// ratification, overboard-game#19).
@@ -122,9 +132,37 @@ protected:
 	// How far behind the wall clock we render, in seconds. Must always be able to find two real
 	// samples to interpolate between; too small and we run out of history and hold the last
 	// known pose (still not extrapolation, just a stall). Tune once the host's real send rate
-	// (500 Hz control loop) is confirmed -- this default is a conservative placeholder.
+	// (500 Hz control loop) is confirmed.
+	//
+	// Measured 2026-10-04 on the Mac (tools/play/latency_probe.py, x7 plant, city_hill), with
+	// sim-host's real-time loop thread (controls 880a2b2): 0 missed deadlines, packet gap p99
+	// 5.6 ms, max 8.4 ms. 12 ms covers the measured max with ~3.6 ms margin; a rarer gap holds the
+	// last pose for one frame. Before that fix the gaps reached 21 ms and this was 50 ms, which
+	// alone used the whole 50 ms stick-to-screen budget. Live path only; replay has its own clock.
 	UPROPERTY(EditAnywhere, Category = "Board|Networking")
-	float RenderDelaySeconds = 0.05f;
+	float RenderDelaySeconds = 0.012f;
+
+	// --- Offline replay (render path) ---------------------------------------------------------
+	//
+	// A recorded run, as a file of concatenated wire packets, played against a DETERMINISTIC clock
+	// instead of the UDP stream and the wall clock. It exists for offline rendering (Movie Render
+	// Queue), which renders far slower than real time: a live UDP replay would race ahead of the
+	// renderer. Same decoder, same transform, same rider path as live -- only the sample source
+	// and the clock change. Off unless the command line carries -ObReplay=<file>.
+	//
+	// Clock: the first playing Level Sequence's time, plus -ObReplayOffset=<sim seconds> (the sim
+	// time at sequence time 0). Without a sequence, world time since BeginPlay. The sequence clock
+	// keeps the board locked to the camera keys, warm-up frames and temporal sub-samples included.
+	bool bReplayActive = false;
+	double ReplayRate = 1.0; // -ObReplayRate=<x>: sim seconds per sequence second (slow motion < 1)
+	TArray<FTimestampedBoardState> ReplaySamples; // ArrivalTimeSeconds holds the sample's sim time
+	double ReplayTimeOffsetS = 0.0;
+	double ReplayWorldStartS = 0.0;
+	bool LoadReplayFromCommandLine();
+	double GetReplayClockSeconds() const;
+	// Fills OutHistory with the replay samples that bracket the replay clock, and OutRenderTime
+	// with the clock value, so UpdatePoseFromHistory interpolates them exactly as it does live data.
+	void GetReplayHistory(TArray<FTimestampedBoardState>& OutHistory, double& OutRenderTime) const;
 
 	// --- W3 real mesh -----------------------------------------------------------------------
 
@@ -173,6 +211,13 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Board|Skin")
 	bool bUsePintSkin = true;
 
+	// Spin the Pint tyre and hub by the wire's wheel_angle. The prepared Pint parts have their
+	// origin on the axle (see the constructor), so a pitch about local Y is the wheel's own spin.
+	// Sign settled from the data, not assumed: this run's wheel_angle grows while the board moves
+	// along its local -X, and a wheel rolling towards -X turns nose-up (positive pitch) in UE.
+	UPROPERTY(EditAnywhere, Category = "Board|Skin")
+	bool bSpinPintWheel = true;
+
 	UPROPERTY(VisibleAnywhere, Category = "Board|Skin")
 	TObjectPtr<USceneComponent> PintAssemblyRoot;
 
@@ -196,6 +241,62 @@ protected:
 	// Zero by default, so OB_Main and every existing capture are unchanged. See SetWorldOriginYawDeg.
 	UPROPERTY(EditAnywhere, Category = "Board|Level")
 	float WorldOriginYawDeg = 0.f;
+
+	// --- Render rider (offline render path only, -ObRenderRider) -------------------------------
+	//
+	// A dressed character drawn INSTEAD of the mannequin: by default the MetaHuman skater
+	// (/Game/MetaHumans/Skater, built by tools/metahuman/build_skater.sh, dressed in City Sample
+	// crowd garments, with a City Sample hair groom); -ObRider=citysample, or a missing skater,
+	// gives City Sample's player body + head. Both are gitignored local content. The rider is drawn
+	// INSTEAD of the mannequin, playing the same riding blendspace through URiderAnimInstance,
+	// which adds a procedural layer: lean over planted feet, crouch with leg IK, arms, breathing,
+	// head look. See UpdateRenderRider for which inputs come from the sim. Off unless the command
+	// line asks for it, so the live game is unchanged.
+	UPROPERTY(VisibleAnywhere, Category = "Board|RenderRider")
+	TObjectPtr<USkeletalMeshComponent> RenderBodyMesh;
+	UPROPERTY(VisibleAnywhere, Category = "Board|RenderRider")
+	TObjectPtr<USkeletalMeshComponent> RenderHeadMesh;
+	UPROPERTY(VisibleAnywhere, Category = "Board|RenderRider")
+	TObjectPtr<class USpotLightComponent> RiderKeyLight;
+	UPROPERTY(VisibleAnywhere, Category = "Board|RenderRider")
+	TObjectPtr<class USpotLightComponent> RiderRimLight;
+	// Garments and hair of the skater rider, created in SetupRenderRider (their number varies).
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<USkeletalMeshComponent>> RenderGarmentMeshes;
+	UPROPERTY(Transient)
+	TObjectPtr<class UGroomComponent> RenderHairGroom;
+	bool bRenderRiderActive = false;
+	bool bRiderLightsActive = false;
+	int32 RenderRiderCalibrationTicks = 0;
+	FVector RenderBodyOffsetCm = FVector::ZeroVector;
+	float RenderRiderLeanGain = 1.5f;
+	// Render rider placement trims: feet forward of the axle (cm, toward the nose), and the ball
+	// bone height over the deck top (cm; the sole sits below the ball bone).
+	float RenderRiderFwdCm = 0.f;
+	// The deck top under the render rider's feet, cm over the axle: the Pint skin's 8.3, or the
+	// X7 skin's pad top (-ObBoardSkin=x7).
+	float RenderDeckTopCm = 8.3f;
+	bool bX7Skin = false;
+	float RenderFootLiftCm[2] = {0.f, 0.f};
+	FVector ShoeSoleLocal[2][2];   // [foot][heel, toe] sole points in the foot bone's frame
+	bool bShoeSoleKnown = false;
+	float DeckTopAtCm(float XCm) const;
+	void UpdateX7Lights(const OverboardWire::FBoardState& S);
+	UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> X7Front;
+	UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> X7Rear;
+	UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> X7Under;
+	UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> X7Amber;
+	UPROPERTY(Transient) TObjectPtr<UMaterialInstanceDynamic> X7Ring;
+	float RenderBallAboveDeckCm = 0.3f;  // the shoe's lowest sole point over the pad (with shoe data; see ShoeSoleLocal)
+	FVector SmoothedLeanWorld = FVector::ZeroVector;
+	float SmoothedTurn = 0.f;
+	float SmoothedCrouch = 0.f;
+	double LastRenderRiderClock = -1.0;
+	FVector2D LastRidingBlendPos = FVector2D::ZeroVector;
+	OverboardWire::FBoardState LatestState;
+	bool bHaveLatestState = false;
+	void SetupRenderRider();
+	void UpdateRenderRider();
 
 	// --- Rider stand-in ------------------------------------------------------------------------
 	//
