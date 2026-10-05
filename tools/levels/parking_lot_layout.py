@@ -85,7 +85,8 @@ ELEMENTS = [
     dict(kind="checkpoint", seg=8, at=40.0, half_width=3.0),                     # CP4
     dict(kind="s_carve", seg=10, at=6.0, length=32.0, amplitude=1.5, wavelength=20.0),
     dict(kind="checkpoint", seg=10, at=40.0, half_width=3.0),                    # CP5
-    dict(kind="kerb_island", seg=12, at=14.0, length=10.0, height=0.10, half_width=3.0),
+    dict(kind="kerb_island", seg=12, at=14.0, length=10.0, height=0.10, half_width=3.0,
+         up_low_kerb=0.04, kerb_cut_len=1.5),  # c4: >= 8 cm up = nose strike at 2 m/s
     dict(kind="checkpoint", seg=12, at=40.0, half_width=3.0),                    # CP6
     dict(kind="obstacle", seg=14, at=6.0, offset=1.2, size=(0.6, 1.0, 1.0), name="cart"),
     dict(kind="obstacle", seg=14, at=13.0, offset=-1.2, size=(0.6, 0.6, 1.0), name="bin"),

@@ -53,7 +53,7 @@ Source: `tools/levels/parking_lot_layout.py`.
 | 6 | Hairpins x3 | R 6 m (at most 3 m/s, carve limit) | — |
 | 7 | Plank | 12 m long, 0.60 m wide, 0.12 m high, 1.2 m entry ramp; ride off the end or the sides | box (gap under it) + heightfield entry |
 | 8 | S-carves | painted line, ±1.5 m, 20 m wavelength | — |
-| 9 | Kerb island | kerb up 0.10 m, 10 m island, kerb down 0.10 m | box |
+| 9 | Kerb island | kerb up: a 4 cm rolled kerb, and a 10 cm kerb with a kerb-cut ramp; 10 m island; kerb down 0.10 m | boxes |
 | 10 | Obstacles | cart, bin, pallet, ±1.2 m from the lane centre | boxes |
 | 11 | Ramp B | 15 % up 4 m (rise 0.60 m), deck 8 m, 20 % down 3 m | heightfield + rail boxes |
 
@@ -79,7 +79,9 @@ Bridge and back; they are 1.9 km and 2.5 km, which is longer than the brief.
 - Street layout from OpenStreetMap (ODbL; the level and the docs show the attribution).
   Elevation from the USGS 3DEP 1 m DEM (near flat in South Beach).
 - Grid about 450 x 650 m at 0.10 m (about 29 M posts).
-- Kerbs (0.15 m) are boxes along the OSM kerb lines: a real step. Kerb ramps at the crossings
+- Kerbs (0.15 m) are boxes along the OSM kerb lines: a real step. c4 ride test (cecbd1d, 2 m/s):
+  a 4 cm kerb rides over; at 8 cm and 15 cm the nose bumper hits the kerb face and the rider
+  comes off. So a 0.15 m kerb is a real hazard, as on a Onewheel. Kerb ramps at the crossings
   let the rider get onto the sidewalk and off it.
 - `bounds` is a crash guard only. The cruise has no score, so "off course" is not a rule.
 - Unreal: a Landscape built from the `.bin`, exact OBM meshes on the streets, sidewalks and
@@ -88,6 +90,9 @@ Bridge and back; they are 1.9 km and 2.5 km, which is longer than the brief.
   UDP channel (not StateOut). Design first, with c4's agreement.
 
 ## Open questions for Mike
+
+0. Kerbs: the sim rider cannot ride up a kerb of 8 cm or more (no nose lift). Level 1 teaches
+   "use the kerb cut" instead. Tell me if you want a different lesson.
 
 1. Level 2 route: loop A (1.4 km) as proposed, or a longer waterfront run (B, 1.9 km)?
 2. Ramp B at 15 % / 20 %: keep it as the hard element, or lower it to 12 % / 15 %?

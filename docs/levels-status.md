@@ -11,7 +11,8 @@ Updated at the end of each work block. The plan is in `docs/levels-plan.md`.
 | Pipeline design | Reviewed by the oracle | `docs/levels-plan.md`, section "Pipeline" |
 | Level 1 layout | Proposed | `tools/levels/parking_lot_layout.py`; lap 526 m closes to 0.00 m |
 | Level 2 route | Proposed (loop A, 1 413 m) | OSM data, own route tool; map on the lab server |
-| sim-host loader (spawn, bounds, boxes) | c4 builds it | follow-up commit on feat/controls/downhill-carve |
+| sim-host loader (spawn, bounds, boxes) | Done by c4 | cecbd1d on origin/feat/controls/downhill-carve (PR #298) |
+| Kerb ride test | Done by c4 | 4 cm rides over; 8 and 15 cm: nose strike at 2 m/s. Drop test pending |
 | Build work | Not started | waits for Mike's approval of the plan |
 
 ## Worktrees
