@@ -79,6 +79,9 @@ public:
 	// would end roughly one frame after it began.
 	bool IsPhysicsHandoff() const { return bPhysicsHandoffActive; }
 
+	// True while the rider has stepped off at walking speed (a handoff that is not a crash).
+	bool IsSteppedOff() const { return bSteppedOff; }
+
 	// FPlatformTime::Seconds() at which the packet that raised the CURRENT warning was received
 	// off the socket. 0 if no warning is active. Exists so AOverboardHUD can measure and log the
 	// receipt-to-draw latency on the frame it actually draws -- issue #19 AC2 asks for the
@@ -275,6 +278,18 @@ protected:
 	FTransform RagdollSavedRelative;
 	TEnumAsByte<ECollisionResponse> SavedRiderToBoardResponse = ECR_Block;
 	TEnumAsByte<ECollisionResponse> SavedBoardToRiderResponse = ECR_Block;
+	// Step-off at walking speed (BeginStepOff / TickStepOff): the rider steps to the side and stands.
+	bool BeginStepOff(USkeletalMeshComponent* Body);
+	void TickStepOff();
+	bool bSteppedOff = false;
+	FVector StepOffFrom = FVector::ZeroVector;
+	FVector StepOffTo = FVector::ZeroVector;
+	double StepOffStartSeconds = 0.0;
+	FTimerHandle StepOffTimer;
+	UPROPERTY(Transient)
+	TObjectPtr<class UAnimationAsset> StepOffSavedAnim;
+	UPROPERTY(Transient)
+	TObjectPtr<class UAnimSequence> StepOffIdle;
 	UPROPERTY(Transient)
 	TObjectPtr<class UPhysicalMaterial> RiderSlideMaterial;
 	UPROPERTY(Transient)

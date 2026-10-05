@@ -621,8 +621,10 @@ void AOverboardHUD::DrawFallenPrompt()
 	const float H = Canvas->ClipY;
 	const float K = H / 1080.f;
 
-	const FString Title = TEXT("FALLEN");
-	const FString Detail = TEXT("Press Circle (or R) to reset");
+	ABoardActor* Board = FindBoard();
+	const bool bSteppedOff = Board && Board->IsSteppedOff();
+	const FString Title = bSteppedOff ? TEXT("STEPPED OFF") : TEXT("FALLEN");
+	const FString Detail = bSteppedOff ? TEXT("Press Circle (or R) to ride again") : TEXT("Press Circle (or R) to reset");
 	const FHudTextFont TitleFont = MakeFont(EHudFont::Label, 44.f * K);
 	const FHudTextFont DetailFont = MakeFont(EHudFont::Value, 20.f * K);
 

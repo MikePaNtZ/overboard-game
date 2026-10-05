@@ -66,6 +66,18 @@ namespace
 	// landing (close to 2 g): a body hitting asphalt, not a ragdoll tumbling on. Linear damping
 	// stands in for that energy loss.
 	constexpr float kRiderBodyLinearDamping = 1.0f;
+	// Step-off: a handoff below this speed is a rider stepping off, not a crash (MuJoCo's step_off
+	// case: 2.6 m/s, the rider steps 0.5 m to the side in 0.8 s). MetaHuman rider only: the
+	// clips are retargeted to it (tools/play/retarget_step_off.py).
+	constexpr float kStepOffMaxSpeedCmS = 300.f;
+	// The walk clip's own root carries the rider sideways (~1.3 m/s); 0.25 s of it lands the rider ~0.5-1 m out.
+	// Code only lowers the body from the deck to the street, and carries the pelvis across the
+	// switch to the idle so the rider does not snap back.
+	constexpr float kStepOffSeconds = 0.25f;
+	const TCHAR* kStepOffLeftAnim = TEXT("/Game/MetaHumans/Skater/Anims/StepOff/MF_Unarmed_Walk_Left_MH.MF_Unarmed_Walk_Left_MH");
+	const TCHAR* kStepOffRightAnim = TEXT("/Game/MetaHumans/Skater/Anims/StepOff/MF_Unarmed_Walk_Right_MH.MF_Unarmed_Walk_Right_MH");
+	const TCHAR* kStepOffIdleAnim = TEXT("/Game/MetaHumans/Skater/Anims/StepOff/MM_Idle_MH.MM_Idle_MH");
+	constexpr float kBoardHandoffLiftCm = 8.f;
 	// Cap on the solver's push-apart speed for a ragdoll body that starts inside the street.
 	constexpr float kRiderMaxDepenetrationCmS = 100.0f;
 
@@ -1027,6 +1039,9 @@ void ABoardActor::OnPhysicsHandoffBegan(const FVector& BoardLinearVelocityCmS)
 		{
 			BI->SetMaxDepenetrationVelocity(kRiderMaxDepenetrationCmS);
 		}
+		// Start it clear of the street: in a nosedive the nose box starts inside the asphalt and
+		// stuck there (the board came to rest 3-5 m short of MuJoCo's).
+		Sim->AddWorldOffset(FVector(0.f, 0.f, kBoardHandoffLiftCm), false, nullptr, ETeleportType::TeleportPhysics);
 	}
 
 	// The rider lights follow the board, not the rider; in a crash they would light the street.
@@ -1035,6 +1050,10 @@ void ABoardActor::OnPhysicsHandoffBegan(const FVector& BoardLinearVelocityCmS)
 
 	USkeletalMeshComponent* Body = GetActiveRiderBody();
 	if (!Body)
+	{
+		return;
+	}
+	if (Body == RenderBodyMesh && BoardLinearVelocityCmS.Size2D() < kStepOffMaxSpeedCmS && BeginStepOff(Body))
 	{
 		return;
 	}
@@ -1112,8 +1131,94 @@ void ABoardActor::OnPhysicsHandoffBegan(const FVector& BoardLinearVelocityCmS)
 		*Body->GetName(), BoardLinearVelocityCmS.Size() / 100.f, kRiderSlideFriction, kBoardSlideFriction);
 }
 
+bool ABoardActor::BeginStepOff(USkeletalMeshComponent* Body)
+{
+	UAnimSequence* Left = LoadObject<UAnimSequence>(nullptr, kStepOffLeftAnim);
+	UAnimSequence* Right = LoadObject<UAnimSequence>(nullptr, kStepOffRightAnim);
+	UAnimSequence* Idle = LoadObject<UAnimSequence>(nullptr, kStepOffIdleAnim);
+	URiderAnimInstance* Inst = Cast<URiderAnimInstance>(Body->GetAnimInstance());
+	if (!Left || !Right || !Idle || !Inst)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ABoardActor: step-off clips missing (run tools/play/retarget_step_off.py); the rider ragdolls instead."));
+		return false;
+	}
+
+	// Step away from the side the board tips to. The board actor's axes are MuJoCo's (its nose
+	// is -X), so take "left" and "right" from the rider body, which faces the way it rides.
+	const float Roll = GetActorRotation().Roll;
+	const FVector Side = GetActorRightVector().GetSafeNormal2D() * (Roll >= 0.f ? -1.f : 1.f);
+	const bool bStepLeft = FVector::DotProduct(Side, Body->GetRightVector().GetSafeNormal2D()) < 0.f;
+
+	RagdollBody = Body;
+	bSteppedOff = true;
+	RagdollSavedParent = Body->GetAttachParent();
+	RagdollSavedRelative = Body->GetRelativeTransform();
+	StepOffSavedAnim = Inst->GetAnimationAsset();
+	Inst->Inputs.bEnabled = false;
+	Body->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+
+	StepOffFrom = Body->GetComponentLocation();
+	StepOffTo = StepOffFrom;
+	// Land on the street under the step (a placement trace, not physics).
+	FHitResult Hit;
+	FCollisionQueryParams Q(TEXT("StepOffGround"), true, this);
+	if (GetWorld()->LineTraceSingleByChannel(Hit, StepOffTo + FVector(0, 0, 100), StepOffTo - FVector(0, 0, 200), ECC_Visibility, Q))
+	{
+		StepOffTo.Z = Hit.ImpactPoint.Z;
+	}
+	StepOffStartSeconds = GetWorld()->GetTimeSeconds();
+	Inst->SetAnimationAsset(bStepLeft ? Left : Right, /*bIsLooping=*/false);
+	Inst->SetPlaying(true);
+	StepOffIdle = Idle;
+
+	GetWorldTimerManager().SetTimer(StepOffTimer, this, &ABoardActor::TickStepOff, 1.f / 60.f, true);
+	UE_LOG(LogTemp, Log, TEXT("ABoardActor: rider steps off to the %s (%.1f m/s)."), bStepLeft ? TEXT("left") : TEXT("right"),
+		GetVelocity().Size() / 100.f);
+	return true;
+}
+
+void ABoardActor::TickStepOff()
+{
+	USkeletalMeshComponent* Body = RagdollBody.Get();
+	if (!Body || !bSteppedOff)
+	{
+		GetWorldTimerManager().ClearTimer(StepOffTimer);
+		return;
+	}
+	const float A = FMath::Clamp((GetWorld()->GetTimeSeconds() - StepOffStartSeconds) / kStepOffSeconds, 0.f, 1.f);
+	Body->SetWorldLocation(FMath::Lerp(StepOffFrom, StepOffTo, FMath::SmoothStep(0.f, 1.f, A)));
+	if (A >= 1.f)
+	{
+		if (URiderAnimInstance* Inst = Cast<URiderAnimInstance>(Body->GetAnimInstance()))
+		{
+			// Keep the pelvis where the step left it: the idle's root is at the component origin.
+			const FVector Before = Body->GetBoneLocation(kRiderRagdollRootBone);
+			Inst->SetAnimationAsset(StepOffIdle, /*bIsLooping=*/true);
+			Inst->SetPlaying(true);
+			Body->TickAnimation(0.f, false);
+			Body->RefreshBoneTransforms();
+			const FVector After = Body->GetBoneLocation(kRiderRagdollRootBone);
+			Body->AddWorldOffset(FVector(Before.X - After.X, Before.Y - After.Y, 0.f));
+		}
+		GetWorldTimerManager().ClearTimer(StepOffTimer);
+	}
+}
+
 void ABoardActor::OnPhysicsHandoffEnded()
 {
+	GetWorldTimerManager().ClearTimer(StepOffTimer);
+	if (bSteppedOff)
+	{
+		bSteppedOff = false;
+		if (USkeletalMeshComponent* Stepped = RagdollBody.Get())
+		{
+			if (URiderAnimInstance* Inst = Cast<URiderAnimInstance>(Stepped->GetAnimInstance()))
+			{
+				Inst->SetAnimationAsset(StepOffSavedAnim, /*bIsLooping=*/true); // the riding blendspace
+				Inst->SetPlaying(true);
+			}
+		}
+	}
 	if (RiderKeyLight) { RiderKeyLight->SetVisibility(true); }
 	if (RiderRimLight) { RiderRimLight->SetVisibility(true); }
 	if (UPrimitiveComponent* Sim = GetSimulatedBodyComponent())

@@ -31,10 +31,19 @@ CITY_HILL = [
     {"type": "gate", "id": "split", "label": "SPLIT", "s": 106.0},
     {"type": "no_buzz", "id": "climb", "label": "NO-BUZZ CLIMB", "s0": 114.0, "s1": 166.0},
     {"type": "gate", "id": "finish", "label": "FINISH", "s": 172.0},
+    # Physical obstacles (shared with the controls track: MuJoCo adds matching bodies from this
+    # file; the game only draws them and scores a hit). Cones: 0.3 m base, 0.45 m tall. Debris:
+    # a fixed box. All at y >= 0 on the flat, so the slow-zone line at y = -1.2 m stays clear.
+    {"type": "cone", "id": "cone1", "s": 99.0, "y": 0.0},
+    {"type": "cone", "id": "cone2", "s": 104.0, "y": 1.6},
+    {"type": "cone", "id": "cone3", "s": 109.0, "y": 0.4},
+    {"type": "cone", "id": "cone4", "s": 113.0, "y": 1.8},
+    {"type": "debris", "id": "debris1", "s": 130.0, "y": 2.2, "size_m": [0.8, 0.5, 0.12], "yaw_deg": 20.0},
 ]
 
 SCORES = {
     "flag": 100,
+    "obstacle_hit": -150,
     "speed_trap": 200,
     "stop": 300,
     "tail_stop_bonus": 200,
@@ -58,6 +67,7 @@ def main() -> None:
     path = course["path"]
     doc = {
         "course": name,
+        "frame": "city_hill s/y: s = metres along the street from the course start (MuJoCo x = start_x_m - s), y = MuJoCo lateral (m); yaw_deg about +Z",
         "start_x_m": path["start_x_m"],
         "lane_half_width_m": path["width_m"] / 2 - path["lane_margin_m"],
         "street_half_width_m": path["width_m"] / 2,

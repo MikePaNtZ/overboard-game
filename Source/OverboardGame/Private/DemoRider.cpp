@@ -28,7 +28,7 @@ void FDemoRider::Enter(EPhase Next, double Seconds)
 double FDemoRider::TargetY(double S)
 {
 	static const double Pts[][2] = {
-		{ 0.0, 0.0 }, { 12.0, 0.0 }, { 20.0, 2.2 }, { 30.0, -2.2 }, { 40.0, 2.2 }, { 50.0, -2.2 }, { 58.0, 0.0 }, { 400.0, 0.0 },
+		{ 0.0, 0.0 }, { 12.0, 0.0 }, { 20.0, 2.2 }, { 30.0, -2.2 }, { 40.0, 2.2 }, { 50.0, -2.2 }, { 58.0, 0.0 }, { 94.0, 0.0 }, { 97.0, -1.2 }, { 112.0, -1.2 }, { 116.0, 0.0 }, { 400.0, 0.0 },
 	};
 	for (int32 i = 1; i < UE_ARRAY_COUNT(Pts); ++i)
 	{
@@ -54,9 +54,9 @@ double FDemoRider::TargetSpeed(double S)
 
 FDemoRider::FDemoRider()
 {
-	// -ObDemoQuickRestart: the old fast pull-away after the tail stop (1.5 s ease-off, 3 s
-	// settle), kept as the controls track's regression case for the nose strike on pull-away.
-	bQuickRestart = FParse::Param(FCommandLine::Get(), TEXT("ObDemoQuickRestart"));
+	// Since controls ddb1535 (pad-mode pull-away) the plain quick pull-away is clean, and the old
+	// slow restart (lean -0.05, 7 s settle) tipped the board back; -ObDemoSlowRestart keeps it.
+	bQuickRestart = !FParse::Param(FCommandLine::Get(), TEXT("ObDemoSlowRestart"));
 	// -ObDemoFullBrake: a full L2 pull in the stop box (the tail tip-over test case).
 	bFullBrake = FParse::Param(FCommandLine::Get(), TEXT("ObDemoFullBrake"));
 }

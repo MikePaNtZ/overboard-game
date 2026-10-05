@@ -90,14 +90,28 @@ Take of 2026-10-04 (sim 400ee0f): 4/4 flags, 14.6 mph, tail stop, finish 82.5 s,
 Rider rest point vs MuJoCo (2026-10-04): carve_fall 1.4 m, kerb_hit 0.8 m, nosedive 0.5 m
 (target <= 2 m; a second crash after a reset: 0.7 m). Board: 2-5 m. The MetaHuman ragdolls.
 
+## Obstacles (shared with MuJoCo)
+
+`tools/play/elements/city_hill.json` holds four cones on the flat and a debris box on the climb.
+`<overboard-carve>/sim/carve/obstacles.py` turns it into `elements/city_hill_obstacles.csv`, which
+sim-host loads with `--obstacles`. In MuJoCo they are fixed bodies (hard posts); the game draws
+them and scores a hit (-150). Tumbling cones need a separate "objects" packet (controls, later).
+
+## Step-off
+
+A handoff below 3 m/s is a step-off: the MetaHuman steps to the side and stands (retargeted clips,
+`tools/play/retarget_step_off.py`). The HUD says STEPPED OFF. Rider rest vs MuJoCo: 1.0 m.
+
+## Acceptance on sim ddb1535 (2026-10-05)
+
+Quick pull-away after a tail stop 3/3; full-L2 stop; free demo ride end to end 2/2 (4/4 flags,
+14.1 mph, tail stop, slow zone clean, no-buzz climb, finish, 1 900 points).
+
 ## Open faults and next
 
-- Step-off at low speed: MuJoCo's rider steps 0.5 m to the side; the game ragdolls it. A step-off
-  animation is next.
 - The board's rest point in a nosedive is 3-5 m short (its nose sticks at the strike point).
-- Balance gains e39e8ff (Kp 420): the tail no longer drags under a full lean back, so braking is
-  weak (~1.2 m/s^2) and the board cannot stop in the stop box. Reported to controls; the game
-  stays on e487142.
+- From 6.5 m/s a full-L2 stop takes about 8 m on ddb1535 (a 20 cm lean-back at 95 kg), a little
+  over the 7 m stop box.
 
 - Pull-away after a tail-brake stop (controls). `-ObDemoQuickRestart` 3-ride test:
   8add160: a nose strike in 3/3; e487142 (pad mode): 0 nose strikes. The remaining falls were
