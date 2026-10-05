@@ -47,7 +47,7 @@ public:
 	const FRideGameReadout& GetReadout() const { return Readout; }
 
 private:
-	enum class EKind : uint8 { Gate, Flag, StopBox, SlowZone, NoBuzz, SpeedTrap };
+	enum class EKind : uint8 { Gate, Flag, StopBox, SlowZone, NoBuzz, SpeedTrap, Cone, Debris };
 
 	struct FElement
 	{
@@ -57,6 +57,8 @@ private:
 		double S = 0.0, S0 = 0.0, S1 = 0.0, Y = 0.0, HalfWidth = 0.0;
 		double StopSpeed = 0.3, TailPitchRad = 0.25, MaxSpeed = 3.0, BonusSpeed = 7.0;
 		double PeakSpeed = 0.0;
+		FVector SizeM = FVector(0.8, 0.5, 0.12); // debris box
+		double YawDeg = 0.0;
 		// Run state
 		bool bDone = false;       // scored or missed for this run
 		bool bFailed = false;     // the zone rule was broken in this run
@@ -80,6 +82,8 @@ private:
 	TObjectPtr<UStaticMesh> CubeMesh;
 	UPROPERTY(Transient)
 	TObjectPtr<UStaticMesh> CylinderMesh;
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMesh> ConeMesh;
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInterface> BaseMaterial;
 

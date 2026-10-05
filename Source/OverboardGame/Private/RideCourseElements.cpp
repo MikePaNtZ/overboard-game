@@ -31,6 +31,14 @@ namespace
 	const FLinearColor kSlowColor(1.f, 0.45f, 0.f);
 	const FLinearColor kClimbColor(0.25f, 0.85f, 0.3f);
 	const FLinearColor kPoleColor(0.85f, 0.85f, 0.85f);
+	const FLinearColor kConeColor(1.f, 0.35f, 0.f);
+	const FLinearColor kDebrisColor(0.35f, 0.25f, 0.15f);
+	constexpr double kConeBaseM = 0.3;
+	constexpr double kConeHeightM = 0.45;
+	// A hit: the board's centre comes within this of a cone's axis (half the cone base plus about
+	// half the deck width). Scoring only -- MuJoCo decides what the hit does to the board.
+	constexpr double kConeHitRadiusM = 0.30;
+	constexpr double kDebrisHitMarginM = 0.15;
 }
 
 ARideCourseElements::ARideCourseElements()
@@ -40,9 +48,11 @@ ARideCourseElements::ARideCourseElements()
 
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cylinder(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cone(TEXT("/Engine/BasicShapes/Cone.Cone"));
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> Material(TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
 	CubeMesh = Cube.Object;
 	CylinderMesh = Cylinder.Object;
+	ConeMesh = Cone.Object;
 	BaseMaterial = Material.Object;
 }
 
@@ -92,6 +102,8 @@ bool ARideCourseElements::LoadLayout(const FString& CourseName)
 			: Type == TEXT("stop_box") ? EKind::StopBox
 			: Type == TEXT("slow_zone") ? EKind::SlowZone
 			: Type == TEXT("speed_trap") ? EKind::SpeedTrap
+			: Type == TEXT("cone") ? EKind::Cone
+			: Type == TEXT("debris") ? EKind::Debris
 			: EKind::NoBuzz;
 		E.Id = O->GetStringField(TEXT("id"));
 		O->TryGetStringField(TEXT("label"), E.Label);
@@ -104,6 +116,12 @@ bool ARideCourseElements::LoadLayout(const FString& CourseName)
 		O->TryGetNumberField(TEXT("tail_pitch_rad"), E.TailPitchRad);
 		O->TryGetNumberField(TEXT("max_speed_mps"), E.MaxSpeed);
 		O->TryGetNumberField(TEXT("bonus_speed_mps"), E.BonusSpeed);
+		O->TryGetNumberField(TEXT("yaw_deg"), E.YawDeg);
+		const TArray<TSharedPtr<FJsonValue>>* Size = nullptr;
+		if (O->TryGetArrayField(TEXT("size_m"), Size) && Size->Num() == 3)
+		{
+			E.SizeM = FVector((*Size)[0]->AsNumber(), (*Size)[1]->AsNumber(), (*Size)[2]->AsNumber());
+		}
 		Elements.Add(E);
 	}
 	UE_LOG(LogRideGame, Log, TEXT("RideCourseElements: %d elements loaded from %s."), Elements.Num(), *Path);
@@ -230,6 +248,27 @@ void ARideCourseElements::BuildVisuals()
 			AddBox(ToWorld(E.S1, 0.0, 0.01), FVector(0.3, 2.0 * LaneHalfWidth, 0.02), kSlowColor, FaceYaw);
 			AddPole(ToWorld(E.S0, PostY, 0.0), 1.8, 0.05, kPoleColor);
 			AddLabel(ToWorld(E.S0, PostY, 2.1), E.Label, kSlowColor, 40.f, FaceYaw);
+			break;
+		}
+		case EKind::Cone:
+		{
+			// The engine cone is 1 m tall and 1 m across, pivot at its centre.
+			UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(this);
+			C->SetStaticMesh(ConeMesh);
+			C->SetupAttachment(RootComponent);
+			C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			C->RegisterComponent();
+			C->SetWorldLocation(ToWorld(E.S, E.Y, 0.0) + FVector(0.0, 0.0, 50.0 * kConeHeightM));
+			C->SetWorldScale3D(FVector(kConeBaseM, kConeBaseM, kConeHeightM));
+			UMaterialInstanceDynamic* M = UMaterialInstanceDynamic::Create(BaseMaterial, this);
+			M->SetVectorParameterValue(TEXT("Color"), kConeColor);
+			C->SetMaterial(0, M);
+			break;
+		}
+		case EKind::Debris:
+		{
+			// MuJoCo yaw is about +Z, counter-clockwise from above; Unreal's Y is mirrored.
+			AddBox(ToWorld(E.S, E.Y, 0.5 * E.SizeM.Z), E.SizeM, kDebrisColor, FaceYaw - static_cast<float>(E.YawDeg));
 			break;
 		}
 		case EKind::SpeedTrap:
@@ -456,6 +495,31 @@ void ARideCourseElements::Tick(float DeltaSeconds)
 				else { Event(Text); }
 			}
 			break;
+
+		case EKind::Cone:
+			if (Readout.bRunActive && !E.bDone && FMath::Abs(S - E.S) < kConeHitRadiusM && FMath::Abs(Y - E.Y) < kConeHitRadiusM)
+			{
+				E.bDone = true;
+				Award(TEXT("obstacle_hit"), TEXT("CONE HIT"));
+			}
+			break;
+
+		case EKind::Debris:
+		{
+			// The board's centre inside the box footprint (in the box's own frame), plus a margin.
+			const double Rad = FMath::DegreesToRadians(E.YawDeg);
+			const double Ds = -(S - E.S); // course s runs along MuJoCo -X
+			const double Dy = Y - E.Y;
+			const double Lx = FMath::Cos(Rad) * Ds + FMath::Sin(Rad) * Dy;
+			const double Ly = -FMath::Sin(Rad) * Ds + FMath::Cos(Rad) * Dy;
+			if (Readout.bRunActive && !E.bDone && FMath::Abs(Lx) < 0.5 * E.SizeM.X + kDebrisHitMarginM
+				&& FMath::Abs(Ly) < 0.5 * E.SizeM.Y + kDebrisHitMarginM)
+			{
+				E.bDone = true;
+				Award(TEXT("obstacle_hit"), TEXT("DEBRIS HIT"));
+			}
+			break;
+		}
 
 		case EKind::NoBuzz:
 			if (!Readout.bRunActive || E.bDone)
