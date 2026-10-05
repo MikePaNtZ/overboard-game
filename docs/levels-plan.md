@@ -1,7 +1,9 @@
 # Levels plan — parking-lot circuit and SF cruise loop
 
 Owner: levels track (session overboard-d5). Branch: `feat/game/levels`.
-Status: PROPOSED to Mike, 2026-10-05. No build work starts before approval.
+Status: APPROVED by Mike, 2026-10-05. Decisions: Level 2 = route B (waterfront run to Bryant
+Street and back); Ramp B = 15 % up / 20 % down; kerb lesson = use the kerb cut; plank = box
+(levels recommendation).
 
 ## Rule
 
@@ -71,14 +73,17 @@ Acceptance:
 
 Route map: https://mikes-macbook-pro.tail2cbb82.ts.net:8448/game/levels/level2_routes.png
 
-Proposed route: loop A, 1 413 m, about 4.7 min at 5 m/s. 2nd Street (protected bike lane) →
+Approved route: B, 1 932 m, about 6.4 min at 5 m/s (loop A + the waterfront run north to
+Bryant Street and back, under the Bay Bridge). 2nd Street (protected bike lane) →
 Brannan Street (bike lane) → The Embarcadero waterfront by South Beach Harbor → King Street
 (bike lane, Oracle Park) → 2nd Street. Routes B and C add a waterfront run north to the Bay
 Bridge and back; they are 1.9 km and 2.5 km, which is longer than the brief.
 
 - Street layout from OpenStreetMap (ODbL; the level and the docs show the attribution).
   Elevation from the USGS 3DEP 1 m DEM (near flat in South Beach).
-- Grid about 450 x 650 m at 0.10 m (about 29 M posts).
+- Grid 440 x 880 m at 0.10 m (4401 x 8801 = 38.7 M posts, under the 50 M limit).
+- The bay is visible: the promenade runs on the seawall. Unreal draws the water east of the
+  seawall; MuJoCo has a rail box along the seawall edge, so the board cannot go into the bay.
 - Kerbs (0.15 m) are boxes along the OSM kerb lines: a real step. c4 ride test (cecbd1d, 2 m/s):
   a 4 cm kerb rides over; at 8 cm and 15 cm the nose bumper hits the kerb face and the rider
   comes off. So a 0.15 m kerb is a real hazard, as on a Onewheel. Kerb ramps at the crossings
@@ -94,5 +99,5 @@ Bridge and back; they are 1.9 km and 2.5 km, which is longer than the brief.
 0. Kerbs: the sim rider cannot ride up a kerb of 8 cm or more (no nose lift). Level 1 teaches
    "use the kerb cut" instead. Tell me if you want a different lesson.
 
-1. Level 2 route: loop A (1.4 km) as proposed, or a longer waterfront run (B, 1.9 km)?
-2. Ramp B at 15 % / 20 %: keep it as the hard element, or lower it to 12 % / 15 %?
+1. (Answered: route B.)
+2. (Answered: see the status line.)
