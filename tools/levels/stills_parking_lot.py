@@ -24,6 +24,8 @@ SHOTS = [
     ("start_straight", (-4700.0, 3600.0, 350.0), -5.0, -35.0, 24.0),
     ("aisles_slalom", (3400.0, 300.0, 1100.0), -22.0, 178.0, 20.0),
     ("ramp_b", (-5250.0, 1400.0, 650.0), -10.0, -115.0, 24.0),
+    # chase height: 1.6 m above the start line, looking along the start straight (MuJoCo +X = UE +X)
+    ("chase", (-3600.0, 3200.0, 160.0), -3.0, 0.0, 28.0),
 ]
 
 if eal.does_directory_exist(CINE):

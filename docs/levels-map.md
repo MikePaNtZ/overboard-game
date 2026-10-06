@@ -55,20 +55,26 @@ The C++ module must be compiled once per worktree before the editor runs (it pro
 
 ## Art folders (gitignored, licensed to Mike's Epic account; never commit)
 
-The props come from the City Sample Fab pack, copied into `Content/` by
+The props, buildings and surfaces come from the City Sample Fab pack, copied into `Content/` by
 `tools/metahuman/copy_vault_closure.py`:
 
 ```
 tools/metahuman/copy_vault_closure.py --copy \
   /Game/Prop/Kit_StreetLamp_B/Mesh/SM_StreetLamp_B \
   /Game/Prop/Kit_Trashcan_A/Mesh/SM_Trashcan_A_01 \
-  /Game/Prop/Kit_Tree_Maple_Red/Mesh/Tree_Maple_Red_A \
-  /Game/Prop/Kit_TreeBase_A/Mesh/SM_TreeBase_SquareGrill_A
+  /Game/Building/Library/Kit_Hero_Bldg/LevelInstance/BPP_Bldg_Hero_Mid_SFC_A01 \
+  /Game/Building/Library/Kit_Hero_Bldg/LevelInstance/BPP_Bldg_Hero_Mid_SFC_B01 \
+  /Game/Building/Library/Kit_Hero_Bldg/LevelInstance/BPP_Bldg_Hero_Low_SFD_Long_01 \
+  /Game/Megascans/Surfaces/Cast_In_Situ_Concrete_Wall_vcfice0/Asphalt_Road_2x2_M_01/th5ldh0cw_8K_Albedo \
+  /Game/Megascans/Surfaces/Concrete_Castinsitu_uflnbcofw/uflnbcofw_8K_Albedo
 ```
 
-The copied content (`Content/Prop/`, `Content/Material/`, `Content/Megascans/`) is gitignored. The
-ground, box, cone, marking and massing materials are procedural, so the build needs no texture
-content.
+The copied content (`Content/Prop/`, `Content/Building/`, `Content/Megascans/`, `Content/Material/`)
+is gitignored; never commit it. The lot asphalt and the ramp/kerb concrete use the Megascans
+surfaces (world-space UVs). The box, cone, marking, grass and tree-canopy materials are procedural.
+The buildings ring the lot 55 m outside the verge; they are packed level actors, so they render only
+in the `-game` MRQ still, not in the headless editor. The verge trees are a green canopy proxy,
+because the City Sample street trees are a bare-branch winter variant.
 
 ## What is committed
 

@@ -109,6 +109,83 @@ def flat_material(name, color, rough=0.85, spec=0.3, noise_amt=0.0, emissive=Non
     return mat
 
 
+# --- Megascans textured materials (world-space UVs, so they tile on any scaled mesh) -------------
+MS = "/Game/Megascans/Surfaces"
+TEX = dict(
+    asphalt=(MS + "/Cast_In_Situ_Concrete_Wall_vcfice0/Asphalt_Road_2x2_M_01/th5ldh0cw_8K_Albedo",
+             MS + "/Cast_In_Situ_Concrete_Wall_vcfice0/Asphalt_Road_2x2_M_01/th5ldh0cw_8K_Normal",
+             MS + "/Cast_In_Situ_Concrete_Wall_vcfice0/Asphalt_Road_2x2_M_01/th5ldh0cw_8K_Roughness"),
+    concrete=(MS + "/Concrete_Castinsitu_uflnbcofw/uflnbcofw_8K_Albedo",
+              MS + "/Concrete_Castinsitu_uflnbcofw/uflnbcofw_8K_Normal",
+              MS + "/Concrete_Castinsitu_uflnbcofw/uflnbcofw_8K_Roughness"),
+)
+
+
+def sampler_for(tex):
+    """Pick the sampler type that matches the texture, including the Virtual variants (the Megascans
+    8K surfaces are streamed virtual textures, so a plain Color/Normal sampler fails to compile)."""
+    cs = tex.get_editor_property("compression_settings")
+    srgb = tex.get_editor_property("srgb")
+    vt = tex.get_editor_property("virtual_texture_streaming")
+    T = unreal.MaterialSamplerType
+    if cs == unreal.TextureCompressionSettings.TC_NORMALMAP:
+        return T.SAMPLERTYPE_VIRTUAL_NORMAL if vt else T.SAMPLERTYPE_NORMAL
+    if cs == unreal.TextureCompressionSettings.TC_MASKS:
+        return T.SAMPLERTYPE_VIRTUAL_MASKS if vt else T.SAMPLERTYPE_MASKS
+    if cs == unreal.TextureCompressionSettings.TC_ALPHA:
+        return T.SAMPLERTYPE_VIRTUAL_ALPHA if vt else T.SAMPLERTYPE_ALPHA
+    if cs == unreal.TextureCompressionSettings.TC_GRAYSCALE:
+        if vt:
+            return T.SAMPLERTYPE_VIRTUAL_GRAYSCALE if srgb else T.SAMPLERTYPE_VIRTUAL_LINEAR_GRAYSCALE
+        return T.SAMPLERTYPE_GRAYSCALE if srgb else T.SAMPLERTYPE_LINEAR_GRAYSCALE
+    if vt:
+        return T.SAMPLERTYPE_VIRTUAL_COLOR if srgb else T.SAMPLERTYPE_VIRTUAL_LINEAR_COLOR
+    return T.SAMPLERTYPE_COLOR if srgb else T.SAMPLERTYPE_LINEAR_COLOR
+
+
+def textured_material(name, key, tile_cm, tint=(1, 1, 1), spec=0.25):
+    """A Megascans surface in world space: albedo tinted, normal, roughness. If a texture is
+    missing the build falls back to a flat colour, so a missing pack never fails the build."""
+    a_p, n_p, r_p = TEX[key]
+    ta, tn, tr = unreal.load_asset(a_p), unreal.load_asset(n_p), unreal.load_asset(r_p)
+    if not (ta and tn and tr):
+        log("  textured %s MISSING (%s); using a flat colour" % (name, a_p))
+        return flat_material(name, [c * 0.3 for c in tint], rough=0.85, spec=spec, noise_amt=0.1)
+    mat = new_material(name)
+    wp = node(mat, unreal.MaterialExpressionWorldPosition, 0)
+    mask = node(mat, unreal.MaterialExpressionComponentMask, 1, r=True, g=True)
+    mel.connect_material_expressions(wp, "", mask, "")
+    div = node(mat, unreal.MaterialExpressionDivide, 2)
+    mel.connect_material_expressions(mask, "", div, "A")
+    tc = node(mat, unreal.MaterialExpressionConstant, 3, r=float(tile_cm))
+    mel.connect_material_expressions(tc, "", div, "B")
+    col = node(mat, unreal.MaterialExpressionTextureSample, 10, texture=ta, sampler_type=sampler_for(ta))
+    mel.connect_material_expressions(div, "", col, "UVs")
+    tnt = node(mat, unreal.MaterialExpressionMultiply, 11)
+    tcol = node(mat, unreal.MaterialExpressionConstant3Vector, 12,
+                constant=unreal.LinearColor(tint[0], tint[1], tint[2], 1))
+    mel.connect_material_expressions(col, "", tnt, "A")
+    mel.connect_material_expressions(tcol, "", tnt, "B")
+    mel.connect_material_property(tnt, "", MP.MP_BASE_COLOR)
+    nrm = node(mat, unreal.MaterialExpressionTextureSample, 13, texture=tn, sampler_type=sampler_for(tn))
+    mel.connect_material_expressions(div, "", nrm, "UVs")
+    mel.connect_material_property(nrm, "", MP.MP_NORMAL)
+    rgh = node(mat, unreal.MaterialExpressionTextureSample, 14, texture=tr, sampler_type=sampler_for(tr))
+    mel.connect_material_expressions(div, "", rgh, "UVs")
+    r_chan = "A" if tr.get_editor_property("compression_settings") == unreal.TextureCompressionSettings.TC_ALPHA else "R"
+    mel.connect_material_property(rgh, r_chan, MP.MP_ROUGHNESS)
+    sp = node(mat, unreal.MaterialExpressionConstant, 15, r=float(spec))
+    mel.connect_material_property(sp, "", MP.MP_SPECULAR)
+    for u in USAGES:
+        mel.set_material_usage(mat, u)
+    mel.layout_material_expressions(mat)
+    mel.recompile_material(mat)
+    errs = lib.get_material_compile_errors(mat)
+    eal.save_asset(mat.get_path_name())
+    log("material %s (textured %s)%s" % (name, key, "" if not errs else "  COMPILE ERRORS: " + " | ".join(errs)))
+    return mat
+
+
 def spawn(cls, loc=(0, 0, 0), pitch=0.0, yaw=0.0, roll=0.0, label=None):
     a = eas.spawn_actor_from_class(cls, unreal.Vector(*loc), unreal.Rotator(roll=roll, pitch=pitch, yaw=yaw))
     if not a:
@@ -120,10 +197,10 @@ def spawn(cls, loc=(0, 0, 0), pitch=0.0, yaw=0.0, roll=0.0, label=None):
 
 # --- daylight look -------------------------------------------------------------------------------
 def build_look():
-    sun = spawn(unreal.DirectionalLight, (0, 0, 3000), pitch=-42.0, yaw=35.0, label="OB_Sun")
+    sun = spawn(unreal.DirectionalLight, (0, 0, 3000), pitch=-58.0, yaw=300.0, label="OB_Sun")
     sc = sun.light_component
     setp(sc, "mobility", unreal.ComponentMobility.MOVABLE)
-    setp(sc, "intensity", 75000.0)
+    setp(sc, "intensity", 90000.0)
     setp(sc, "use_temperature", True)
     setp(sc, "temperature", 5600.0)
     setp(sc, "atmosphere_sun_light", True)
@@ -136,7 +213,7 @@ def build_look():
     kc = sky.light_component
     setp(kc, "mobility", unreal.ComponentMobility.MOVABLE)
     setp(kc, "real_time_capture", True)
-    setp(kc, "intensity", 1.0)
+    setp(kc, "intensity", 1.6)
 
     clouds = spawn(unreal.VolumetricCloud, (0, 0, 0), label="OB_Clouds")
     ccomp = clouds.get_component_by_class(unreal.VolumetricCloudComponent)
@@ -174,16 +251,17 @@ for d in (MESHES, MATS):
 log("cleaned")
 
 mats = dict(
-    Asphalt=flat_material("M_PL_Asphalt", (0.055, 0.055, 0.058), rough=0.9, spec=0.2, noise_amt=0.12),
-    Concrete=flat_material("M_PL_Concrete", (0.34, 0.33, 0.31), rough=0.85, spec=0.25, noise_amt=0.08),
+    Asphalt=textured_material("M_PL_Asphalt", "asphalt", 400.0, tint=(1.6, 1.6, 1.6), spec=0.2),
+    Concrete=textured_material("M_PL_Concrete", "concrete", 300.0, tint=(0.95, 0.93, 0.9), spec=0.25),
     Grass=flat_material("M_PL_Grass", (0.045, 0.11, 0.035), rough=0.95, spec=0.1, noise_amt=0.25),
+    Canopy=flat_material("M_PL_Canopy", (0.06, 0.16, 0.05), rough=0.9, spec=0.1, noise_amt=0.35),
     Wood=flat_material("M_PL_Wood", (0.19, 0.12, 0.06), rough=0.7, spec=0.3),
     Metal=flat_material("M_PL_Metal", (0.30, 0.31, 0.33), rough=0.4, spec=0.6, metallic=0.9),
-    Cone=flat_material("M_PL_Cone", (0.85, 0.22, 0.03), rough=0.6, spec=0.3, emissive=(0.25, 0.05, 0.0)),
-    White=flat_material("M_PL_White", (0.75, 0.75, 0.72), rough=0.6, spec=0.3),
-    Yellow=flat_material("M_PL_Yellow", (0.75, 0.62, 0.05), rough=0.6, spec=0.3),
-    Magenta=flat_material("M_PL_Magenta", (0.75, 0.05, 0.55), rough=0.6, spec=0.3, emissive=(0.3, 0.0, 0.22)),
-    Massing=flat_material("M_PL_Massing", (0.22, 0.21, 0.20), rough=0.8, spec=0.3, noise_amt=0.1),
+    Cone=flat_material("M_PL_Cone", (0.85, 0.22, 0.03), rough=0.6, spec=0.3, emissive=(0.5, 0.1, 0.0)),
+    # markings read in any light: a bright base plus a matching emissive so they are never crushed
+    White=flat_material("M_PL_White", (0.82, 0.82, 0.80), rough=0.55, spec=0.2, emissive=(0.35, 0.35, 0.34)),
+    Yellow=flat_material("M_PL_Yellow", (0.82, 0.68, 0.04), rough=0.55, spec=0.2, emissive=(0.45, 0.36, 0.0)),
+    Black=flat_material("M_PL_Black", (0.02, 0.02, 0.02), rough=0.7, spec=0.1),
 )
 
 
@@ -292,41 +370,108 @@ for p in props:
 log("placed %d props" % len(props))
 
 
-# --- dressing OUTSIDE the lot only (never inside x[-60,60] y[-40,40]) ----------------------------
-def dressing():
+# --- surrounding world: no black void; a city parking lot ----------------------------------------
+# Mid-rise and low hero buildings only, and only ones whose packed pivot sits at the base so they
+# stand on the ground in the -game render (the Triangle hero building floats, so it is left out;
+# the "Ref" towers at 80-140 m overhang a lot this small, so they are left out too).
+BUILDINGS = [
+    "/Game/Building/Library/Kit_Hero_Bldg/LevelInstance/BPP_Bldg_Hero_Mid_SFC_A01",
+    "/Game/Building/Library/Kit_Hero_Bldg/LevelInstance/BPP_Bldg_Hero_Mid_SFC_B01",
+    "/Game/Building/Library/Kit_Hero_Bldg/LevelInstance/BPP_Bldg_Hero_Low_SFD_Long_01",
+]
+
+
+def building_class(path):
+    bp = unreal.load_asset(path)
+    if bp is None:
+        return None
+    if isinstance(bp, unreal.Blueprint):
+        return bp.generated_class()
+    return unreal.load_object(None, path + "_C")
+
+
+def ground_box(x_m, y_m, lx, ly, top_z, thick, mat, label):
+    """A flat slab (MuJoCo metres) with its top at top_z, for the streets, pavement and grass."""
     cube = unreal.load_asset("/Engine/BasicShapes/Cube")
-    holder_n = 0
-    # a ring of massing blocks beyond the grass verge, so the horizon reads as a built edge
-    ring = []
-    for x in range(-90, 91, 18):
-        ring.append((x, 58.0)); ring.append((x, -58.0))
-    for y in range(-54, 55, 18):
-        ring.append((82.0, y)); ring.append((-82.0, y))
-    for (x, y) in ring:
-        hgt = 6.0 + 3.0 * ((x * 7 + y) % 5)
-        ux, uy = ue_xy(float(x), float(y))
-        a = spawn(unreal.StaticMeshActor, (ux, uy, hgt * 100.0 / 2.0), label="OB_PL_Massing_%d" % holder_n)
-        a.static_mesh_component.set_static_mesh(cube)
-        a.static_mesh_component.set_material(0, mats["Massing"])
-        a.set_actor_scale3d(unreal.Vector(0.12, 0.12, hgt))
-        a.static_mesh_component.set_mobility(unreal.ComponentMobility.STATIC)
-        holder_n += 1
-    # trees and street lamps on the verge band, clear of the lot
-    tree = unreal.load_asset("/Game/Prop/Kit_Tree_Maple_Red/Mesh/Tree_Maple_Red_A")
-    lamp = unreal.load_asset("/Game/Prop/Kit_StreetLamp_B/Mesh/SM_StreetLamp_B")
-    verge = []
-    for x in range(-60, 61, 15):
-        verge.append((float(x), 43.5, tree)); verge.append((float(x), -43.5, tree))
-    for y in range(-38, 39, 19):
-        verge.append((63.5, float(y), lamp)); verge.append((-63.5, float(y), lamp))
-    for (x, y, mesh) in verge:
-        if mesh is None:
+    ux, uy = ue_xy(x_m, y_m)
+    a = spawn(unreal.StaticMeshActor, (ux, uy, (top_z - thick / 2) * 100.0), label=label)
+    a.static_mesh_component.set_static_mesh(cube)
+    a.static_mesh_component.set_material(0, mat)
+    a.static_mesh_component.set_mobility(unreal.ComponentMobility.STATIC)
+    a.static_mesh_component.set_collision_enabled(unreal.CollisionEnabled.NO_COLLISION)
+    a.set_actor_scale3d(unreal.Vector(lx, ly, thick))
+
+
+def dressing():
+    n = 0
+    # a big grass plane to the far horizon, just below the lot, so the world is never black
+    ground_box(0, 0, 900.0, 900.0, -0.02, 0.4, mats["Grass"], "OB_PL_Grass_Plane")
+    # a street on two sides (south along X, east along Y), with a concrete pavement beside each
+    ground_box(0, -58.0, 220.0, 16.0, 0.0, 0.3, mats["Asphalt"], "OB_PL_Street_S")
+    ground_box(80.0, 0.0, 16.0, 190.0, 0.0, 0.3, mats["Asphalt"], "OB_PL_Street_E")
+    ground_box(0, -49.5, 220.0, 7.0, 0.01, 0.2, mats["Concrete"], "OB_PL_Pave_S")
+    ground_box(71.5, 0.0, 7.0, 190.0, 0.01, 0.2, mats["Concrete"], "OB_PL_Pave_E")
+
+    # City Sample mid-rise buildings around the lot, ~55 m outside the verge (clear of the lot),
+    # with gaps. They render only in -game (packed level actors), where the MRQ still runs.
+    sides = []
+    for x in (-66.0, -14.0, 34.0):                        # north row, facing south
+        sides.append((x, 104.0, 180.0))
+    for x in (-54.0, 10.0):                               # beyond the south street, facing north
+        sides.append((x, -104.0, 0.0))
+    for y in (-30.0, 34.0):                               # west row, facing east
+        sides.append((-118.0, y, 270.0))
+    for y in (-34.0, 30.0):                               # beyond the east street, facing west
+        sides.append((126.0, y, 90.0))
+    for i, (x, y, yaw) in enumerate(sides):
+        path = BUILDINGS[i % len(BUILDINGS)]
+        cls = building_class(path)
+        if cls is None:
+            log("  building MISSING %s" % path)
             continue
         ux, uy = ue_xy(x, y)
-        a = sm_actor(mesh, "OB_PL_Dress_%d" % holder_n, collide=False)
+        # A packed level actor populates no geometry or bounds in the headless editor (measured:
+        # 16 cm default, 0 components), so the base cannot be snapped here; the kept building types
+        # stand at z = 0 in the -game render by their own base pivot.
+        spawn(cls, (ux, uy, 0.0), yaw=yaw, label="OB_PL_Bldg_%d" % i)
+        n += 1
+    log("buildings placed: %d" % n)
+
+    # leafed trees along the verge (a green canopy proxy, since the City Sample street trees are a
+    # bare-branch winter variant): a brown trunk and a green canopy, so the verge reads as summer.
+    for x in range(-50, 51, 25):
+        proxy_tree(x, 46.5, n); n += 1
+        proxy_tree(x, -46.5, n); n += 1
+    # street lamps along the two streets
+    lamp = unreal.load_asset("/Game/Prop/Kit_StreetLamp_B/Mesh/SM_StreetLamp_B")
+    spots = [(67.0, float(y)) for y in range(-30, 31, 30)]
+    spots += [(float(x), -54.0) for x in range(-45, 46, 30)]
+    for x, y in spots:
+        if not lamp:
+            continue
+        ux, uy = ue_xy(x, y)
+        a = sm_actor(lamp, "OB_PL_Lamp_%d" % n, collide=False)
         a.set_actor_location(unreal.Vector(ux, uy, 0.0), False, False)
-        holder_n += 1
-    log("dressing: %d actors" % holder_n)
+        n += 1
+    log("dressing: %d actors total" % n)
+
+
+def proxy_tree(x_m, y_m, i):
+    cube = unreal.load_asset("/Engine/BasicShapes/Cube")
+    sphere = unreal.load_asset("/Engine/BasicShapes/Sphere")
+    ux, uy = ue_xy(float(x_m), float(y_m))
+    trunk = spawn(unreal.StaticMeshActor, (ux, uy, 150.0), label="OB_PL_TreeTrunk_%d" % i)
+    trunk.static_mesh_component.set_static_mesh(cube)
+    trunk.static_mesh_component.set_material(0, mats["Wood"])
+    trunk.static_mesh_component.set_mobility(unreal.ComponentMobility.STATIC)
+    trunk.static_mesh_component.set_collision_enabled(unreal.CollisionEnabled.NO_COLLISION)
+    trunk.set_actor_scale3d(unreal.Vector(0.35, 0.35, 3.0))
+    canopy = spawn(unreal.StaticMeshActor, (ux, uy, 420.0), label="OB_PL_TreeCanopy_%d" % i)
+    canopy.static_mesh_component.set_static_mesh(sphere)
+    canopy.static_mesh_component.set_material(0, mats["Canopy"])
+    canopy.static_mesh_component.set_mobility(unreal.ComponentMobility.STATIC)
+    canopy.static_mesh_component.set_collision_enabled(unreal.CollisionEnabled.NO_COLLISION)
+    canopy.set_actor_scale3d(unreal.Vector(2.6, 2.6, 2.2))
 
 
 dressing()

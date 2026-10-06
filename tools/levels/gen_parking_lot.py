@@ -46,7 +46,7 @@ VERGE_DX = 0.50         # the grass band is flat, so a coarse grid is enough
 TILE_M = 25.0           # Nanite ground tiles, about 25 x 25 m
 GROUND_LIFT = 0.004     # the drawn ground sits 4 mm above the course height, as OB_CityHill does
 RAMP_LIFT = 0.006       # the ramp concrete a little higher, so it reads on top of the asphalt
-MARK_LIFT = 0.003       # markings 3 mm above the ground (2-5 mm: not enough to matter)
+MARK_LIFT = 0.005       # markings 5 mm above the ground (2-5 mm: not enough to matter)
 LANE_HALF = 3.0         # lane edge lines this far off the centreline
 LINE_W = 0.12           # a painted line width (m)
 
@@ -219,10 +219,9 @@ def build_marks(zfn, lvl, out):
     cl = LAY.centreline(step=0.25)
     pts = [(p[0], p[1], p[2]) for p in cl]
 
-    # lane edge lines: dashed white, both sides of the circuit centreline
+    # lane edge lines: solid white, both sides of the circuit centreline (solid reads clearly)
     for sgn in (+1.0, -1.0):
-        for run in dashed(pts, dash=3.0, gap=3.0):
-            ribbon(marks, zfn, run, sgn * LANE_HALF, LINE_W, "White")
+        ribbon(marks, zfn, pts, sgn * LANE_HALF, LINE_W, "White")
 
     # start / finish: a checker band across the lane at the start_finish line
     sf = [c for c in lvl["checkpoints"] if c["type"] == "start_finish"][0]
@@ -241,7 +240,7 @@ def build_marks(zfn, lvl, out):
                 sc.append((x, y, h, off))
                 s += 0.25
             spts = [(x - math.sin(h) * o, y + math.cos(h) * o, h) for (x, y, h, o) in sc]
-            ribbon(marks, zfn, spts, 0.0, 0.15, "Magenta")
+            ribbon(marks, zfn, spts, 0.0, 0.15, "Yellow")
 
     # arrows at the arc turns: a chevron on the lane centreline
     for s_arc in turn_markers():
@@ -265,36 +264,43 @@ def build_marks(zfn, lvl, out):
     log("marks.obm %d verts %d tris" % (nv, nt))
 
 
-def checker_band(mesh, zfn, sf, squares=10, size=0.7):
+def square(mesh, zfn, cx, cy, fx, fy, nx, ny, sa, sd, section):
+    """One marking square at (cx, cy); sa across the lane, sd along travel."""
+    corners = []
+    for du in (-sd / 2, sd / 2):
+        for dv in (-sa / 2, sa / 2):
+            corners.append((cx + fx * du + nx * dv, cy + fy * du + ny * dv))
+    cxv = np.array([[corners[0][0], corners[1][0]], [corners[2][0], corners[3][0]]])
+    cyv = np.array([[corners[0][1], corners[1][1]], [corners[2][1], corners[3][1]]])
+    gc.add_grid(mesh, cxv, cyv, zfn(cxv, cyv) + MARK_LIFT, section, cxv, cyv)
+
+
+def checker_band(mesh, zfn, sf, sq=0.5):
+    """A bold black-and-white checker across the lane, 0.6 m deep (two rows of 0.3 m)."""
     x0, y0, hd = sf["x"], sf["y"], math.radians(sf["heading_deg"])
     nx, ny = -math.sin(hd), math.cos(hd)
     fx, fy = math.cos(hd), math.sin(hd)
-    for i in range(squares):
-        for j in range(2):
-            if (i + j) % 2:
-                continue
-            cx = x0 + nx * (i - squares / 2 + 0.5) * size
-            cy = y0 + ny * (i - squares / 2 + 0.5) * size
-            cx += fx * (j - 0.5) * size
-            cy += fy * (j - 0.5) * size
-            # build the square explicitly from its 4 corners
-            corners = []
-            for du in (-size / 2, size / 2):
-                for dv in (-size / 2, size / 2):
-                    corners.append((cx + fx * du + nx * dv, cy + fy * du + ny * dv))
-            cxv = np.array([[corners[0][0], corners[1][0]], [corners[2][0], corners[3][0]]])
-            cyv = np.array([[corners[0][1], corners[1][1]], [corners[2][1], corners[3][1]]])
-            Z = zfn(cxv, cyv) + MARK_LIFT
-            gc.add_grid(mesh, cxv, cyv, Z, "White", cxv, cyv)
+    hw = sf["half_width"]
+    ncols = int(2 * hw / sq)
+    for row in range(2):          # two rows -> 0.6 m deep
+        for col in range(ncols):
+            sec = "White" if (row + col) % 2 == 0 else "Black"
+            cx = x0 + nx * (col - ncols / 2 + 0.5) * sq + fx * (row - 0.5) * 0.3
+            cy = y0 + ny * (col - ncols / 2 + 0.5) * sq + fy * (row - 0.5) * 0.3
+            square(mesh, zfn, cx, cy, fx, fy, nx, ny, sq, 0.3, sec)
 
 
-def chevron(mesh, zfn, x, y, h, size=1.2):
+def chevron(mesh, zfn, x, y, h, length=3.0):
+    """A white turn arrow 3 m long on the lane centreline: a shaft and a V head."""
     fx, fy = math.cos(h), math.sin(h)
     nx, ny = -math.sin(h), math.cos(h)
-    for sgn in (+1.0, -1.0):
-        pts = [(x - fx * size * 0.4 + nx * sgn * size * 0.5, y - fy * size * 0.4 + ny * sgn * size * 0.5, h),
-               (x + fx * size * 0.4, y + fy * size * 0.4, h)]
-        ribbon(mesh, zfn, pts, 0.0, 0.18, "Yellow")
+    tip = (x + fx * length / 2, y + fy * length / 2)
+    shaft = [(x - fx * length / 2, y - fy * length / 2, h), (tip[0], tip[1], h)]
+    ribbon(mesh, zfn, shaft, 0.0, 0.22, "White")
+    for sgn in (+1.0, -1.0):      # the two head strokes
+        back = (tip[0] - fx * 1.0 + nx * sgn * 0.7, tip[1] - fy * 1.0 + ny * sgn * 0.7)
+        head = [(back[0], back[1], h), (tip[0], tip[1], h)]
+        ribbon(mesh, zfn, head, 0.0, 0.22, "White")
 
 
 def turn_markers():
