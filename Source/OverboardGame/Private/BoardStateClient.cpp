@@ -1,4 +1,5 @@
 #include "BoardStateClient.h"
+#include "OverboardPorts.h"
 
 #include "Sockets.h"
 #include "SocketSubsystem.h"
@@ -12,7 +13,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogOverboardWire, Log, All);
 
 namespace
 {
-	constexpr int32 kListenPort = 9601; // host SENDS here, so we BIND/LISTEN
+	// The host SENDS here, so we BIND/LISTEN: OverboardPorts::State() (-ObPortBase + 1, default 9601).
 	constexpr int32 kRecvBufferBytes = 512; // state packet is 72 bytes; generous headroom
 }
 
@@ -34,13 +35,13 @@ bool FBoardStateClient::StartListening()
 		.AsNonBlocking()
 		.AsReusable()
 		.BoundToAddress(FIPv4Address(127, 0, 0, 1))
-		.BoundToPort(kListenPort)
+		.BoundToPort(OverboardPorts::State())
 		.WithReceiveBufferSize(64 * 1024)
 		.Build();
 
 	if (Socket == nullptr)
 	{
-		UE_LOG(LogOverboardWire, Error, TEXT("BoardStateClient: failed to bind 127.0.0.1:%d"), kListenPort);
+		UE_LOG(LogOverboardWire, Error, TEXT("BoardStateClient: failed to bind 127.0.0.1:%d"), OverboardPorts::State());
 		return false;
 	}
 
@@ -54,7 +55,7 @@ bool FBoardStateClient::StartListening()
 		return false;
 	}
 
-	UE_LOG(LogOverboardWire, Log, TEXT("BoardStateClient: listening on 127.0.0.1:%d"), kListenPort);
+	UE_LOG(LogOverboardWire, Log, TEXT("BoardStateClient: listening on 127.0.0.1:%d"), OverboardPorts::State());
 	return true;
 }
 

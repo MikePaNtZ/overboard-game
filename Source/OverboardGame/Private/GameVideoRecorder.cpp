@@ -23,13 +23,17 @@ bool FGameVideoRecorder::Start(const FString& OutPath, float InFps, FIntPoint Ou
 		UE_LOG(LogGameVideo, Error, TEXT("GameVideoRecorder: no game viewport."));
 		return false;
 	}
-	Size = OutSize;
+	// Capture at the viewport's own size and let ffmpeg scale to OutSize. Asking FFrameGrabber for
+	// a smaller buffer scaled the picture twice: it filled only the top-left 2/3 (853x480 of a
+	// 1280x720 frame from a 1920x1080 viewport; 1/3 at 1080p on a Retina Mac), the rest black.
+	FSceneViewport* SceneViewport = GEngine->GameViewport->GetGameViewport();
+	Size = SceneViewport->GetSizeXY();
 	Fps = FMath::Max(1.f, InFps);
 
 	const FString Cmd = FString::Printf(
 		TEXT("/opt/homebrew/bin/ffmpeg -y -loglevel error -f rawvideo -pix_fmt bgra -s %dx%d -r %.0f -i - ")
-		TEXT("-c:v h264_videotoolbox -b:v 12M -pix_fmt yuv420p -movflags +faststart \"%s\""),
-		Size.X, Size.Y, Fps, *OutPath);
+		TEXT("-vf scale=%d:%d -c:v h264_videotoolbox -b:v 12M -pix_fmt yuv420p -movflags +faststart \"%s\""),
+		Size.X, Size.Y, Fps, OutSize.X, OutSize.Y, *OutPath);
 	Pipe = popen(TCHAR_TO_UTF8(*Cmd), "w");
 	if (!Pipe)
 	{
@@ -43,7 +47,7 @@ bool FGameVideoRecorder::Start(const FString& OutPath, float InFps, FIntPoint Ou
 	Grabber = MakeUnique<FFrameGrabber>(ViewportRef, Size, PF_B8G8R8A8, 4);
 	Grabber->StartCapturingFrames();
 	StartSeconds = FPlatformTime::Seconds();
-	UE_LOG(LogGameVideo, Log, TEXT("GameVideoRecorder: recording %dx%d at %.0f fps to %s"), Size.X, Size.Y, Fps, *OutPath);
+	UE_LOG(LogGameVideo, Log, TEXT("GameVideoRecorder: capturing %dx%d, writing %dx%d at %.0f fps to %s"), Size.X, Size.Y, OutSize.X, OutSize.Y, Fps, *OutPath);
 	return true;
 }
 

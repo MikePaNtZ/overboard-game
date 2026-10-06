@@ -73,7 +73,7 @@ def main():
     board = lambda r: (r[11:14], r[14:18])
 
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    dst = ("127.0.0.1", 9601)
+    dst = ("127.0.0.1", int(os.environ.get("PORT_BASE", "9600")) + 1)
     seq = 0
     p0, q0 = board(rows[start])
     t_end = time.perf_counter() + a.wait

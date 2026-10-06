@@ -9,6 +9,9 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/../.." && pwd)"
 export LEVEL=city_hill
+export PORT_BASE=${PORT_BASE:-9600}  # see run_sim.sh; another session's tests use 19600
+SUF=""
+[[ $PORT_BASE == 9600 ]] || SUF="-$PORT_BASE"
 if [[ "${1:-}" == "--level" ]]; then LEVEL="$2"; shift 2; fi
 PLAY_DIR="$HERE/tools/play"
 [[ -f "$PLAY_DIR/levels/$LEVEL.env" ]] || { echo "no level file $PLAY_DIR/levels/$LEVEL.env"; exit 1; }
@@ -19,11 +22,11 @@ RES=${2:-1920x1080}
 FPS=${3:-30}
 UE="/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor"
 
-if pgrep -f "sim-host.*127.0.0.1:9601" > /dev/null; then
-  echo "A sim-host is already running (ports 9601/9602). Stop it first."; exit 1
+if pgrep -f "sim-host.*127.0.0.1:$((PORT_BASE + 1))" > /dev/null; then
+  echo "A sim-host already runs on port base $PORT_BASE. Stop it, or set another PORT_BASE."; exit 1
 fi
 
-"$HERE/tools/play/run_sim.sh" --trace-csv /tmp/overboard-demo-trace.csv > /tmp/overboard-demo-sim.log 2>&1 &
+"$HERE/tools/play/run_sim.sh" --trace-csv /tmp/overboard-demo-trace$SUF.csv > /tmp/overboard-demo-sim$SUF.log 2>&1 &
 SIM=$!
 trap 'kill -TERM $SIM 2>/dev/null || true' EXIT
 sleep 2
@@ -32,5 +35,5 @@ sleep 2
 # shellcheck disable=SC2086
 "$UE" "$HERE/OverboardGame.uproject" "$MAP" -game -RenderOffscreen $COURSE_ARG \
   -ResX="${RES%x*}" -ResY="${RES#*x}" -ForceRes -nosound -unattended \
-  -ObDemoRider -ObRenderRider -ObBoardSkin=x7 -ExecCmds="DisableAllScreenMessages" -ObRecordVideo="$OUT" -ObRecordFps="$FPS" -abslog=/tmp/overboard-demo-game.log > /dev/null 2>&1 || true
+  -ObPortBase=$PORT_BASE -ObDemoRider -ObRenderRider -ObBoardSkin=x7 -ExecCmds="DisableAllScreenMessages" -ObRecordVideo="$OUT" -ObRecordFps="$FPS" -abslog=/tmp/overboard-demo-game$SUF.log > /dev/null 2>&1 || true
 echo "wrote $OUT"
