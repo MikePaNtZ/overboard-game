@@ -262,6 +262,23 @@ def main():
             v[(i - 1) % n] = min(v[(i - 1) % n], math.sqrt(v[i % n] ** 2 + 2 * 0.5))
     path = [[round(float(a), 3), round(float(b), 3), round(float(c), 2)] for (a, b), c in zip(D, v)]
 
+    # The two crossings of The Embarcadero: where the demo must give way to traffic (phase B).
+    # stop_idx: the demo-path index of the stop line, 3 m before the crossing enters the road.
+    def tail_pt(pts, m, end):
+        L = LineString(pts)
+        return L.interpolate(L.length - m if end else m).coords[0]
+    crossings = []
+    for a_pt, b_pt in ((tail_pt(legs["A"], 25.0, True), legs["C"][0]),
+                       (legs["E"][-1], tail_pt(legs["G"], 25.0, False))):
+        s_start = route.project(Point(a_pt))
+        if a_pt == legs["E"][-1]:
+            s_start -= 6.0          # stop on the promenade, before the kerb cut
+        stop_idx = int((s_start - 3.0) % route.length)
+        cx, cy = (a_pt[0] + b_pt[0]) / 2, (a_pt[1] + b_pt[1]) / 2
+        crossings.append({"stop_idx": stop_idx, "x": round(cx, 2), "y": round(cy, 2),
+                          "a": [round(a_pt[0], 2), round(a_pt[1], 2)],
+                          "b": [round(b_pt[0], 2), round(b_pt[1], 2)], "clear_m": 10.0})
+
     # Spawn: 15 m along leg A (Brannan eastbound), on the line; the lap line 6 m ahead of it.
     s_sp = route.project(Point(legs["A"][0])) + 15.0
     sx, sy = route.interpolate(s_sp).coords[0]
@@ -298,6 +315,7 @@ def main():
                  "y0_m": float(ys[0]), "half_extent_x_m": HALF_X, "half_extent_y_m": HALF_Y},
         "origin_utm": [ox, oy], "spawn": meta["spawn"], "lap_length_m": round(route.length, 1),
         "kerb_cuts": [[round(p[0], 3), round(p[1], 3), round(math.degrees(hh), 1)] for p, hh in cuts],
+        "crossings": crossings,
         "junctions": {k: [round(a, 2), round(b, 2)] for k, (a, b) in J.items()},
         "demo_path": path,
     }
@@ -310,6 +328,7 @@ def main():
         "elements": [{"type": "start_finish", "id": "start_finish", "order": 0, "label": "EMBARCADERO LOOP",
                       "x": round(lx, 3), "y": round(ly, 3), "z": round(zat(lx, ly), 3),
                       "heading_deg": round(math.degrees(hdg), 2), "half_width": 3.0}],
+        "crossings": crossings,
         "demo_path": path,
     }
     ep = HERE.parents[1] / "play" / "elements" / "embarcadero.json"

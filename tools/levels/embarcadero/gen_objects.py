@@ -216,11 +216,9 @@ def main():
         lane_d = LineString(lane).hausdorff_distance(demo)
         add("cyclist", lane + lane[::-1][1:-1], True, 4.0, 1)
 
-    out = {
-        "level": "embarcadero", "version": 1, "attribution": ODBL,
-        "frame": "MuJoCo world (see metadata.json frame); sizes are full sizes (m)",
-        "objects": [{k: v for k, v in o.items() if k != "kind_code"} for o in objects],
-    }
+    # sim-host rejects unknown keys (c4 7fc08dc): "objects" only. The attribution and the frame
+    # are in metadata.json and level.json.
+    out = {"objects": [{k: v for k, v in o.items() if k != "kind_code"} for o in objects]}
     (course / "objects.json").write_text(json.dumps(out, indent=1))
     kinds = {k: sum(1 for o in objects if o["kind"] == k) for k in KIND}
     print(f"objects: {len(objects)} {kinds}; dropped paths (kind, min dist to demo, length): {dropped}")

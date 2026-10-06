@@ -14,7 +14,7 @@ mkdir -p "$OUT"
   --authority-margin warn --max-current 90 --rider-mass 95 \
   --rider-reach 0.10 --rider-reach-back 0.20 --rider-lean-lag 0.25 \
   --obstacles "$D/obstacles.csv" --trace-csv "$OUT/trace.csv" \
-  ${SIM_EXTRA:-} --state-out-addr 127.0.0.1:19601 --input-in-addr 127.0.0.1:19602 --hud-out-addr 127.0.0.1:19603 \
+  ${SIM_EXTRA:-} ${OBJECTS:+--objects "$D/objects.json" --objects-out-addr 127.0.0.1:19604} --state-out-addr 127.0.0.1:19601 --input-in-addr 127.0.0.1:19602 --hud-out-addr 127.0.0.1:19603 \
   > "$OUT/sim.log" 2>&1 &
 SIM=$!
 trap 'kill $SIM 2>/dev/null; wait $SIM 2>/dev/null' EXIT
