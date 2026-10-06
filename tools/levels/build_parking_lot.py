@@ -479,6 +479,9 @@ def proxy_tree(x_m, y_m, i):
 dressing()
 build_look()
 
+# NoGround: no motion-reference markers or placeholder ground on a real level.
+world.get_world_settings().set_editor_property("default_game_mode", unreal.load_class(
+    None, "/Script/OverboardGame.OverboardGameMode_NoGround"))
 if not unreal.EditorLoadingAndSavingUtils.save_map(world, MAP):
     fail("save_map failed")
 log("saved %s" % MAP)

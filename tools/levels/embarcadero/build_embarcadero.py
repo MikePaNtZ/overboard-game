@@ -363,6 +363,9 @@ for x, y, z, yaw, sc in dress.get("palm", []):
 log("placed %d tree/palm proxies" % nt)
 
 build_look()
+# NoGround: no motion-reference markers or placeholder ground on a real level.
+world.get_world_settings().set_editor_property("default_game_mode", unreal.load_class(
+    None, "/Script/OverboardGame.OverboardGameMode_NoGround"))
 if not unreal.EditorLoadingAndSavingUtils.save_map(world, MAP):
     fail("save_map failed")
 log("saved %s\nDONE" % MAP)
