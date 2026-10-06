@@ -47,7 +47,7 @@ public:
 	const FRideGameReadout& GetReadout() const { return Readout; }
 
 private:
-	enum class EKind : uint8 { Gate, Flag, StopBox, SlowZone, NoBuzz, SpeedTrap, Cone, Debris };
+	enum class EKind : uint8 { Gate, Flag, StopBox, SlowZone, NoBuzz, SpeedTrap, Cone, Debris, Unknown };
 
 	struct FElement
 	{
