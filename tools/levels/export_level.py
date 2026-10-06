@@ -26,6 +26,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 SIDE_SLOPE = math.tan(math.radians(30.0))   # ramp deck side slopes
 CONE_SIZE = (0.30, 0.30, 0.45)              # as sim/carve/obstacles.py
 
+# Full-stick curvature of the sim's turn model (c4, controls cd7962d, lean_steer.rs): the turn
+# intent fades in with speed (no turn below 0.8 m/s, full from 3.0 m/s). Measured with
+# tools/levels/turn_test.py: R 8.6 / 6.0 / 4.7 m at 1.8 / 2.2 / 2.6 m/s (law: 8.8 / 6.3 / 4.9).
+# So tight turns need a MINIMUM speed too.
+CARVE_G = 0.35           # the game's side-acceleration cap
+TURN_MARGIN = 0.80       # use at most 80 % of full stick
+
+
+def full_stick_kappa(v):
+    v = abs(v)
+    return min(0.25, 0.6 * 9.81 / max(v * v, 1e-6)) * min(max((v - 0.8) / 2.2, 0.0), 1.0)
+
+
+def turn_speed_band(kappa):
+    """(v_min, v_max) at which a turn of this curvature is ridable with margin."""
+    if kappa < 1e-3:
+        return 0.0, 99.0
+    vs = np.linspace(1.0, 8.0, 141)
+    ok = [v for v in vs if TURN_MARGIN * full_stick_kappa(v) >= kappa and v * v * kappa <= CARVE_G * 9.81]
+    return (min(ok), max(ok)) if ok else (2.6, 2.6)
+
 
 def heading_to_yaw_deg(heading_rad):
     """sim-host spawn yaw: yaw 0 = board forward along world -X (c4 cecbd1d)."""
@@ -117,12 +138,14 @@ class Level:
 
     def cone_slalom(self, e, k):
         s0, sp, A = self.s_of(e), e["spacing"], e["weave"]
+        co = e.get("cone_offset", 0.0)   # cones alternate at -/+co; the line passes on the other side
         for j in range(e["count"]):
-            self.box_along(f"cone{j}", s0 + j * sp, 0.0, *CONE_SIZE, typ="cone")
+            self.box_along(f"cone{j}", s0 + j * sp, -co if j % 2 == 0 else co, *CONE_SIZE, typ="cone")
         s1 = s0 + (e["count"] - 1) * sp
-        self.offsets.append((s0 - sp, s1 + sp,
-                             lambda s, s0=s0, sp=sp, A=A: A * math.cos(math.pi * (s - s0) / sp)))
-        self.speed_caps.append((s0 - sp, s1 + sp, math.sqrt(2.0 / (A * (math.pi / sp) ** 2))))
+        a, b = s0 - sp / 2, s1 + sp / 2   # weave tapers in and out over half a spacing
+        self.offsets.append((a, b, lambda s, s0=s0, sp=sp, A=A, a=a, b=b:
+                             A * math.cos(math.pi * (s - s0) / sp) * _bump(s, a, b, sp / 2)))
+        self.speed_caps.append((s0 - 2 * sp, s1 + sp, 3.2))   # reversals need time to roll
 
     def plank(self, e, k):
         s0 = self.s_of(e)
@@ -138,7 +161,7 @@ class Level:
         s1 = s0 + e["length"]
         self.offsets.append((s0, s1, lambda s, s0=s0, A=A, lam=lam:
                              A * math.sin(2 * math.pi * (s - s0) / lam)))
-        self.speed_caps.append((s0, s1, math.sqrt(2.0 / (A * (2 * math.pi / lam) ** 2))))
+        self.speed_caps.append((s0 - 4, s1, 3.2))
 
     def kerb_island(self, e, k):
         s0, Ln, H, hw = self.s_of(e), e["length"], e["height"], e["half_width"]
@@ -181,7 +204,7 @@ class Level:
         self.add_box("box", "pole_NE", hx - 2.0, hy - 2.0, 0.3, 0.3, 6.0)
 
     # --- demo path -----------------------------------------------------------------
-    def demo_path(self, step=1.0, v_cruise=4.5, a_max=0.8):
+    def demo_path(self, step=1.0, v_cruise=5.0, a_max=0.8):
         n = int(self.s_arr[-1] / step)
         out = []
         for i in range(n):
@@ -198,11 +221,16 @@ class Level:
         d2 = np.roll(P, -1, 0) - 2 * P + np.roll(P, 1, 0)
         kap = np.abs(d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0]) / (np.hypot(*d1.T) ** 3 + 1e-9) * 4
         kap = np.maximum(kap, np.convolve(np.r_[kap[-3:], kap, kap[:3]], np.ones(7) / 7, "valid"))
-        v = np.minimum(v_cruise, np.sqrt(2.0 / np.maximum(kap, 1e-6)) * 0.85)
+        band = [turn_speed_band(k) for k in kap]
+        # Tight turns (R < 12 m) at most 3.2 m/s: inside the physics band, but the line holds
+        # better there (a hairpin at 4 m/s came out 1.5 m wide, levels run 2026-10-05).
+        v = np.array([min(v_cruise, hi, 3.2 if k > 1 / 12 else 99.0) for (lo, hi), k in zip(band, kap)])
+        vmin = np.array([lo for lo, hi in band])
         for s0, s1, cap in self.speed_caps:
             for i in range(n):
                 if s0 <= i * step <= s1:
                     v[i] = min(v[i], cap)
+        v = np.maximum(v, np.minimum(vmin, v_cruise))
         for _ in range(3):   # acceleration limit, both directions, around the lap
             for i in range(1, 2 * n):
                 v[i % n] = min(v[i % n], math.sqrt(v[(i - 1) % n] ** 2 + 2 * a_max * step))
@@ -261,6 +289,39 @@ class Level:
         (out / "level.json").write_text(json.dumps(level, indent=1, default=list))
         return meta, path
 
+    def ground_z(self, x, y):
+        c = int(round((x - self.xs[0]) / self.L.SPACING_M))
+        r = int(round((y - self.ys[0]) / self.L.SPACING_M))
+        return float(self.Z[min(max(r, 0), self.nrow - 1), min(max(c, 0), self.ncol - 1)])
+
+    def write_elements(self, path_out, name, path):
+        """tools/play/elements/<level>.json: the read-only game rules (laps) + the demo path."""
+        labels = getattr(self.L, "CHECKPOINT_LABELS", {})
+        els = []
+        for c in self.checkpoints:
+            e = dict(c)
+            e["z"] = round(self.ground_z(c["x"], c["y"]), 3)
+            e["label"] = "START / FINISH" if c["type"] == "start_finish" else labels.get(c["id"], c["id"].upper())
+            els.append(e)
+        for typ, bid, x, y, lx, ly, lz, yaw, zm in self.boxes:
+            if typ == "cone" or bid in getattr(self.L, "HIT_BOXES", ()):
+                els.append(dict(type="cone" if typ == "cone" else "box", id=bid, x=round(x, 3),
+                                y=round(y, 3), z=round(self.ground_z(x, y), 3),
+                                size_m=[lx, ly, lz], yaw_deg=round(yaw, 2), draw=False))
+        doc = {
+            "course": name, "mode": "laps",
+            "frame": "xy: MuJoCo world x, y (m); heading_deg = direction of travel, CCW from +X; "
+                     "z = ground height (m). A line is crossed when the board passes it in the "
+                     "heading direction within half_width.",
+            "target_lap_s": getattr(self.L, "TARGET_LAP_S", None),
+            "lap_length_m": round(float(self.s_arr[-1]), 2),
+            "scores": {"obstacle_hit": -150},
+            "elements": els,
+            "demo_path": path,
+        }
+        Path(path_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(path_out).write_text(json.dumps(doc, indent=1))
+
 
 def _bump(s, a, b, ramp):
     """1 inside [a + ramp, b - ramp], smooth 0 -> 1 -> 0 at the ends."""
@@ -276,6 +337,8 @@ def main():
     lv = Level(L)
     lv.build()
     meta, path = lv.write(out_dir, name)
+    lv.write_elements(Path(__file__).resolve().parents[1] / "play" / "elements" / f"{name}.json",
+                      name, path)
     t = sum(math.dist(path[i][:2], path[(i + 1) % len(path)][:2]) /
             max(0.5 * (path[i][2] + path[(i + 1) % len(path)][2]), 0.1) for i in range(len(path)))
     print(f"{name}: {lv.nrow}x{lv.ncol} posts, z {meta['z_min_m']:.3f}..{meta['z_max_m']:.3f} m, "
