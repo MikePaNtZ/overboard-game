@@ -601,9 +601,12 @@ void AOverboardPlayerController::SendInputPacket(float DeltaTime)
 		// Cap the carve by sideways acceleration. Since controls fc30fab (camber steer force-limited
 		// like a motorcycle tyre) full stick asks for 0.6 g at speed and 0.35 g reversals hold at
 		// 8 m/s (controls test); the game allows kMaxCarveG = 0.35 g, the value verified there. Full stick
-		// curvature in the sim: min(0.25 1/m, 0.6 g / v^2), so the stick cap is the ratio.
+		// curvature in the sim: min(0.25 1/m, 0.6 g / v^2) x fade(v), so the stick cap is the ratio.
 		const float V2 = FMath::Max(SpeedMps * SpeedMps, 0.01f);
-		const float FullStickKappa = FMath::Min(0.25f, 0.6f * 9.81f / V2);
+		// The sim's full law (controls lean_steer.rs): the turn also fades in with speed, none below
+		// 0.8 m/s and full from 3.0 m/s.
+		const float Fade = FMath::Clamp((SpeedMps - 0.8f) / 2.2f, 0.f, 1.f);
+		const float FullStickKappa = FMath::Max(FMath::Min(0.25f, 0.6f * 9.81f / V2) * Fade, 1e-4f);
 		const float MaxSteer = FMath::Min(1.f, (kMaxCarveG * 9.81f / V2) / FullStickKappa);
 		Steer = FMath::Clamp(Steer, -MaxSteer, MaxSteer);
 		BodySteer = FMath::FInterpConstantTo(BodySteer, Steer, DeltaTime, CarveRatePerS);
