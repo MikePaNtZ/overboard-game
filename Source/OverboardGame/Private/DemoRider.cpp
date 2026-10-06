@@ -27,19 +27,6 @@ namespace
 	{
 		return FMath::Min(0.25, 0.6 * 9.81 / (V * V)) * FMath::Clamp((V - 0.8) / 2.2, 0.0, 1.0);
 	}
-
-	// Python's round(): round half to EVEN, not half up. The follower's lookahead and feedforward
-	// indices use it, and at the turn onset (v near 3.5, so round(v+1) hits a .5 tie) half-up reads
-	// the wrong curvature index and starts the carve one point early. X is always >= 0 here.
-	int32 PyRound(double X)
-	{
-		const double Fl = FMath::FloorToDouble(X);
-		const double Frac = X - Fl;
-		if (Frac < 0.5) { return static_cast<int32>(Fl); }
-		if (Frac > 0.5) { return static_cast<int32>(Fl) + 1; }
-		const int32 F = static_cast<int32>(Fl);
-		return (F % 2 == 0) ? F : F + 1;
-	}
 }
 
 void FDemoRider::Enter(EPhase Next, double Seconds)
@@ -337,6 +324,29 @@ FDemoPadOutput FDemoRider::UpdateLaps(double Seconds, float DeltaSeconds, const 
 	const double T = Seconds - PhaseStart;
 	const int32 N = PathX.Num();
 	auto Wrap = [N](int32 K) { return ((K % N) + N) % N; };
+	// Sample the path at a CONTINUOUS index (linear interpolation between the two bracketing
+	// points), not at round(index). The path is 1 m apart, so the index is a distance in metres.
+	// The reference pilot snaps round() to an integer index; at a turn onset a ~0.1 m/s speed
+	// difference (unavoidable between the 100 Hz Python loop and the game) flips that index by one
+	// and starts the carve a point early or late. Interpolation reads the same feed-forward for
+	// both, so the game no longer cuts 1.5 m inside the first cone. The control intent is unchanged.
+	auto SampleXY = [&](double FIdx, double& OutX, double& OutY)
+	{
+		const double Fl = FMath::FloorToDouble(FIdx);
+		const double Frac = FIdx - Fl;
+		const int32 A = Wrap(static_cast<int32>(Fl));
+		const int32 B = Wrap(A + 1);
+		OutX = PathX[A] + Frac * (PathX[B] - PathX[A]);
+		OutY = PathY[A] + Frac * (PathY[B] - PathY[A]);
+	};
+	auto SampleKappa = [&](double FIdx)
+	{
+		const double Fl = FMath::FloorToDouble(FIdx);
+		const double Frac = FIdx - Fl;
+		const int32 A = Wrap(static_cast<int32>(Fl));
+		const int32 B = Wrap(A + 1);
+		return PathKappa[A] + Frac * (PathKappa[B] - PathKappa[A]);
+	};
 
 	// Log each completed lap (a readout edge) and the first fall.
 	if (Readout && Readout->CompletedLaps > LastSeenCompletedLaps)
@@ -375,10 +385,6 @@ FDemoPadOutput FDemoRider::UpdateLaps(double Seconds, float DeltaSeconds, const 
 		}
 		if (Readout && Readout->CompletedLaps >= DemoLaps) { Enter(EPhase::Done, Seconds); break; }
 
-		// Step the control law at the reference pilot's fixed 100 Hz, not every game frame. In
-		// -nullrhi the game ticks ~480 Hz, and re-evaluating pure pursuit that fast tightens the
-		// steering feedback loop and over-carves the tight slalom. Between steps hold the last pad
-		// values, exactly as the pilot holds its last command between its 10 ms loop steps.
 		// Heading from the world velocity when moving; else the first path segment.
 		const double Spd = FMath::Sqrt(State.LinVel[0] * State.LinVel[0] + State.LinVel[1] * State.LinVel[1]);
 		if (Spd > 0.4) { Heading = FMath::Atan2(State.LinVel[1], State.LinVel[0]); bHaveHeading = true; }
@@ -400,11 +406,12 @@ FDemoPadOutput FDemoRider::UpdateLaps(double Seconds, float DeltaSeconds, const 
 
 		// Pure pursuit plus a curvature feedforward about 0.7 s ahead (positive steer = right).
 		const double Ld = FMath::Max(3.5, 1.5 * FMath::Abs(V));
-		const int32 Ti = Wrap(PathIdx + PyRound(Ld));
-		double Alpha = FMath::Atan2(PathY[Ti] - Y, PathX[Ti] - X) - Heading;
+		double TgtX, TgtY;
+		SampleXY(PathIdx + Ld, TgtX, TgtY);
+		double Alpha = FMath::Atan2(TgtY - Y, TgtX - X) - Heading;
 		Alpha = FMath::UnwindRadians(Alpha);
-		const int32 Ki = Wrap(PathIdx + PyRound(1.0 * FMath::Abs(V) + 1.0));
-		const double KappaLeft = 0.6 * 2.0 * FMath::Sin(Alpha) / Ld + 0.8 * PathKappa[Ki];
+		const double Kff = SampleKappa(PathIdx + 1.0 * FMath::Abs(V) + 1.0);
+		const double KappaLeft = 0.6 * 2.0 * FMath::Sin(Alpha) / Ld + 0.8 * Kff;
 		const double Full = FullStickKappa(FMath::Max(FMath::Abs(V), 1.0));
 		const double Cap = FMath::Abs(V) < 3.2 ? 1.0 : 0.6;
 		const double Want = FMath::Clamp(-KappaLeft / Full, -Cap, Cap);
