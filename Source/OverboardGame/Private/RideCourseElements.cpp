@@ -79,15 +79,30 @@ bool ARideCourseElements::LoadLayout(const FString& CourseName)
 		return false;
 	}
 
+	// This loader knows the 1D street layout (city_hill: s along the street, a height profile,
+	// scores). A 2D lap or cruise course (mode "laps" / "cruise", the levels track) has none of
+	// these; until the laps PR teaches this actor 2D lines, such a course loads with no elements
+	// instead of dereferencing a missing field (that would crash the game at load).
+	FString Mode;
+	Root->TryGetStringField(TEXT("mode"), Mode);
+	const TSharedPtr<FJsonObject>* ProfilePtr = nullptr;
+	const TSharedPtr<FJsonObject>* ScoresPtr = nullptr;
+	if (!Root->TryGetObjectField(TEXT("profile"), ProfilePtr) || !Root->TryGetObjectField(TEXT("scores"), ScoresPtr)
+		|| !Root->HasTypedField<EJson::Number>(TEXT("start_x_m")))
+	{
+		UE_LOG(LogRideGame, Warning, TEXT("RideCourseElements: %s is a '%s' course without the 1D street fields; no game elements yet."),
+			*Path, Mode.IsEmpty() ? TEXT("unknown") : *Mode);
+		return false;
+	}
 	StartX = Root->GetNumberField(TEXT("start_x_m"));
 	LaneHalfWidth = Root->GetNumberField(TEXT("lane_half_width_m"));
 	StreetHalfWidth = Root->GetNumberField(TEXT("street_half_width_m"));
 
-	const TSharedPtr<FJsonObject> Profile = Root->GetObjectField(TEXT("profile"));
+	const TSharedPtr<FJsonObject> Profile = *ProfilePtr;
 	for (const TSharedPtr<FJsonValue>& V : Profile->GetArrayField(TEXT("s_m"))) { ProfileS.Add(V->AsNumber()); }
 	for (const TSharedPtr<FJsonValue>& V : Profile->GetArrayField(TEXT("z_m"))) { ProfileZ.Add(V->AsNumber()); }
 
-	for (const auto& Pair : Root->GetObjectField(TEXT("scores"))->Values)
+	for (const auto& Pair : (*ScoresPtr)->Values)
 	{
 		Scores.Add(Pair.Key, static_cast<int32>(Pair.Value->AsNumber()));
 	}
@@ -104,7 +119,13 @@ bool ARideCourseElements::LoadLayout(const FString& CourseName)
 			: Type == TEXT("speed_trap") ? EKind::SpeedTrap
 			: Type == TEXT("cone") ? EKind::Cone
 			: Type == TEXT("debris") ? EKind::Debris
-			: EKind::NoBuzz;
+			: Type == TEXT("no_buzz") ? EKind::NoBuzz
+			: EKind::Unknown;
+		if (E.Kind == EKind::Unknown)
+		{
+			UE_LOG(LogRideGame, Warning, TEXT("RideCourseElements: skipping element type '%s' (not known to this build)."), *Type);
+			continue;
+		}
 		E.Id = O->GetStringField(TEXT("id"));
 		O->TryGetStringField(TEXT("label"), E.Label);
 		O->TryGetNumberField(TEXT("s"), E.S);
