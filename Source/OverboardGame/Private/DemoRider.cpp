@@ -1,8 +1,13 @@
 #include "DemoRider.h"
 
 #include "RideCourseElements.h"
+#include "Dom/JsonObject.h"
 #include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
+#include "Misc/Paths.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogDemoRider, Log, All);
 
@@ -15,6 +20,26 @@ namespace
 	constexpr double kStopBoxEnterS = 90.5;
 	constexpr double kSpeedTrapS0 = 52.0, kSpeedTrapS1 = 76.0;
 	constexpr double kFinishS = 172.0;
+
+	// The sim-host turn law with the speed fade: the measured full-stick curvature at speed v
+	// (headless_pilot.py imports this from export_level; the formula is reproduced here).
+	double FullStickKappa(double V)
+	{
+		return FMath::Min(0.25, 0.6 * 9.81 / (V * V)) * FMath::Clamp((V - 0.8) / 2.2, 0.0, 1.0);
+	}
+
+	// Python's round(): round half to EVEN, not half up. The follower's lookahead and feedforward
+	// indices use it, and at the turn onset (v near 3.5, so round(v+1) hits a .5 tie) half-up reads
+	// the wrong curvature index and starts the carve one point early. X is always >= 0 here.
+	int32 PyRound(double X)
+	{
+		const double Fl = FMath::FloorToDouble(X);
+		const double Frac = X - Fl;
+		if (Frac < 0.5) { return static_cast<int32>(Fl); }
+		if (Frac > 0.5) { return static_cast<int32>(Fl) + 1; }
+		const int32 F = static_cast<int32>(Fl);
+		return (F % 2 == 0) ? F : F + 1;
+	}
 }
 
 void FDemoRider::Enter(EPhase Next, double Seconds)
@@ -67,6 +92,59 @@ FDemoRider::FDemoRider()
 	// end of the speed trap, carve reversals every 1.5 s at the game's 0.4 g cap (the 6-8 m/s
 	// carve check for the controls track's carving model).
 	bCarveTest = FParse::Param(FCommandLine::Get(), TEXT("ObDemoCarveTest"));
+	// -ObDemoLaps=N (laps mode only): end the script after N laps or a fall. Default 1.
+	FParse::Value(FCommandLine::Get(), TEXT("ObDemoLaps="), DemoLaps);
+	DemoLaps = FMath::Max(1, DemoLaps);
+}
+
+void FDemoRider::LoadCourse(const FString& CourseName)
+{
+	if (CourseName.IsEmpty() || CourseName == TEXT("none"))
+	{
+		return;
+	}
+	const FString Path = FPaths::Combine(FPaths::ProjectDir(), TEXT("tools/play/elements"), CourseName + TEXT(".json"));
+	FString Text;
+	if (!FFileHelper::LoadFileToString(Text, *Path))
+	{
+		return;
+	}
+	TSharedPtr<FJsonObject> Root;
+	if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Root) || !Root.IsValid())
+	{
+		return;
+	}
+	const TArray<TSharedPtr<FJsonValue>>* DemoPath = nullptr;
+	if (!Root->TryGetArrayField(TEXT("demo_path"), DemoPath) || DemoPath->Num() < 2)
+	{
+		return; // no path: keep the city_hill ride
+	}
+	for (const TSharedPtr<FJsonValue>& V : *DemoPath)
+	{
+		const TArray<TSharedPtr<FJsonValue>>& P = V->AsArray();
+		if (P.Num() >= 3)
+		{
+			PathX.Add(P[0]->AsNumber());
+			PathY.Add(P[1]->AsNumber());
+			PathV.Add(P[2]->AsNumber());
+		}
+	}
+	const int32 N = PathX.Num();
+	// Signed curvature (left +) at each point, from the turn in heading over the local arc length.
+	PathKappa.SetNum(N);
+	for (int32 i = 0; i < N; ++i)
+	{
+		const int32 Prev = (i - 1 + N) % N;
+		const int32 Next = (i + 1) % N;
+		const double H1 = FMath::Atan2(PathY[i] - PathY[Prev], PathX[i] - PathX[Prev]);
+		const double H2 = FMath::Atan2(PathY[Next] - PathY[i], PathX[Next] - PathX[i]);
+		const double Dh = FMath::UnwindRadians(H2 - H1);
+		const double D0 = FMath::Sqrt(FMath::Square(PathX[i] - PathX[Prev]) + FMath::Square(PathY[i] - PathY[Prev]));
+		const double D1 = FMath::Sqrt(FMath::Square(PathX[Next] - PathX[i]) + FMath::Square(PathY[Next] - PathY[i]));
+		PathKappa[i] = Dh / FMath::Max(0.5 * (D0 + D1), 1e-3);
+	}
+	bLapsMode = true;
+	UE_LOG(LogDemoRider, Log, TEXT("DemoRider: laps mode, %d path points, %d lap(s)."), N, DemoLaps);
 }
 
 FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHaveState, const OverboardWire::FBoardState& State,
@@ -82,6 +160,10 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 	// sped up the ramp and the integral) in headless tests.
 	DeltaSeconds = LastUpdateSeconds < 0.0 ? 0.f : static_cast<float>(FMath::Clamp(Seconds - LastUpdateSeconds, 0.0, 0.1));
 	LastUpdateSeconds = Seconds;
+	if (bLapsMode)
+	{
+		return UpdateLaps(Seconds, DeltaSeconds, State, bDown, Readout);
+	}
 	const double S = kStartX - State.Pos[0];
 	const double Y = State.Pos[1];
 	const double V = State.WheelRateRadS * kDemoWheelRadiusM; // positive = forward
@@ -238,6 +320,123 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 		LastLog = Seconds;
 		UE_LOG(LogDemoRider, Log, TEXT("DemoRider: t %.1f s %.1f y %+.2f v %.2f yaw %+.3f pitch %+.3f lean %+.2f steer %+.2f L2 %.1f score %d"),
 			Seconds, S, Y, V, State.YawRad, State.PitchRad, Out.Lean, Out.Steer, Out.TailBrake, Readout ? Readout->Score : 0);
+	}
+	return Out;
+}
+
+FDemoPadOutput FDemoRider::UpdateLaps(double Seconds, float DeltaSeconds, const OverboardWire::FBoardState& State,
+	bool bDown, const FRideGameReadout* Readout)
+{
+	// A direct port of headless_pilot.py DemoRider: forward-only nearest-index search on the closed
+	// demo path, pure pursuit plus a curvature feedforward, and a PI speed loop on the lean. The
+	// clock and dt come from the wall clock (passed in), like the real-time sim.
+	FDemoPadOutput Out;
+	const double X = State.Pos[0];
+	const double Y = State.Pos[1];
+	const double V = State.WheelRateRadS * kDemoWheelRadiusM; // positive = forward
+	const double T = Seconds - PhaseStart;
+	const int32 N = PathX.Num();
+	auto Wrap = [N](int32 K) { return ((K % N) + N) % N; };
+
+	// Log each completed lap (a readout edge) and the first fall.
+	if (Readout && Readout->CompletedLaps > LastSeenCompletedLaps)
+	{
+		LastSeenCompletedLaps = Readout->CompletedLaps;
+		if (Readout->bLastLapClean)
+		{
+			UE_LOG(LogDemoRider, Log, TEXT("OBLAP %d %.1f CLEAN"), Readout->CompletedLaps, Readout->LastLapSeconds);
+		}
+		else
+		{
+			UE_LOG(LogDemoRider, Log, TEXT("OBLAP %d %.1f MISSED %s"), Readout->CompletedLaps,
+				Readout->LastLapSeconds, *Readout->LastLapMissed);
+		}
+	}
+
+	switch (Phase)
+	{
+	case EPhase::Wait:
+		// Arm only once the game runs smoothly (see the city_hill path for why).
+		SmoothFrames = DeltaSeconds < 0.1f ? SmoothFrames + 1 : 0;
+		if (Seconds > 2.5 && SmoothFrames >= 30) { Enter(EPhase::Arm, Seconds); }
+		break;
+	case EPhase::Arm:
+		Out.bArm = true;
+		if ((T > 0.3 && FMath::Abs(V) > 0.05) || T > 2.0) { Enter(EPhase::RideLaps, Seconds); }
+		break;
+	case EPhase::RideLaps:
+	{
+		Out.bArm = true; // keep the board armed, like the reference pilot
+		if (bDown)
+		{
+			if (!bLoggedFall) { bLoggedFall = true; UE_LOG(LogDemoRider, Log, TEXT("OBFALL %.1f %.1f"), X, Y); }
+			Enter(EPhase::Done, Seconds);
+			break;
+		}
+		if (Readout && Readout->CompletedLaps >= DemoLaps) { Enter(EPhase::Done, Seconds); break; }
+
+		// Step the control law at the reference pilot's fixed 100 Hz, not every game frame. In
+		// -nullrhi the game ticks ~480 Hz, and re-evaluating pure pursuit that fast tightens the
+		// steering feedback loop and over-carves the tight slalom. Between steps hold the last pad
+		// values, exactly as the pilot holds its last command between its 10 ms loop steps.
+		// Heading from the world velocity when moving; else the first path segment.
+		const double Spd = FMath::Sqrt(State.LinVel[0] * State.LinVel[0] + State.LinVel[1] * State.LinVel[1]);
+		if (Spd > 0.4) { Heading = FMath::Atan2(State.LinVel[1], State.LinVel[0]); bHaveHeading = true; }
+		else if (!bHaveHeading) { Heading = FMath::Atan2(PathY[1] - PathY[0], PathX[1] - PathX[0]); bHaveHeading = true; }
+
+		// Advance the nearest path index, forward only (the first sample searches the whole path).
+		double Best = 1e18;
+		int32 Bi = PathIdx;
+		const int32 Lo = bFirstSample ? 0 : PathIdx;
+		const int32 Hi = bFirstSample ? N : PathIdx + 60;
+		for (int32 k = Lo; k < Hi; ++k)
+		{
+			const int32 m = Wrap(k);
+			const double d = FMath::Square(PathX[m] - X) + FMath::Square(PathY[m] - Y);
+			if (d < Best) { Best = d; Bi = k; }
+		}
+		PathIdx = Bi;
+		bFirstSample = false;
+
+		// Pure pursuit plus a curvature feedforward about 0.7 s ahead (positive steer = right).
+		const double Ld = FMath::Max(3.5, 1.5 * FMath::Abs(V));
+		const int32 Ti = Wrap(PathIdx + PyRound(Ld));
+		double Alpha = FMath::Atan2(PathY[Ti] - Y, PathX[Ti] - X) - Heading;
+		Alpha = FMath::UnwindRadians(Alpha);
+		const int32 Ki = Wrap(PathIdx + PyRound(1.0 * FMath::Abs(V) + 1.0));
+		const double KappaLeft = 0.6 * 2.0 * FMath::Sin(Alpha) / Ld + 0.8 * PathKappa[Ki];
+		const double Full = FullStickKappa(FMath::Max(FMath::Abs(V), 1.0));
+		const double Cap = FMath::Abs(V) < 3.2 ? 1.0 : 0.6;
+		const double Want = FMath::Clamp(-KappaLeft / Full, -Cap, Cap);
+		SteerOut = FMath::FInterpConstantTo(SteerOut, Want, DeltaSeconds, 5.0); // 5 stick/s rate limit
+		Out.Steer = static_cast<float>(SteerOut);
+
+		// Speed loop: ramp the target up at 0.6 m/s^2 (down at once), filter the speed, lean P + I.
+		const double Vt = PathV[Wrap(PathIdx + 2)];
+		RampedTargetV = Vt >= RampedTargetV ? FMath::Min(Vt, RampedTargetV + 0.6 * DeltaSeconds) : Vt;
+		const double Af = 1.0 - FMath::Exp(-DeltaSeconds / 0.25);
+		FilteredV += Af * (V - FilteredV);
+		const double Err = RampedTargetV - FilteredV;
+		const double ICap = FMath::Abs(V) < 0.3 ? 0.5 : 1.0;
+		SpeedIntegral = FMath::Clamp(SpeedIntegral + static_cast<float>(Err * DeltaSeconds),
+			static_cast<float>(-ICap), static_cast<float>(ICap));
+		const double Accel = DeltaSeconds > 1e-6 ? (FilteredV - FilteredVPrev) / DeltaSeconds : 0.0;
+		FilteredVPrev = FilteredV;
+		Out.Lean = static_cast<float>(FMath::Clamp(0.20 * Err - 0.05 * Accel + 0.01 * SpeedIntegral, -0.35, 0.35));
+		break;
+	}
+	case EPhase::Done:
+		Out.bFinished = true;
+		break;
+	default:
+		break;
+	}
+
+	if (Seconds - LastLog > 0.5)
+	{
+		LastLog = Seconds;
+		UE_LOG(LogDemoRider, Log, TEXT("DemoRider: t %.1f x %+.1f y %+.1f v %.2f idx %d lean %+.2f steer %+.2f laps %d/%d"),
+			Seconds, X, Y, V, PathIdx, Out.Lean, Out.Steer, Readout ? Readout->CompletedLaps : 0, DemoLaps);
 	}
 	return Out;
 }

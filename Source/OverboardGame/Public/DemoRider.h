@@ -36,8 +36,13 @@ public:
 	FDemoPadOutput Update(double Seconds, float DeltaSeconds, bool bHaveState, const OverboardWire::FBoardState& State,
 		bool bDown, const FRideGameReadout* Readout);
 
+	// Loads tools/play/elements/<CourseName>.json. If it has a "demo_path", the demo runs the 2D
+	// lap follower; else it keeps the city_hill ride. Called once, before the first Update.
+	void LoadCourse(const FString& CourseName);
+	bool IsLapsMode() const { return bLapsMode; }
+
 private:
-	enum class EPhase : uint8 { Wait, Arm, Ride, StopBox, Hold, Ride2, AfterFinish, Kick, Down, Reset, Done };
+	enum class EPhase : uint8 { Wait, Arm, Ride, StopBox, Hold, Ride2, AfterFinish, Kick, Down, Reset, Done, RideLaps };
 	EPhase Phase = EPhase::Wait;
 	double PhaseStart = 0.0;
 	float SpeedIntegral = 0.f;
@@ -55,6 +60,25 @@ private:
 	int32 Retries = 0;
 	double LastLog = -1.0;
 	double LastUpdateSeconds = -1.0;
+
+	// --- Laps mode (parking_lot and any course with a "demo_path") -----------------------------
+	// A 2D pure-pursuit follower on the closed demo path, ported exactly from the reference pilot
+	// (tools/levels/headless_pilot.py, class DemoRider). Empty paths keep the city_hill ride.
+	bool bLapsMode = false;
+	int32 DemoLaps = 1;                 // -ObDemoLaps=N: end after N laps (or a fall)
+	TArray<double> PathX, PathY, PathV; // the demo path (x, y, v_target), 1 m apart, closed
+	TArray<double> PathKappa;           // signed path curvature (left +) at each point
+	double SteerOut = 0.0;              // rate-limited steer command, [-1, 1]
+	int32 PathIdx = 0;                  // the nearest path index (advances forward only)
+	bool bFirstSample = true;           // the first sample searches the whole path
+	double Heading = 0.0;
+	bool bHaveHeading = false;
+	double FilteredVPrev = 0.0;
+	int32 LastSeenCompletedLaps = 0;
+	bool bLoggedFall = false;
+
+	FDemoPadOutput UpdateLaps(double Seconds, float DeltaSeconds, const OverboardWire::FBoardState& State,
+		bool bDown, const FRideGameReadout* Readout);
 
 	void Enter(EPhase Next, double Seconds);
 	static double TargetY(double S);
