@@ -3,11 +3,17 @@
 # demo rider playing the pad (-ObDemoRider) and the HUD and game elements on screen.
 # Everything is live and real time; the game records its own viewport (FGameVideoRecorder).
 #
-#   tools/play/make_demo_video.sh [out.mp4] [WxH] [fps]
+#   tools/play/make_demo_video.sh [--level NAME] [out.mp4] [WxH] [fps]
 #   default: /tmp/overboard-demo.mp4 1920x1080 30
 # Logs: /tmp/overboard-demo-game.log, /tmp/overboard-demo-sim.log, trace /tmp/overboard-demo-trace.csv
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/../.." && pwd)"
+export LEVEL=city_hill
+if [[ "${1:-}" == "--level" ]]; then LEVEL="$2"; shift 2; fi
+PLAY_DIR="$HERE/tools/play"
+[[ -f "$PLAY_DIR/levels/$LEVEL.env" ]] || { echo "no level file $PLAY_DIR/levels/$LEVEL.env"; exit 1; }
+# shellcheck disable=SC1090
+source "$PLAY_DIR/levels/$LEVEL.env"
 OUT=${1:-/tmp/overboard-demo.mp4}
 RES=${2:-1920x1080}
 FPS=${3:-30}
@@ -23,7 +29,8 @@ trap 'kill -TERM $SIM 2>/dev/null || true' EXIT
 sleep 2
 
 # The demo rider closes the video and quits the game when its script ends.
-"$UE" "$HERE/OverboardGame.uproject" /Game/Maps/OB_CityHill -game -RenderOffscreen \
+# shellcheck disable=SC2086
+"$UE" "$HERE/OverboardGame.uproject" "$MAP" -game -RenderOffscreen $COURSE_ARG \
   -ResX="${RES%x*}" -ResY="${RES#*x}" -ForceRes -nosound -unattended \
   -ObDemoRider -ObRenderRider -ObBoardSkin=x7 -ExecCmds="DisableAllScreenMessages" -ObRecordVideo="$OUT" -ObRecordFps="$FPS" -abslog=/tmp/overboard-demo-game.log > /dev/null 2>&1 || true
 echo "wrote $OUT"

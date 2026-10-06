@@ -14,14 +14,34 @@ Updated at the end of each work block. The plan is in `docs/levels-plan.md`.
 | sim-host loader (spawn, bounds, boxes) | Done by c4 | merged to controls master cd7962d (PR #298) |
 | Kerb ride test | Done by c4 | 4 cm rides over; 8 and 15 cm: nose strike at 2 m/s. Heightfield drops of 0.10/0.12/0.15 m at 2-3 m/s: no fall (tail drag only). Box plank (0.12 m): off the end at 2-3 m/s, no fall; off a side at 10 deg: no fall at 2 m/s, nose-bumper fall at 3 m/s. Decision: keep the box plank (a real skill); the demo rides it centred at <= 2.5 m/s |
 | Plan | Approved by Mike, 2026-10-05 | route B, Ramp B 15/20 %, kerb cut, box plank |
-| Build work | Level 1 exporter in progress | — |
+| Level 1 exporter | Done | `tools/levels/export_level.py parking_lot` -> course dir + `tools/play/elements/parking_lot.json` |
+| Level 1 axes | Proved in MuJoCo | spawn yaw 180 = +X; the first hump acts at x = -22 m (row/col correct) |
+| Level 1 ridden headless | 2 clean laps, 174.4 s / 172.2 s; earlier 3/3 clean (Ramp B 3/3) | `tools/levels/pilot_lap.sh parking_lot --laps 2` (controls cd7962d) |
+| Launcher `--level` | Done | `tools/play/levels/<name>.env`; run_sim / play / make_demo_video |
+| Game rules 2D + laps, DemoRider 2D | Next | PR to overboard-14 |
+| OB_ParkingLot Unreal level | Next | — |
 
 ## Worktrees
 
 - Game: `~/projects/overboard-game-levels` (feat/game/levels from overboard-game master).
 - Controls, read-only build: `~/projects/overboard-levels-controls` (detached at origin/master cd7962d, which has the levels loader).
 
+## Facts found (controls cd7962d)
+
+- Turn law (c4): kappa = stick * min(0.25, 0.6 g/v^2) * clamp((v - 0.8)/2.2, 0, 1). Below 3 m/s
+  the turn fades: R 8.6 / 6.0 / 4.7 m at 1.8 / 2.2 / 2.6 m/s (measured, `turn_test.py`).
+  Slower is NOT tighter. Level 1 turns are R 7 m at <= 3.6 m/s.
+- A 7.5 cm x 0.9 m bump: pitch +-11 deg, 90 A. A 5 cm x 1.8 m hump: +-1.9 deg (kept).
+- Box edges overstate small features (rigid tyre): a 15 mm box bar row caused a fall. Rule
+  (c4): features under 3 cm in the heightfield; boxes for kerbs of 4 cm and up, and objects.
+- Kerbs at 2 m/s: 4 cm rides over; 8 and 15 cm: nose strike (c4).
+- Box plank 0.12 m: off the end OK at 2-3 m/s; off a side at 3 m/s = fall (c4). Kept.
+- A balancing board integrates the lean (lean = acceleration), so a demo speed loop must be P +
+  damping; an integral term overshoots by 1.5-2 m/s.
+
 ## Next
 
-2. Exporter + first `metadata.json` / `obstacles.csv` to c4 for review; axis marker test.
-3. Game PRs to overboard-14 (after PR #38 merges): 2D elements + laps, `--level`, 2D demo rider.
+1. Game PR to overboard-14: 2D elements + laps in RideCourseElements and the HUD; 2D DemoRider
+   (the headless pilot's laws, with the full turn law).
+2. OB_ParkingLot: ground from `course_height.npy`, boxes, markings, lights.
+3. Demo lap video in the game; publish to the lab server.
