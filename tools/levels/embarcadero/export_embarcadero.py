@@ -71,6 +71,25 @@ def rasterize(geom, X, Y, chunk=2_000_000):
     return out.reshape(X.shape)
 
 
+def carriageway(osm, legs, route):
+    """The road surface polygon: vehicle roads buffered by their half width, the street part of
+    the route kept on the road, and kerb corners rounded."""
+    roads = []
+    for t, nd in osm.ways:
+        if t.get("highway") in VEHICLE:
+            roads.append(LineString(osm.line(nd)).buffer(road_half_width(t), cap_style="flat",
+                                                           join_style="round"))
+    # The OSM widths are estimates (lanes x 3 m): make sure the bike-lane line of the street legs
+    # is on the road. Without this the line crosses the estimated kerb line at random places
+    # (16 crossings in the first export, 2 are real). The fillets at the street corners too;
+    # not the promenade legs (C, D, E).
+    prom = unary_union([LineString(legs[k]).buffer(4.0) for k in ("C", "D", "E")])
+    roads.append(route.difference(prom).buffer(2.0, cap_style="flat"))
+    # Close with KERB_CORNER_R: real kerb corners are rounded. A sharp inner corner put the kerb
+    # too near the corner of the two bike lines, and a right turn hit it.
+    return unary_union(roads).buffer(KERB_CORNER_R).buffer(-KERB_CORNER_R)
+
+
 def main():
     out = Path(sys.argv[1] if len(sys.argv) > 1 else
                Path.home() / "projects/overboard-viz/out/carve-lab/data/courses/embarcadero")
@@ -108,21 +127,7 @@ def main():
     water = water1m[np.clip(np.round(rr).astype(int), 0, h - 1), np.clip(np.round(cc).astype(int), 0, w - 1)]
     del cc, rr, c0, r0, fc, fr
 
-    # Carriageway: the vehicle roads buffered by their half width.
-    roads = []
-    for t, nd in osm.ways:
-        if t.get("highway") in VEHICLE:
-            roads.append(LineString(osm.line(nd)).buffer(road_half_width(t), cap_style="flat",
-                                                           join_style="round"))
-    # The OSM widths are estimates (lanes x 3 m): make sure the bike-lane line of the street legs
-    # (A, G, H) is on the road, with 1.2 m to the kerb. Without this the line crosses the
-    # estimated kerb line at random places (16 crossings in the first export, 2 are real).
-    # The fillets at the street corners too; not the promenade legs (C, D, E).
-    prom = unary_union([LineString(legs[k]).buffer(4.0) for k in ("C", "D", "E")])
-    roads.append(route.difference(prom).buffer(2.0, cap_style="flat"))
-    # Close with 4 m: real kerb corners are rounded (radius about 4-5 m). A sharp inner corner
-    # put the kerb 2.8 m from the corner of the two bike lines, and a right turn hit it.
-    carriage = unary_union(roads).buffer(KERB_CORNER_R).buffer(-KERB_CORNER_R)
+    carriage = carriageway(osm, legs, route)
     buildings = unary_union([Polygon(osm.line(nd)).buffer(0) for t, nd in osm.ways
                              if "building" in t and nd[0] == nd[-1] and len(nd) >= 4])
     road_m = rasterize(carriage, X, Y)
