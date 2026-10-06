@@ -107,7 +107,8 @@ def build_ground(zfn, out, hx, hy, bgeom):
 
 
 # --- corridor: an exact ribbon along the demo path -----------------------------------------------
-def build_corridor(zfn, path, out):
+def build_corridor(zfn, path, out, bgeom, prom_geom):
+    from scipy.spatial import cKDTree
     P = np.array([(p[0], p[1]) for p in path])
     # resample the closed path at COR_DS
     seg = np.r_[0, np.cumsum(np.hypot(*np.diff(np.vstack([P, P[0]]), axis=0).T))]
@@ -122,12 +123,19 @@ def build_corridor(zfn, path, out):
     nx, ny = -np.sin(hd), np.cos(hd)
     kap = (dx * ddy - dy * ddx) / (np.hypot(dx, dy) ** 3 + 1e-9)   # signed curvature (+ = turns left)
     rad = 0.85 / np.maximum(np.abs(kap), 1e-6)                     # clamp the inner side to this
+    # self-proximity: where the route passes near another part of itself (the racket loop), shrink
+    # the ribbon so the two strips do not overlap and z-fight (the promenade ghost triangles).
+    tree = cKDTree(np.column_stack([xs, ys]))
+    hw = np.full(len(ss), COR_HALF)
+    for i in range(len(ss)):
+        for j in tree.query_ball_point([xs[i], ys[i]], 2 * COR_HALF):
+            ad = abs(ss[i] - ss[j]); ad = min(ad, total - ad)
+            if ad > 30.0:
+                hw[i] = min(hw[i], 0.46 * math.hypot(xs[i] - xs[j], ys[i] - ys[j]))
+    hw = np.minimum(hw, rad)
     vs = np.arange(-COR_HALF, COR_HALF + COR_DV * 0.5, COR_DV)
-    # clamp each lateral column to the local curve radius so the inner edge does not fold back
-    V = np.tile(vs[None, :], (len(ss), 1)).astype(float)
-    left = kap[:, None] > 0                       # inner side is +v (left)
-    V = np.where(left & (V > 0), np.minimum(V, rad[:, None]), V)
-    V = np.where((~left) & (V < 0), np.maximum(V, -rad[:, None]), V)
+    V = np.clip(np.tile(vs[None, :], (len(ss), 1)).astype(float), -hw[:, None], hw[:, None])
+    shapely.prepare(bgeom); shapely.prepare(prom_geom)
     ntile = 0
     per = max(1, int(COR_TILE_M / COR_DS))
     for i0 in range(0, len(ss), per):
@@ -137,8 +145,13 @@ def build_corridor(zfn, path, out):
         X = xs[i0:i1, None] + nx[i0:i1, None] * V[i0:i1, :]
         Y = ys[i0:i1, None] + ny[i0:i1, None] * V[i0:i1, :]
         Z = zfn(X, Y) + COR_LIFT
+        # do not draw raised building blocks: lower corridor posts inside a footprint by 3 m
+        inb = shapely.contains_xy(bgeom, X.ravel(), Y.ravel()).reshape(X.shape)
+        Z = np.where(inb, Z - BUILDING_H, Z)
+        mid = (xs[(i0 + i1) // 2], ys[(i0 + i1) // 2])
+        section = "Pave" if prom_geom.contains(Point(*mid)) else "Road"
         m = obm.Mesh()
-        gc.add_grid(m, X, Y, Z, "Road", X, Y)
+        gc.add_grid(m, X, Y, Z, section, X, Y)
         gc.ue_winding(m).write(out("corridor_%d.obm" % ntile))
         ntile += 1
     log("corridor tiles:", ntile)
@@ -184,12 +197,18 @@ def build_water(h, g, out):
     log("water bbox x[%.0f,%.0f] y[%.0f,%.0f]" % (xlo, xhi, ylo, yhi))
 
 
-# --- buildings: extrude the OSM footprints -------------------------------------------------------
+# A warm plaster / brick / stone palette for the building facades (sRGB 0..255). Mid tones, so
+# they do not blow out to white under the daylight exposure.
+FACADE_COLS = [(150, 120, 96), (122, 92, 78), (150, 146, 138), (120, 104, 84), (164, 140, 110),
+               (112, 78, 62), (134, 128, 120), (104, 96, 86), (146, 116, 96), (118, 126, 132)]
+
+
 def build_buildings(osm, zfn, out, hx, hy):
     mesh = obm.Mesh()
     n = 0
+    foots = []
     grid = Polygon([(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)])
-    for t, nd in osm.ways:
+    for wi, (t, nd) in enumerate(osm.ways):
         if "building" not in t or nd[0] != nd[-1] or len(nd) < 4:
             continue
         try:
@@ -199,27 +218,26 @@ def build_buildings(osm, zfn, out, hx, hy):
             poly = poly.intersection(grid)
         except Exception:
             continue
-        if poly.is_empty or poly.area < 8.0:
+        if poly.is_empty or poly.area < 10.0:
             continue
         polys = poly.geoms if poly.geom_type == "MultiPolygon" else [poly]
         for pg in polys:
-            if pg.area < 15.0 or pg.geom_type != "Polygon":
+            if pg.area < 10.0 or pg.geom_type != "Polygon":
                 continue
             ht = building_height(t)
             cx, cy = pg.centroid.x, pg.centroid.y
             gz = float(zfn(cx, cy))
-            # course_height raises building footprints by 3 m; bury the base below the street so no
-            # sawtooth shows, and put the roof `ht` above the street level (gz - the 3 m raise).
-            base = gz - 7.0
-            top = gz - 3.0 + ht
-            # extrude 1.2 m proud of the footprint, so the walls overhang the coarse 2 m ground
-            # step at the footprint edge (the lowered building block), which otherwise pokes through.
-            pe = pg.buffer(1.2, join_style=2, mitre_limit=3.0)
+            base = gz - 7.0           # bury the foot so no sawtooth shows
+            top = gz - 3.0 + ht       # roof `ht` above the street (gz minus the 3 m block raise)
+            pe = pg.buffer(1.2, join_style=2, mitre_limit=3.0)   # 1.2 m proud, hides the block edge
             if pe.geom_type != "Polygon":
                 pe = pg
-            extrude_polygon(mesh, pe, base, top, zfn)
+            col = FACADE_COLS[(wi * 7 + int(abs(cx) + abs(cy))) % len(FACADE_COLS)]
+            extrude_polygon(mesh, pe, base, top, gz, col)
+            foots.append([[round(x, 2), round(y, 2)] for x, y in pg.exterior.coords])
             n += 1
-    gc.ue_winding(mesh).write(out("buildings.obm"))
+    gc.ue_winding(mesh).write(out("buildings.obm"), colors=True)
+    json.dump({"footprints": foots}, open(out("buildings.json"), "w"))
     log("buildings:", n)
 
 
@@ -238,23 +256,25 @@ def building_height(t):
     return 15.0
 
 
-def extrude_polygon(mesh, poly, base, top, zfn):
-    """Walls (per edge, outward-facing) and a flat roof for a footprint, in MuJoCo m -> UE cm.
-    The ring is oriented counter-clockwise, so the horizontal outward normal of edge a->b is
-    (dy, -dx); ue_winding then winds the face to show outward. The wall base is a single buried
-    value, not per-vertex ground: course_height raises building footprints by 3 m, so sampling the
-    ground per vertex straddled that step and the base came out as a sawtooth of spikes."""
+def extrude_polygon(mesh, poly, base, top, street_z, col):
+    """Walls (per edge, outward-facing) and a flat roof for a footprint, in MuJoCo m -> UE cm. The
+    ring is oriented CCW, so the outward normal of edge a->b is (dy, -dx). Wall UV0 is metres: u
+    along the wall, v = height above the street, so the facade window grid reads as windows, not
+    stripes. col is the per-building facade tint (sRGB), carried as vertex colour."""
     from shapely.geometry.polygon import orient
     poly = orient(poly, sign=1.0)              # exterior CCW
     ring = list(poly.exterior.coords)[:-1]
+    col4 = (col[0], col[1], col[2], 255)
     for a, b in zip(ring, ring[1:] + ring[:1]):
         dx, dy = b[0] - a[0], b[1] - a[1]
         ln = math.hypot(dx, dy)
         if ln < 1e-6:
             continue
-        nrm = (dy / ln, -dx / ln, 0.0)         # outward horizontal normal (CCW ring)
+        nrm = (dy / ln, -dx / ln, 0.0)
         p = [(a[0], a[1], base), (b[0], b[1], base), (b[0], b[1], top), (a[0], a[1], top)]
-        quad(mesh, p, "Facade", nrm)
+        vb, vt = base - street_z, top - street_z            # height above the street (m)
+        uv = np.array([[0, vb], [ln, vb], [ln, vt], [0, vt]], np.float32)
+        quad(mesh, p, "Facade", nrm, uv, col4)
     for tri in triangulate(poly):
         if tri.area < 0.5 or not poly.contains(tri.centroid):
             continue
@@ -262,15 +282,15 @@ def extrude_polygon(mesh, poly, base, top, zfn):
         p = [(c[0][0], c[0][1], top), (c[1][0], c[1][1], top), (c[2][0], c[2][1], top)]
         P = gc.to_ue(np.array(p))
         nrm = np.tile([0, 0, 1.0], (3, 1))
-        mesh.add(P, nrm, np.zeros((3, 2), np.float32), np.array([[0, 1, 2]], np.uint32), "Roof")
+        cc = np.tile(col4, (3, 1))
+        mesh.add(P, nrm, np.zeros((3, 2), np.float32), np.array([[0, 1, 2]], np.uint32), "Roof", col=cc)
 
 
-def quad(mesh, pts4, section, normal):
+def quad(mesh, pts4, section, normal, uv, col4):
     P = gc.to_ue(np.array(pts4))
     nrm = np.tile(np.array(normal, float), (4, 1))
-    uv = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], np.float32)
     tri = np.array([[0, 1, 2], [0, 2, 3]], np.uint32)
-    mesh.add(P, nrm, uv, tri, section)
+    mesh.add(P, nrm, uv, tri, section, col=np.tile(col4, (4, 1)))
 
 
 # --- markings: lane lines, green bike lanes, crosswalks ------------------------------------------
@@ -331,7 +351,9 @@ def build_marks(osm, zfn, lvl, out, hx, hy):
             continue
         line = osm.line(nd)
         hw = osm_mod.road_half_width(t)
-        for d in (hw - 0.2, -(hw - 0.2)):
+        # the half width is an estimate; keep the edge line safely on the road side of the kerb
+        edge = min(hw - 0.3, hw * 0.85)
+        for d in (edge, -edge):
             for off in offset_lines(line, d):
                 for s in clip(off):
                     ribbon(marks, zfn, osm_mod.resample(s, 1.0), 0.12, "White")
@@ -455,11 +477,16 @@ def main():
                 foots.append(p if p.is_valid else p.buffer(0))
             except Exception:
                 pass
-    bgeom = unary_union(foots).intersection(grid) if foots else None
+    bgeom = unary_union(foots).intersection(grid) if foots else grid.buffer(-1e6)
     log("building footprints union ready")
+    # the promenade (Herb Caen Way / The Embarcadero): a buffer, used to pave the corridor there
+    prom_lines = []
+    for nm in ("The Embarcadero", "Herb Caen Way", "Herb Caen Way...The Embarcadero"):
+        prom_lines += [LineString(ln) for _, ln in street_lines(osm, nm)]
+    prom_geom = unary_union(prom_lines).buffer(9.0) if prom_lines else grid.buffer(-1e6)
 
     build_ground(zfn, out, hx, hy, bgeom)
-    build_corridor(zfn, lvl["demo_path"], out)
+    build_corridor(zfn, lvl["demo_path"], out, bgeom, prom_geom)
     build_boxes(zfn, rows, out)
     build_water(h, g, out)
     build_buildings(osm, zfn, out, hx, hy)

@@ -99,42 +99,63 @@ def flat_material(name, color, rough=0.85, spec=0.3, noise_amt=0.0, emissive=Non
 
 
 def facade_material():
-    """A concrete facade with a window grid from world position (dark glass, faint emissive)."""
+    """A plaster/brick facade whose windows read as windows: a grid from UV0 (u = metres along the
+    wall, v = metres above the street), with mullions. The wall colour is the per-building vertex
+    colour; the ground floor (v < 3 m) is a solid storefront band. Windows are dark glass."""
     mat = new_material("M_SF_Facade")
-    wp = node(mat, unreal.MaterialExpressionWorldPosition, 0)
-    z = node(mat, unreal.MaterialExpressionComponentMask, 1, b=True); mel.connect_material_expressions(wp, "", z, "")
-    xy = node(mat, unreal.MaterialExpressionComponentMask, 2, r=True, g=True); mel.connect_material_expressions(wp, "", xy, "")
-    dp = node(mat, unreal.MaterialExpressionDotProduct, 3)
-    mel.connect_material_expressions(xy, "", dp, "A")
-    mel.connect_material_expressions(node(mat, unreal.MaterialExpressionConstant2Vector, 4, r=0.0045, g=0.0045), "", dp, "B")
-    zz = node(mat, unreal.MaterialExpressionMultiply, 5)
-    mel.connect_material_expressions(z, "", zz, "A")
-    mel.connect_material_expressions(node(mat, unreal.MaterialExpressionConstant, 6, r=0.0030), "", zz, "B")
-    ci = unreal.CustomInput(); ci.set_editor_property("input_name", "H")
-    ci2 = unreal.CustomInput(); ci2.set_editor_property("input_name", "Z")
-    cust = node(mat, unreal.MaterialExpressionCustom, 7,
-                code="float wx=step(0.18,frac(H))*step(frac(H),0.82);\n"
-                     "float wz=step(0.30,frac(Z))*step(frac(Z),0.85);\nreturn wx*wz;",
+    uv = node(mat, unreal.MaterialExpressionTextureCoordinate, 0)
+    u = node(mat, unreal.MaterialExpressionComponentMask, 1, r=True); mel.connect_material_expressions(uv, "", u, "")
+    v = node(mat, unreal.MaterialExpressionComponentMask, 2, g=True); mel.connect_material_expressions(uv, "", v, "")
+    ci = unreal.CustomInput(); ci.set_editor_property("input_name", "U")
+    ci2 = unreal.CustomInput(); ci2.set_editor_property("input_name", "V")
+    cust = node(mat, unreal.MaterialExpressionCustom, 3,
+                code="float fu=frac(U/3.2); float fv=frac((V-0.2)/3.6);\n"
+                     "float win=step(0.26,fu)*step(fu,0.70)*step(0.34,fv)*step(fv,0.80);\n"
+                     "win*=step(3.0,V);\n"      # solid storefront below 3 m, clear mullions elsewhere
+                     "return saturate(win);",
                 output_type=unreal.CustomMaterialOutputType.CMOT_FLOAT1)
     cust.set_editor_property("inputs", [ci, ci2])
-    mel.connect_material_expressions(dp, "", cust, "H")
-    mel.connect_material_expressions(zz, "", cust, "Z")
-    wall = node(mat, unreal.MaterialExpressionConstant3Vector, 8, constant=unreal.LinearColor(0.30, 0.29, 0.28, 1))
-    glass = node(mat, unreal.MaterialExpressionConstant3Vector, 9, constant=unreal.LinearColor(0.07, 0.09, 0.12, 1))
-    lerp = node(mat, unreal.MaterialExpressionLinearInterpolate, 10)
+    mel.connect_material_expressions(u, "", cust, "U")
+    mel.connect_material_expressions(v, "", cust, "V")
+    wall = node(mat, unreal.MaterialExpressionVertexColor, 4)
+    glass = node(mat, unreal.MaterialExpressionConstant3Vector, 5, constant=unreal.LinearColor(0.05, 0.07, 0.10, 1))
+    lerp = node(mat, unreal.MaterialExpressionLinearInterpolate, 6)
     mel.connect_material_expressions(wall, "", lerp, "A")
     mel.connect_material_expressions(glass, "", lerp, "B")
     mel.connect_material_expressions(cust, "", lerp, "Alpha")
     mel.connect_material_property(lerp, "", MP.MP_BASE_COLOR)
-    mel.connect_material_property(node(mat, unreal.MaterialExpressionConstant, 11, r=0.6), "", MP.MP_ROUGHNESS)
-    mel.connect_material_property(node(mat, unreal.MaterialExpressionConstant, 12, r=0.4), "", MP.MP_SPECULAR)
+    # windows are smoother (glass) than the wall; a faint emissive so they read at distance
+    rgh = node(mat, unreal.MaterialExpressionLinearInterpolate, 7)
+    mel.connect_material_expressions(node(mat, unreal.MaterialExpressionConstant, 8, r=0.75), "", rgh, "A")
+    mel.connect_material_expressions(node(mat, unreal.MaterialExpressionConstant, 9, r=0.2), "", rgh, "B")
+    mel.connect_material_expressions(cust, "", rgh, "Alpha")
+    mel.connect_material_property(rgh, "", MP.MP_ROUGHNESS)
+    mel.connect_material_property(node(mat, unreal.MaterialExpressionConstant, 10, r=0.35), "", MP.MP_SPECULAR)
+    em = node(mat, unreal.MaterialExpressionMultiply, 11)
+    mel.connect_material_expressions(cust, "", em, "A")
+    mel.connect_material_expressions(node(mat, unreal.MaterialExpressionConstant3Vector, 12, constant=unreal.LinearColor(0.04, 0.05, 0.06, 1)), "", em, "B")
+    mel.connect_material_property(em, "", MP.MP_EMISSIVE_COLOR)
     finish(mat)
     return mat
 
 
 def water_material():
-    """Glossy opaque blue: Lumen reflects the sky, so it reads as calm bay water."""
-    return flat_material("M_SF_Water", (0.015, 0.05, 0.08), rough=0.06, spec=1.0, metallic=0.0)
+    """Deep blue-green bay water: a Fresnel lerp from a dark teal (looking down) to a bluer horizon
+    tint (grazing), low roughness, high specular. The tint keeps the horizon reading as water, not
+    a white sky mirror."""
+    mat = new_material("M_SF_Water")
+    deep = node(mat, unreal.MaterialExpressionConstant3Vector, 0, constant=unreal.LinearColor(0.006, 0.030, 0.038, 1))
+    graze = node(mat, unreal.MaterialExpressionConstant3Vector, 1, constant=unreal.LinearColor(0.03, 0.10, 0.11, 1))
+    fres = node(mat, unreal.MaterialExpressionFresnel, 2, exponent=4.0, base_reflect_fraction=0.04)
+    lerp = node(mat, unreal.MaterialExpressionLinearInterpolate, 3)
+    mel.connect_material_expressions(deep, "", lerp, "A")
+    mel.connect_material_expressions(graze, "", lerp, "B")
+    mel.connect_material_expressions(fres, "", lerp, "Alpha")
+    mel.connect_material_property(lerp, "", MP.MP_BASE_COLOR)
+    mel.connect_material_property(node(mat, unreal.MaterialExpressionConstant, 4, r=0.10), "", MP.MP_ROUGHNESS)
+    mel.connect_material_property(node(mat, unreal.MaterialExpressionConstant, 5, r=1.0), "", MP.MP_SPECULAR)
+    finish(mat)
+    return mat
 
 
 def spawn(cls, loc=(0, 0, 0), pitch=0.0, yaw=0.0, roll=0.0, label=None):
@@ -166,7 +187,7 @@ def build_look():
     for k, v in dict(dynamic_global_illumination_method=unreal.DynamicGlobalIlluminationMethod.LUMEN,
                      reflection_method=unreal.ReflectionMethod.LUMEN,
                      auto_exposure_method=unreal.AutoExposureMethod.AEM_MANUAL,
-                     auto_exposure_apply_physical_camera_exposure=False, auto_exposure_bias=-13.0,
+                     auto_exposure_apply_physical_camera_exposure=False, auto_exposure_bias=-13.6,
                      bloom_intensity=0.4, vignette_intensity=0.3,
                      lumen_max_trace_distance=80000.0, lumen_scene_view_distance=100000.0).items():
         try:
@@ -189,6 +210,7 @@ mats = dict(
     Ground=flat_material("M_SF_Ground", (0.13, 0.14, 0.11), rough=0.95, spec=0.1, noise_amt=0.2),
     Road=flat_material("M_SF_Road", (0.095, 0.098, 0.10), rough=0.9, spec=0.2, noise_amt=0.1),
     Kerb=flat_material("M_SF_Kerb", (0.35, 0.34, 0.32), rough=0.85, spec=0.25),
+    Pave=flat_material("M_SF_Pave", (0.17, 0.165, 0.155), rough=0.8, spec=0.2, noise_amt=0.14),
     Rail=flat_material("M_SF_Rail", (0.22, 0.24, 0.27), rough=0.4, spec=0.6, metallic=0.9),
     Facade=facade_material(),
     Roof=flat_material("M_SF_Roof", (0.12, 0.12, 0.13), rough=0.8, spec=0.2),
@@ -203,9 +225,9 @@ SLOT = {"Ground": "Ground", "Road": "Road", "Kerb": "Kerb", "Rail": "Rail", "Fac
         "Roof": "Roof", "White": "White", "Yellow": "Yellow", "Bike": "Bike"}
 
 
-def make_mesh(obm, name):
+def make_mesh(obm, name, nanite=True):
     path = MESHES + "/" + name
-    m = lib.create_static_mesh_from_obm(os.path.join(DATA, obm), path + "." + name, True, 0, False)
+    m = lib.create_static_mesh_from_obm(os.path.join(DATA, obm), path + "." + name, nanite, 0, False)
     if not m:
         fail("mesh %s" % obm)
     for i, sm in enumerate(m.get_editor_property("static_materials")):
@@ -226,9 +248,10 @@ for f in names_in("ground_"):
     assets.append(("Ground", make_mesh(f, "SM_" + f[:-4])))
 for f in names_in("corridor_"):
     assets.append(("Road", make_mesh(f, "SM_" + f[:-4])))
-for f, nm in (("kerbs.obm", "SM_SF_Kerbs"), ("rails.obm", "SM_SF_Rails"),
-              ("buildings.obm", "SM_SF_Buildings"), ("marks.obm", "SM_SF_Marks")):
+for f, nm in (("kerbs.obm", "SM_SF_Kerbs"), ("rails.obm", "SM_SF_Rails"), ("marks.obm", "SM_SF_Marks")):
     assets.append((f[:-4], make_mesh(f, nm)))
+# buildings non-Nanite, so the per-building vertex colour survives to the facade material
+assets.append(("buildings", make_mesh("buildings.obm", "SM_SF_Buildings", nanite=False)))
 log("built %d meshes" % len(assets))
 
 world = unreal.EditorLoadingAndSavingUtils.new_blank_map(False)
@@ -269,6 +292,17 @@ if w:
     a.static_mesh_component.set_collision_enabled(unreal.CollisionEnabled.NO_COLLISION)
     a.set_actor_scale3d(unreal.Vector(xhi - xlo, yhi - ylo, 0.4))
     log("water plane %.0f x %.0f m" % (xhi - xlo, yhi - ylo))
+    # a low dark shore across the bay, so the horizon reads as land, not white sky
+    shore_mat = flat_material("M_SF_Shore", (0.04, 0.06, 0.05), rough=0.95, spec=0.05, noise_amt=0.3)
+    for sx, sy, lenx, leny in ((w["xhi"] + 1900.0, 0.0, 120.0, 3400.0),      # east, across the bay
+                               (w["xhi"] + 900.0, 1500.0, 1800.0, 120.0),    # north
+                               (w["xhi"] + 900.0, -1500.0, 1800.0, 120.0)):  # south
+        s = spawn(unreal.StaticMeshActor, (100 * sx, -100 * sy, 100 * (w["z"] + 18.0)), label="OB_SF_Shore")
+        s.static_mesh_component.set_static_mesh(cube)
+        s.static_mesh_component.set_material(0, shore_mat)
+        s.static_mesh_component.set_mobility(unreal.ComponentMobility.STATIC)
+        s.static_mesh_component.set_collision_enabled(unreal.CollisionEnabled.NO_COLLISION)
+        s.set_actor_scale3d(unreal.Vector(lenx, leny, 40.0))
 
 # PlayerStart at the world origin
 ps = spawn(unreal.PlayerStart, tuple(meta["origin_cm"]), yaw=meta["origin_yaw_deg"], label="OB_EmbarcaderoOrigin")

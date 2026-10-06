@@ -88,6 +88,39 @@ for i, p in enumerate(lvl["demo_path"]):
     n += 1
 out.write("samples %d (of %d), worst |gap| %.2f mm at idx %s; %d points over 10 mm.\n"
           % (n, len(lvl["demo_path"]), worst, wloc, over))
-out.write("PASS\n" if n and worst < 10.0 else "FAIL\n")
+gap_ok = bool(n and worst < 10.0)
+
+# --- raised-block cover check. The course raises each OSM building footprint by exactly 3 m, which
+# makes a sharp ~3 m STEP at the footprint edge. The smoothed DEM has no such step (even a steep
+# hill moves < 0.1 m per 0.1 m post), so a step of >= 1 m between adjacent posts marks a building
+# block edge. Every such edge (away from the water seawall) must sit inside a drawn building; a bare
+# block means a building is missing. This targets the artificial blocks, not the real terrain.
+import shapely  # noqa: E402
+from scipy import ndimage as ndi  # noqa: E402
+from shapely.geometry import Polygon as Poly  # noqa: E402
+from shapely.ops import unary_union  # noqa: E402
+
+step = np.zeros(h.shape, bool)
+sx = np.abs(np.diff(h, axis=1)) >= 1.0
+sy = np.abs(np.diff(h, axis=0)) >= 1.0
+step[:, :-1] |= sx; step[:, 1:] |= sx
+step[:-1, :] |= sy; step[1:, :] |= sy
+water_dil = ndi.binary_dilation(h <= -1.0, iterations=3)   # exclude the seawall drop to the bay
+step &= ~water_dil
+bj = json.load(open(os.path.join(DATA, "buildings.json")))
+bgeom = unary_union([Poly(f) for f in bj["footprints"] if len(f) >= 4]).buffer(1.6)
+shapely.prepare(bgeom)
+ys_, xs_ = np.where(step)
+n_edge = len(xs_)
+rng = np.random.default_rng(0)
+pick = rng.choice(n_edge, size=min(8000, n_edge), replace=False) if n_edge else []
+px = x0 + xs_[pick] * sp
+py = y0 + ys_[pick] * sp
+inside = shapely.contains_xy(bgeom, px, py)
+uncov = int((~inside).sum())
+out.write("block edges: %d posts, %d sampled, %.1f%% inside a drawn building; %d uncovered.\n"
+          % (n_edge, len(pick), 100.0 * inside.mean() if len(pick) else 100.0, uncov))
+blocks_ok = (len(pick) == 0) or (inside.mean() >= 0.995)
+out.write("PASS\n" if gap_ok and blocks_ok else "FAIL\n")
 out.close()
 print(open(OUT).read())

@@ -80,6 +80,10 @@ rloc, rpitch, ryaw = look(J["bryant_emb"][0] - 30.0, J["bryant_emb"][1] - 30.0,
 # King Street by the ballpark corner (king_2nd), looking east toward king_emb
 kloc, kpitch, kyaw = look(J["king_2nd"][0] - 5.0, J["king_2nd"][1] + 5.0,
                           J["king_emb"][0], J["king_emb"][1], up=1.8, pitch=-3.0)
+# promenade looking north along the bay (the Bay Bridge is north); pick a promenade point near y=-60
+prom_pts = [p for p in path if p[0] > 140.0]
+pn = min(prom_pts, key=lambda p: abs(p[1] + 60.0)) if prom_pts else [160.0, -60.0, 2.0]
+nloc, npitch, nyaw = look(pn[0], pn[1], pn[0], pn[1] + 60.0, up=1.6, pitch=-2.0)
 
 SHOTS = [
     ("overhead", (100.0 * cx, -100.0 * cy, 100.0 * 520.0), -90.0, 0.0, 20.0, span * 115.0),
@@ -88,6 +92,7 @@ SHOTS = [
     ("promenade", ploc, ppitch, pyaw, 24.0, 0.0),
     ("racket_bryant", rloc, rpitch, ryaw, 24.0, 0.0),
     ("king_ballpark", kloc, kpitch, kyaw, 24.0, 0.0),
+    ("promenade_north", nloc, npitch, nyaw, 24.0, 0.0),
 ]
 
 if eal.does_directory_exist(CINE):

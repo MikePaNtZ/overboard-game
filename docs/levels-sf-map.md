@@ -25,7 +25,7 @@ Work files go to `/tmp/ob-levels-sf/`. Stills land in `/tmp/ob-levels-sf/sf_*.pn
 |---|---|---|---|
 | 1 | `gen_embarcadero.py` | numpy + OSM (`~/.venvs/ob-levels`) | The ground mesh, the ridden corridor, the kerb/rail boxes, the water, the buildings, the markings and the dressing |
 | 2 | `build_embarcadero.py` | editor, offscreen (`ue.sh`) | Materials, meshes, props, water, daylight, the map |
-| 3 | `verify_embarcadero.py` | numpy | The drawn corridor vs course_height along the demo path |
+| 3 | `verify_embarcadero.py` | numpy | The drawn corridor vs course_height (<= 10 mm), and that every raised building block (a sharp >= 1 m step) is covered by a drawn building |
 | 4 | `stills_embarcadero.py` + `tools/render/render.sh` | editor, offscreen | Six review stills (a camera sequence + an MRQ still config) |
 | 5 | `write_terrain.py` | python + C++ | The terrain declaration and the regenerated verification header |
 
