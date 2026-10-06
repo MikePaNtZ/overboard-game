@@ -1,4 +1,5 @@
 #include "HudPacketClient.h"
+#include "OverboardPorts.h"
 
 #include "Sockets.h"
 #include "SocketSubsystem.h"
@@ -11,7 +12,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogOverboardHud, Log, All);
 
 namespace
 {
-	constexpr int32 kHudListenPort = 9603;      // host SENDS the HUD packet here, so we BIND/LISTEN
+	// The host SENDS the HUD packet here, so we BIND/LISTEN: OverboardPorts::Hud() (default 9603).
 	constexpr int32 kHudRecvBufferBytes = 256;  // the HUD packet is 56 bytes; generous headroom
 
 	// Mirrors hud.rs: HUD_MAGIC = b"OBHD" read little-endian, HUD_SCHEMA_VERSION = 1, 56 bytes.
@@ -50,13 +51,13 @@ bool FHudPacketClient::StartListening()
 		.AsNonBlocking()
 		.AsReusable()
 		.BoundToAddress(FIPv4Address(127, 0, 0, 1))
-		.BoundToPort(kHudListenPort)
+		.BoundToPort(OverboardPorts::Hud())
 		.WithReceiveBufferSize(64 * 1024)
 		.Build();
 
 	if (Socket == nullptr)
 	{
-		UE_LOG(LogOverboardHud, Error, TEXT("HudPacketClient: failed to bind 127.0.0.1:%d"), kHudListenPort);
+		UE_LOG(LogOverboardHud, Error, TEXT("HudPacketClient: failed to bind 127.0.0.1:%d"), OverboardPorts::Hud());
 		return false;
 	}
 
@@ -70,7 +71,7 @@ bool FHudPacketClient::StartListening()
 		return false;
 	}
 
-	UE_LOG(LogOverboardHud, Log, TEXT("HudPacketClient: listening on 127.0.0.1:%d"), kHudListenPort);
+	UE_LOG(LogOverboardHud, Log, TEXT("HudPacketClient: listening on 127.0.0.1:%d"), OverboardPorts::Hud());
 	return true;
 }
 

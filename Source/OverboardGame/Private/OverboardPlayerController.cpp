@@ -1,4 +1,5 @@
 #include "OverboardPlayerController.h"
+#include "OverboardPorts.h"
 
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -29,7 +30,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogOverboardInput, Log, All);
 
 namespace
 {
-	constexpr int32 kHostPort = 9602; // host LISTENS here, so we SEND to it
+	// The host LISTENS for input on OverboardPorts::Input() (-ObPortBase + 2, default 9602).
 }
 
 AOverboardPlayerController::AOverboardPlayerController()
@@ -63,11 +64,11 @@ void AOverboardPlayerController::BeginPlay()
 	HostAddr = SocketSubsystem->CreateInternetAddr();
 	bool bValidIp = false;
 	HostAddr->SetIp(TEXT("127.0.0.1"), bValidIp);
-	HostAddr->SetPort(kHostPort);
+	HostAddr->SetPort(OverboardPorts::Input());
 
 	if (!SendSocket || !bValidIp)
 	{
-		UE_LOG(LogOverboardInput, Error, TEXT("AOverboardPlayerController: failed to set up send socket to 127.0.0.1:%d"), kHostPort);
+		UE_LOG(LogOverboardInput, Error, TEXT("AOverboardPlayerController: failed to set up send socket to 127.0.0.1:%d"), OverboardPorts::Input());
 	}
 
 	SpawnCourseElements();

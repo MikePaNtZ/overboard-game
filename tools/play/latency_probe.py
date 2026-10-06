@@ -10,14 +10,16 @@ Run it with the game NOT running (both use port 9601):
   tools/play/run_sim.sh --stats-path /tmp/stats.txt &   # then
   tools/play/latency_probe.py [samples]
 """
+import os
 import socket
 import statistics
 import struct
 import sys
 import time
 
-STATE_ADDR = ("127.0.0.1", 9601)
-INPUT_ADDR = ("127.0.0.1", 9602)
+_BASE = int(os.environ.get("PORT_BASE", "9600"))  # see tools/play/run_sim.sh
+STATE_ADDR = ("127.0.0.1", _BASE + 1)
+INPUT_ADDR = ("127.0.0.1", _BASE + 2)
 STATE_MAGIC, INPUT_MAGIC = 0x4F425731, 0x4F424931
 ARM, RESET, KICK = 1 << 0, 1 << 1, 1 << 2
 RESET_SECONDS = 0.3  # a kick makes the board fall; reset, then arm again before the next kick

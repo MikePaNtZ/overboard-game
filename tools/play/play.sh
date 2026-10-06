@@ -14,6 +14,8 @@ LOG=/tmp/overboard-play-sim.log
 
 GAME=0
 export LEVEL=city_hill
+# PORT_BASE (default 9600) separates this run from any other on the Mac; see run_sim.sh.
+export PORT_BASE=${PORT_BASE:-9600}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --game) GAME=1 ;;
@@ -27,8 +29,8 @@ PLAY_DIR="$HERE/tools/play"
 # shellcheck disable=SC1090
 source "$PLAY_DIR/levels/$LEVEL.env"
 
-if pgrep -f "sim-host.*127.0.0.1:9601" > /dev/null; then
-  echo "A sim-host is already running (it holds port 9601/9602). Stop it first:"
+if pgrep -f "sim-host.*127.0.0.1:$((PORT_BASE + 1))" > /dev/null; then
+  echo "A sim-host already runs on port base $PORT_BASE ($((PORT_BASE + 1))/$((PORT_BASE + 2))). Stop it, or set another PORT_BASE:"
   pgrep -fl "target/release/sim-host"
   exit 1
 fi
@@ -47,7 +49,9 @@ echo "sim-host running (pid $SIM, log $LOG). Opening the game..."
 
 # The MetaHuman skater on the X7 board, as in the renders (the game's default is the mannequin),
 # and a per-frame ride log of the last ride for diagnosis (/tmp/overboard-ride.csv).
-LOOK="-ObRenderRider -ObBoardSkin=x7 -ObRideLog=/tmp/overboard-ride.csv $COURSE_ARG"
+RIDE_LOG=/tmp/overboard-ride.csv
+[[ $PORT_BASE == 9600 ]] || RIDE_LOG=/tmp/overboard-ride-$PORT_BASE.csv
+LOOK="-ObRenderRider -ObBoardSkin=x7 -ObRideLog=$RIDE_LOG -ObPortBase=$PORT_BASE $COURSE_ARG"
 if [[ $GAME == 1 ]]; then
   # shellcheck disable=SC2086
   "$UE" "$HERE/OverboardGame.uproject" "$MAP" -game -windowed -ResX=1920 -ResY=1080 $LOOK

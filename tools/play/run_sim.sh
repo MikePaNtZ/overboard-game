@@ -8,10 +8,13 @@
 # changing elements/city_hill.json). See docs/playable-status.md.
 # Extra arguments go to sim-host (for example --trace-csv PATH or --host-stats PATH).
 set -euo pipefail
-STATE_OUT=${STATE_OUT:-127.0.0.1:9601}
-INPUT_IN=${INPUT_IN:-127.0.0.1:9602}
+# PORT_BASE (default 9600): StateOut on +1, InputIn on +2, the HUD packet on +3. The game takes
+# the same base as -ObPortBase. Two runs on one Mac need two bases (levels tests: 19600).
+PORT_BASE=${PORT_BASE:-9600}
+STATE_OUT=${STATE_OUT:-127.0.0.1:$((PORT_BASE + 1))}
+INPUT_IN=${INPUT_IN:-127.0.0.1:$((PORT_BASE + 2))}
 # The second, optional packet (OBHD): battery, pack voltage and the authority margin for the HUD.
-HUD_OUT=${HUD_OUT:-127.0.0.1:9603}
+HUD_OUT=${HUD_OUT:-127.0.0.1:$((PORT_BASE + 3))}
 PLAY_DIR="$(cd "$(dirname "$0")" && pwd)"
 LEVEL=${LEVEL:-city_hill}
 [[ -f "$PLAY_DIR/levels/$LEVEL.env" ]] || { echo "no level file $PLAY_DIR/levels/$LEVEL.env" >&2; exit 1; }
