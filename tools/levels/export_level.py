@@ -145,7 +145,7 @@ class Level:
         a, b = s0 - sp / 2, s1 + sp / 2   # weave tapers in and out over half a spacing
         self.offsets.append((a, b, lambda s, s0=s0, sp=sp, A=A, a=a, b=b:
                              A * math.cos(math.pi * (s - s0) / sp) * _bump(s, a, b, sp / 2)))
-        self.speed_caps.append((s0 - 2 * sp, s1 + sp, 3.2))   # reversals need time to roll
+        self.speed_caps.append((s0 - 2 * sp, s1 + sp, 3.6))   # reversals need time to roll
 
     def plank(self, e, k):
         s0 = self.s_of(e)
@@ -154,6 +154,7 @@ class Level:
         wedge = np.where((u > -el) & (u <= 0.0) & (np.abs(v) <= w / 2), (u + el) / el * H, 0.0)
         self.Z = np.maximum(self.Z, wedge)
         self.box_along("plank", s0 + e["length"] / 2, 0.0, e["length"], w, H)
+        self.speed_caps.append((s0 - el - 12, s0 - el - 4, 2.6))   # settle after the hairpin
         self.speed_caps.append((s0 - el - 4, s0 + e["length"] + 1, 2.3))
 
     def s_carve(self, e, k):
@@ -161,7 +162,7 @@ class Level:
         s1 = s0 + e["length"]
         self.offsets.append((s0, s1, lambda s, s0=s0, A=A, lam=lam:
                              A * math.sin(2 * math.pi * (s - s0) / lam)))
-        self.speed_caps.append((s0 - 4, s1, 3.2))
+        self.speed_caps.append((s0 - 4, s1, 3.6))
 
     def kerb_island(self, e, k):
         s0, Ln, H, hw = self.s_of(e), e["length"], e["height"], e["half_width"]
@@ -222,9 +223,9 @@ class Level:
         kap = np.abs(d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0]) / (np.hypot(*d1.T) ** 3 + 1e-9) * 4
         kap = np.maximum(kap, np.convolve(np.r_[kap[-3:], kap, kap[:3]], np.ones(7) / 7, "valid"))
         band = [turn_speed_band(k) for k in kap]
-        # Tight turns (R < 12 m) at most 3.2 m/s: inside the physics band, but the line holds
+        # Tight turns (R < 12 m) at most 3.6 m/s: inside the physics band, but the line holds
         # better there (a hairpin at 4 m/s came out 1.5 m wide, levels run 2026-10-05).
-        v = np.array([min(v_cruise, hi, 3.2 if k > 1 / 12 else 99.0) for (lo, hi), k in zip(band, kap)])
+        v = np.array([min(v_cruise, hi, 3.6 if k > 1 / 12 else 99.0) for (lo, hi), k in zip(band, kap)])
         vmin = np.array([lo for lo, hi in band])
         for s0, s1, cap in self.speed_caps:
             for i in range(n):
