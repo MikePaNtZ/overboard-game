@@ -27,6 +27,14 @@ sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from export_level import full_stick_kappa  # noqa: E402  (measured curvature, not the formula)
 
 
+def seg_dist(x, y, a, b):
+    """Distance from (x, y) to the segment a-b."""
+    ax, ay, bx, by = a[0], a[1], b[0], b[1]
+    dx, dy = bx - ax, by - ay
+    t = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / max(dx * dx + dy * dy, 1e-9)))
+    return math.hypot(x - ax - t * dx, y - ay - t * dy)
+
+
 def parse_state(buf):
     if len(buf) < 104 or struct.unpack_from("<I", buf, 0)[0] != STATE_MAGIC:
         return None
@@ -90,6 +98,7 @@ def main():
     ap.add_argument("--preview-s", type=float, default=1.0)
     ap.add_argument("--pp-gain", type=float, default=0.6)
     ap.add_argument("--until-idx", type=int, default=-1, help="stop when the path index passes this")
+    ap.add_argument("--objects-port", type=int, default=19604)
     ap.add_argument("--input-port", type=int, default=19602)
     a = ap.parse_args()
     doc = json.load(open(a.elements))
@@ -108,6 +117,13 @@ def main():
     rx.bind(("127.0.0.1", a.state_port))
     rx.setblocking(False)
     tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # Phase B: give way at the crossings. Read the OBJS stream (sim-host --objects-out-addr) and
+    # hold at the stop line while any object is inside the crossing zone (plus 2 s clear).
+    crossings = doc.get("crossings", [])
+    ox = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    ox.bind(("127.0.0.1", a.objects_port))
+    ox.setblocking(False)
+    objs, clear_since, holding = {}, {}, False
     seq, idx = 0, 0
     st, prev = None, None
     fv, fv_prev, integ, steer_out, ramped = 0.0, 0.0, 0.0, 0.0, 0.0
@@ -122,6 +138,17 @@ def main():
                 s = parse_state(rx.recv(256))
                 if s:
                     st = s
+        except BlockingIOError:
+            pass
+        try:
+            while True:
+                b = ox.recv(4096)
+                if len(b) >= 24 and struct.unpack_from("<I", b, 0)[0] == 0x314F424F:
+                    cnt = struct.unpack_from("<H", b, 6)[0]
+                    # Only cars (kind 0) and cyclists (2) block a road crossing.
+                    objs = {struct.unpack_from("<H", b, 24 + 20 * i)[0]:
+                            struct.unpack_from("<3f", b, 28 + 20 * i) for i in range(cnt)
+                            if b[26 + 20 * i] in (0, 2)}
         except BlockingIOError:
             pass
         lean, steer, flags = 0.0, 0.0, ARM
@@ -159,6 +186,18 @@ def main():
             steer_out += max(-0.05, min(0.05, want - steer_out))   # 5 stick/s at 100 Hz
             steer = steer_out
             vt = path[(idx + 2) % n][2] * a.speed_scale
+            holding = False
+            for ci, c in enumerate(crossings):
+                to_stop = (c["stop_idx"] - idx) % n
+                if to_stop <= 25:
+                    busy = any(seg_dist(p[0], p[1], c["a"], c["b"]) < c["clear_m"] for p in objs.values())
+                    if busy:
+                        clear_since[ci] = None
+                    elif clear_since.get(ci) is None:
+                        clear_since[ci] = st["t"]
+                    if busy or st["t"] - clear_since[ci] < 2.0:
+                        vt = min(vt, 0.0 if to_stop <= 3 else 0.25 * to_stop)
+                        holding = True
             now = time.time()
             dt = min(now - t_last, 0.05)
             t_last = now
@@ -171,10 +210,18 @@ def main():
             # speed loop is P + a small damping on the speed change; an integral term overshoots.
             accel = (fv - fv_prev) / 0.01
             fv_prev = fv
-            lean = max(-0.35, min(0.35, 0.20 * err - 0.05 * accel + 0.01 * integ))
+            # Brake harder than you speed up: a late corner entry at 4.7 m/s (target 3.6) cut
+            # the corner into a kerb (Level 2, 2026-10-06).
+            kp = 0.30 if err < 0 else 0.20
+            lean = max(-0.35, min(0.35, kp * err - 0.05 * accel + 0.01 * integ))
             if prev:
                 lines.update(st["t"], (prev["x"], prev["y"]), (st["x"], st["y"]))
             prev = st
+            if holding and int(st["t"] * 2) % 10 == 0 and not getattr(main, "_said", False):
+                print(f"  waiting at a crossing, t={st['t']:.1f} s", flush=True)
+                main._said = True
+            if not holding:
+                main._said = False
             log.writerow([f"{st['t']:.3f}", f"{st['x']:.3f}", f"{st['y']:.3f}", f"{v:.3f}",
                           f"{ramped:.2f}", f"{math.degrees(st['pitch']):.2f}", f"{steer:.3f}",
                           f"{lean:.3f}", st["flags"], idx])
