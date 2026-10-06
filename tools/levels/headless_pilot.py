@@ -171,7 +171,10 @@ def main():
             # speed loop is P + a small damping on the speed change; an integral term overshoots.
             accel = (fv - fv_prev) / 0.01
             fv_prev = fv
-            lean = max(-0.35, min(0.35, 0.20 * err - 0.05 * accel + 0.01 * integ))
+            # Brake harder than you speed up: a late corner entry at 4.7 m/s (target 3.6) cut
+            # the corner into a kerb (Level 2, 2026-10-06).
+            kp = 0.30 if err < 0 else 0.20
+            lean = max(-0.35, min(0.35, kp * err - 0.05 * accel + 0.01 * integ))
             if prev:
                 lines.update(st["t"], (prev["x"], prev["y"]), (st["x"], st["y"]))
             prev = st
