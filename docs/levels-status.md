@@ -19,10 +19,10 @@ Updated at the end of each work block. The plan is in `docs/levels-plan.md`.
 | Level 1 ridden headless | 2 clean laps, 174.4 s / 172.2 s; earlier 3/3 clean (Ramp B 3/3) | `tools/levels/pilot_lap.sh parking_lot --laps 2` (controls cd7962d) |
 | Launcher `--level` | Done | `tools/play/levels/<name>.env`; run_sim / play / make_demo_video |
 | Game rules 2D + laps, DemoRider 2D | In progress | branch feat/game/laps-2d (engineer); PR to overboard-14 |
-| OB_ParkingLot Unreal level | Built; visual pass 2 in progress | branch feat/game/parking-lot-level, 20edb81: worst ground gap 2 mm, pole NE correct; looks: black void, bare trees, faint markings (being fixed) |
+| OB_ParkingLot Unreal level | Merged (PR #43) | worst ground gap 2 mm, pole NE correct; city surround, clear markings, grey asphalt, sunlit lot (3 visual passes) |
 | Level 2 phase A data | Done | branch feat/game/embarcadero, cfc023a: route B 1.94 km, 4601 x 8601 posts, 1302 kerb + 94 rail boxes, 2 kerb cuts |
 | Level 2 ridden headless | 1 clean loop, 443.9 s (7.4 min: route B is longer than the brief's 3-5 min, by Mike's choice) | `LEVEL_DIR=... tools/levels/pilot_lap.sh embarcadero` |
-| Level 2 phase B (moving objects) | Design sent to c4 | mocap bodies, objects.json, OBJS packet on 9604 at 50 Hz; waits for c4 |
+| Level 2 phase B (moving objects) | Works headless on c4's 7fc08dc (not pushed yet; c4 asks Mike) | 48 objects; the pilot gives way at both crossings; 1 clean loop 469.5 s |
 | OB_Embarcadero Unreal level | Next | Landscape from the .bin + OBM on the ridden surfaces + City Sample buildings on OSM footprints |
 
 ## Worktrees
