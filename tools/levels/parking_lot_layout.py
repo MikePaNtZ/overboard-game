@@ -70,23 +70,24 @@ if __name__ == "__main__":
 # Heights and grades are the physical truth that MuJoCo receives.
 ELEMENTS = [
     dict(kind="start_finish", seg=0, at=6.0, half_width=3.5),
-    dict(kind="speed_bump", seg=0, at=20.0, height=0.075, length=0.9, half_width=3.5),
-    dict(kind="speed_bump", seg=0, at=30.0, height=0.075, length=0.9, half_width=3.5),
-    dict(kind="speed_bump", seg=0, at=40.0, height=0.075, length=0.9, half_width=3.5),
-    dict(kind="rumble_strip", seg=0, at=52.0, length=12.0, height=0.015, pitch=0.60, half_width=3.5),
-    # pitch >= 0.60 m: 12 posts per period, so the facets do not make a sawtooth (oracle)
+    dict(kind="speed_bump", seg=0, at=20.0, height=0.05, length=1.8, half_width=3.5),
+    dict(kind="speed_bump", seg=0, at=30.0, height=0.05, length=1.8, half_width=3.5),
+    dict(kind="speed_bump", seg=0, at=40.0, height=0.05, length=1.8, half_width=3.5),
+    dict(kind="rumble_strip", seg=0, at=52.0, length=12.0, height=0.010, pitch=0.60, half_width=3.5),
+    # heightfield cosine ridges; 12 posts per period, so no facet sawtooth (oracle). A 15 mm
+    # BOX bar gave a contact impulse (90 A) and a fall at 2.8 m/s (levels run, 2026-10-05).
     dict(kind="checkpoint", seg=0, at=74.0, half_width=4.0),                     # CP1
     dict(kind="ramp", seg=2, at=6.0, up_grade=0.05, up_len=10.0, deck_len=10.0,  # ramp A
          down_grade=0.10, half_width=2.5),          # rise 0.50 m, down 5.0 m; 30 deg side slopes + rail boxes
     dict(kind="checkpoint", seg=2, at=36.0, half_width=4.0),                     # CP2
-    dict(kind="cone_slalom", seg=6, at=10.0, count=6, spacing=4.0, offset=1.0),
-    dict(kind="checkpoint", seg=6, at=40.0, half_width=3.0),                     # CP3
+    dict(kind="cone_slalom", seg=6, at=4.0, count=6, spacing=7.0, weave=1.0),  # cones on the line; weave curvature 0.20 1/m
+    dict(kind="checkpoint", seg=6, at=42.0, half_width=3.0),                     # CP3
     dict(kind="plank", seg=8, at=12.0, length=12.0, width=0.60, height=0.12, entry_len=1.2),
     dict(kind="checkpoint", seg=8, at=40.0, half_width=3.0),                     # CP4
     dict(kind="s_carve", seg=10, at=6.0, length=32.0, amplitude=1.5, wavelength=20.0),
     dict(kind="checkpoint", seg=10, at=40.0, half_width=3.0),                    # CP5
     dict(kind="kerb_island", seg=12, at=14.0, length=10.0, height=0.10, half_width=3.0,
-         up_low_kerb=0.04, kerb_cut_len=1.5),  # c4: >= 8 cm up = nose strike at 2 m/s
+         cut_offset=1.5, cut_width=2.0, cut_len=1.5),  # c4: >= 8 cm up = nose strike at 2 m/s
     dict(kind="checkpoint", seg=12, at=40.0, half_width=3.0),                    # CP6
     dict(kind="obstacle", seg=14, at=6.0, offset=1.2, size=(0.6, 1.0, 1.0), name="cart"),
     dict(kind="obstacle", seg=14, at=13.0, offset=-1.2, size=(0.6, 0.6, 1.0), name="bin"),
