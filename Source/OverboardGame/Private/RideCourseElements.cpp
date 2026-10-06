@@ -320,7 +320,9 @@ void ARideCourseElements::BuildLapVisuals()
 		AddPole(ToWorldXY(L.X - L.HalfWidth * Lx, L.Y - L.HalfWidth * Ly, L.Z), 2.8, 0.08, kPoleColor);
 		// The banner spans the gate at the top of the poles.
 		AddBox(ToWorldXY(L.X, L.Y, L.Z + 2.8), FVector(0.15, 2.0 * L.HalfWidth + 0.3, 0.5), LineColor, LineYaw);
-		AddLabel(ToWorldXY(L.X, L.Y, L.Z + 3.2), L.Label, FLinearColor::White, 34.f, LineYaw);
+		// A text render reads from its +X side; LineYaw points along travel, so turn the label
+		// 180 deg to face the oncoming rider (it read mirrored in the Level 1 demo video).
+		AddLabel(ToWorldXY(L.X, L.Y, L.Z + 3.2), L.Label, FLinearColor::White, 34.f, LineYaw + 180.f);
 		// The painted line on the ground.
 		AddBox(ToWorldXY(L.X, L.Y, L.Z + 0.01), FVector(0.3, 2.0 * L.HalfWidth, 0.02), LineColor, LineYaw);
 	}
