@@ -767,6 +767,11 @@ void ARideCourseElements::TickLaps(const OverboardWire::FBoardState& State, bool
 				LapStartSeconds = Now;
 				LapNext = 1;
 				LapMissedIds.Reset();
+				// Each lap scores its own hits: a cone hit on lap 1 must score again on lap 2.
+				for (FLapObstacle& Ob : LapObstacles)
+				{
+					Ob.bDone = false;
+				}
 			}
 			else if (bLapActive && i >= LapNext)
 			{

@@ -666,9 +666,21 @@ void AOverboardHUD::DrawGamePanel(const ABoardActor& Board)
 
 	const AOverboardPlayerController* PC = Cast<AOverboardPlayerController>(GetOwningPlayerController());
 
-	// Cruise mode (embarcadero): no score panel, as a free ride has nothing to score.
+	// Cruise mode (embarcadero): no score panel, as a free ride has nothing to score. Only the
+	// arm hint shows, until the first arm.
 	if (R.bCruise)
 	{
+		if (PC && !PC->HasArmedOnce())
+		{
+			const FString Hint = TEXT("Press Cross (or Space) to arm");
+			const float HintW = MeasureTextWidth(Hint, Big);
+			const float BoxW = HintW + 64.f * K;
+			const float BoxH = 64.f * K;
+			const float BoxX = (W - BoxW) * 0.5f;
+			const float BoxY = 28.f * K;
+			FillRoundedRect(BoxX, BoxY, BoxX + BoxW, BoxY + BoxH, kPanelRadius * K, kColPanel);
+			DrawHudText(Hint, Big, (W - HintW) * 0.5f, BoxY + 16.f * K, kColText);
+		}
 		return;
 	}
 
