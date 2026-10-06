@@ -91,6 +91,7 @@ void AOverboardPlayerController::BeginPlay()
 	if (FParse::Param(FCommandLine::Get(), TEXT("ObDemoRider")))
 	{
 		Demo = MakeUnique<FDemoRider>();
+		Demo->LoadCourse(ResolveCourseName());
 		DemoStartSeconds = FPlatformTime::Seconds();
 		UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController: demo rider ON -- a script plays the pad."));
 	}
@@ -124,7 +125,7 @@ void AOverboardPlayerController::UpdateDemo(const ABoardActor* Board, float Delt
 	bArmHeld = Pad.bArm;
 	bResetHeld = Pad.bReset;
 	bKickPending |= Pad.bKick;
-	if (Pad.bFinished && !RecordVideoPath.IsEmpty())
+	if (Pad.bFinished && (!RecordVideoPath.IsEmpty() || Demo->IsLapsMode()))
 	{
 		UE_LOG(LogOverboardInput, Log, TEXT("AOverboardPlayerController: demo finished; closing the video and quitting."));
 		if (Recorder)
@@ -136,7 +137,7 @@ void AOverboardPlayerController::UpdateDemo(const ABoardActor* Board, float Delt
 	}
 }
 
-void AOverboardPlayerController::SpawnCourseElements()
+FString AOverboardPlayerController::ResolveCourseName() const
 {
 	// -ObCourse=<name> picks the layout in tools/play/elements/; OB_CityHill gets city_hill.
 	FString Course;
@@ -148,6 +149,12 @@ void AOverboardPlayerController::SpawnCourseElements()
 			Course = TEXT("city_hill");
 		}
 	}
+	return Course;
+}
+
+void AOverboardPlayerController::SpawnCourseElements()
+{
+	const FString Course = ResolveCourseName();
 	if (Course.IsEmpty() || Course == TEXT("none"))
 	{
 		return;

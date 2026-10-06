@@ -664,8 +664,89 @@ void AOverboardHUD::DrawGamePanel(const ABoardActor& Board)
 	const FHudTextFont Big = MakeFont(EHudFont::Value, 30.f * K);
 	const FHudTextFont Small = MakeFont(EHudFont::Label, 15.f * K);
 
-	FString Line;
 	const AOverboardPlayerController* PC = Cast<AOverboardPlayerController>(GetOwningPlayerController());
+
+	// Cruise mode (embarcadero): no score panel, as a free ride has nothing to score. Only the
+	// arm hint shows, until the first arm.
+	if (R.bCruise)
+	{
+		if (PC && !PC->HasArmedOnce())
+		{
+			const FString Hint = TEXT("Press Cross (or Space) to arm");
+			const float HintW = MeasureTextWidth(Hint, Big);
+			const float BoxW = HintW + 64.f * K;
+			const float BoxH = 64.f * K;
+			const float BoxX = (W - BoxW) * 0.5f;
+			const float BoxY = 28.f * K;
+			FillRoundedRect(BoxX, BoxY, BoxX + BoxW, BoxY + BoxH, kPanelRadius * K, kColPanel);
+			DrawHudText(Hint, Big, (W - HintW) * 0.5f, BoxY + 16.f * K, kColText);
+		}
+		return;
+	}
+
+	// Laps mode (Level 1): the lap number and time, then the last/best/target times, the next
+	// checkpoint, and the missed list. Toasts share the bottom of the panel.
+	if (R.bLaps)
+	{
+		auto Mmsss = [](double S) -> FString
+		{
+			const int32 T = FMath::FloorToInt(FMath::Max(S, 0.0) * 10.0);
+			return FString::Printf(TEXT("%d:%02d.%d"), T / 600, (T / 10) % 60, T % 10);
+		};
+		FString Head;
+		if (PC && !PC->HasArmedOnce())
+		{
+			Head = TEXT("Press Cross (or Space) to arm");
+		}
+		else if (R.LapNumber == 0)
+		{
+			Head = TEXT("Ride through START / FINISH");
+		}
+		else
+		{
+			Head = FString::Printf(TEXT("LAP %d   %s   %d PTS"), R.LapNumber, *Mmsss(R.LapTimeSeconds), R.Score);
+		}
+		const float HeadW = MeasureTextWidth(Head, Big);
+		const float BoxW = FMath::Max(HeadW + 64.f * K, 360.f * K);
+		const float BoxH = 64.f * K;
+		const float BoxX = (W - BoxW) * 0.5f;
+		const float BoxY = 28.f * K;
+		FillRoundedRect(BoxX, BoxY, BoxX + BoxW, BoxY + BoxH, kPanelRadius * K, kColPanel);
+		DrawHudText(Head, Big, (W - HeadW) * 0.5f, BoxY + 16.f * K, kColText);
+
+		float Y = BoxY + BoxH + 10.f * K;
+		const FString Best = R.BestCleanSeconds > 0.0 ? Mmsss(R.BestCleanSeconds) : FString(TEXT("--:--.-"));
+		const FString Times = FString::Printf(TEXT("LAST %s    BEST %s    TARGET %s"),
+			*Mmsss(R.LastLapSeconds), *Best, *Mmsss(R.TargetLapSeconds));
+		const float TimesW = MeasureTrackedWidth(Times, Small, 0.12f);
+		DrawTrackedText(Times, Small, (W - TimesW) * 0.5f, Y, kColText, 0.12f);
+		Y += 24.f * K;
+		if (!R.NextCheckpointLabel.IsEmpty())
+		{
+			const FString Next = FString::Printf(TEXT("NEXT: %s"), *R.NextCheckpointLabel);
+			const float NextW = MeasureTrackedWidth(Next, Small, 0.12f);
+			DrawTrackedText(Next, Small, (W - NextW) * 0.5f, Y, kColWarn, 0.12f);
+			Y += 24.f * K;
+		}
+		if (!R.MissedList.IsEmpty())
+		{
+			const FString Miss = FString::Printf(TEXT("MISSED: %s"), *R.MissedList.ToUpper());
+			const float MissW = MeasureTrackedWidth(Miss, Small, 0.12f);
+			DrawTrackedText(Miss, Small, (W - MissW) * 0.5f, Y, kColOverLimit, 0.12f);
+			Y += 24.f * K;
+		}
+		if (!R.Toast.IsEmpty())
+		{
+			const float Fade = FMath::Clamp(2.5f - static_cast<float>(R.ToastAgeSeconds), 0.f, 1.f);
+			FLinearColor C = kColText;
+			C.A *= Fade;
+			const float TW = MeasureTextWidth(R.Toast, Big);
+			DrawHudText(R.Toast, Big, (W - TW) * 0.5f, Y, C);
+		}
+		return;
+	}
+
+	FString Line;
 	if (PC && !PC->HasArmedOnce())
 	{
 		Line = TEXT("Press Cross (or Space) to arm");

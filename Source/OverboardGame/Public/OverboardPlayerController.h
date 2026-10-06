@@ -181,6 +181,8 @@ private:
 
 	const ABoardActor* FindBoard() const;
 	void SpawnCourseElements();
+	// The course name from -ObCourse=<name>, or city_hill on the OB_CityHill map, else empty.
+	FString ResolveCourseName() const;
 	void CheckForAutoResetOnFall(const ABoardActor* Board);
 	void UpdateRumble(const ABoardActor* Board);
 	void ProbeWipeout(const ABoardActor* Board);

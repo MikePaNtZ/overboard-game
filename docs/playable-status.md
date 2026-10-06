@@ -43,7 +43,25 @@ which added about 0.33 s of lag.
 1. Connect the DualSense (USB-C, or Bluetooth: hold PS + Create, then pair).
 2. `~/projects/overboard-game-play/tools/play/play.sh` — it starts sim-host, opens the editor on
    OB_CityHill, and stops sim-host when the editor closes. `--game` opens the game window only.
+   `--level <name>` picks another level from `tools/play/levels/<name>.env` (e.g. `parking_lot`).
 3. Press Play (editor), then Cross (or Space) to arm.
+
+## Level 1 (parking_lot)
+
+A parking-lot lap circuit (ADR: the levels track). Run it with
+`tools/play/play.sh --level parking_lot`. The game scores ordered line crossings
+(start/finish plus eight checkpoints) and obstacle hits in the MuJoCo x, y frame, and the HUD
+shows the lap number, the lap time, the last and best clean lap, the target time, the next
+checkpoint, and the missed list. The scripted demo rides two clean laps:
+
+```
+tools/play/run_sim.sh  (LEVEL=parking_lot)   # sim-host on 9601-3
+UnrealEditor OverboardGame.uproject /Game/Maps/OB_Main -game -nullrhi -unattended -nosound \
+  -ObCourse=parking_lot -ObDemoRider -ObDemoLaps=2
+```
+
+`-ObDemoLaps=N` ends the demo after N laps (or a fall). Each ride overwrites
+`/tmp/overboard-ride.csv` (the per-tick pad/state log, set with `-ObRideLog=`).
 
 ## Game elements (OB_CityHill)
 

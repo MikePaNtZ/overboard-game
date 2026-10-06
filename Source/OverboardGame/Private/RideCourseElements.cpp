@@ -39,6 +39,14 @@ namespace
 	// half the deck width). Scoring only -- MuJoCo decides what the hit does to the board.
 	constexpr double kConeHitRadiusM = 0.30;
 	constexpr double kDebrisHitMarginM = 0.15;
+	const FLinearColor kCheckerColor(0.95f, 0.95f, 0.95f);
+
+	// Formats a lap time as m:ss.s (one tenth), for toasts and the HUD.
+	FString FormatLapTime(double Seconds)
+	{
+		const int32 Tenths = FMath::FloorToInt(FMath::Max(Seconds, 0.0) * 10.0);
+		return FString::Printf(TEXT("%d:%02d.%d"), Tenths / 600, (Tenths / 10) % 60, Tenths % 10);
+	}
 }
 
 ARideCourseElements::ARideCourseElements()
@@ -79,12 +87,21 @@ bool ARideCourseElements::LoadLayout(const FString& CourseName)
 		return false;
 	}
 
-	// This loader knows the 1D street layout (city_hill: s along the street, a height profile,
-	// scores). A 2D lap or cruise course (mode "laps" / "cruise", the levels track) has none of
-	// these; until the laps PR teaches this actor 2D lines, such a course loads with no elements
-	// instead of dereferencing a missing field (that would crash the game at load).
+	// The levels track's 2D courses. "laps" (parking_lot) scores ordered lines plus obstacle hits;
+	// "cruise" (embarcadero) has only the start/finish line -- no score panel and no checkpoints.
+	// Both use the 2D line loader and the demo_path follower, not the 1D street fields below.
 	FString Mode;
 	Root->TryGetStringField(TEXT("mode"), Mode);
+	if (Mode == TEXT("laps") || Mode == TEXT("cruise"))
+	{
+		bLapsMode = true;
+		bCruiseMode = Mode == TEXT("cruise");
+		return LoadLapsLayout(Root);
+	}
+
+	// This loader knows the 1D street layout (city_hill: s along the street, a height profile,
+	// scores). Any other course without those fields loads with no elements instead of
+	// dereferencing a missing field (that would crash the game at load).
 	const TSharedPtr<FJsonObject>* ProfilePtr = nullptr;
 	const TSharedPtr<FJsonObject>* ScoresPtr = nullptr;
 	if (!Root->TryGetObjectField(TEXT("profile"), ProfilePtr) || !Root->TryGetObjectField(TEXT("scores"), ScoresPtr)
@@ -167,17 +184,76 @@ double ARideCourseElements::HeightAt(double S) const
 	return ProfileZ.Last();
 }
 
-FVector ARideCourseElements::ToWorld(double S, double Y, double UpM) const
+FVector ARideCourseElements::ToWorldXY(double X, double Y, double Zm) const
 {
 	// The same frame ABoardActor uses: MuJoCo (x, y, z) m -> Unreal (100x, -100y, 100z) cm,
 	// rotated by the origin yaw and moved to the origin (the level's PlayerStart).
-	const double X = StartX - S;
-	const double Z = HeightAt(S) + UpM;
-	const FVector Local(100.0 * X, -100.0 * Y, 100.0 * Z);
+	const FVector Local(100.0 * X, -100.0 * Y, 100.0 * Zm);
 	const ABoardActor* B = Board.Get();
 	const float Yaw = B ? B->GetWorldOriginYawDeg() : 0.f;
 	const FVector Offset = B ? B->GetWorldOriginOffsetCm() : FVector::ZeroVector;
 	return Offset + FRotator(0.f, Yaw, 0.f).RotateVector(Local);
+}
+
+FVector ARideCourseElements::ToWorld(double S, double Y, double UpM) const
+{
+	// city_hill 1D path: s = distance along the street (MuJoCo x = StartX - s).
+	return ToWorldXY(StartX - S, Y, HeightAt(S) + UpM);
+}
+
+bool ARideCourseElements::LoadLapsLayout(const TSharedPtr<FJsonObject>& Root)
+{
+	Readout.TargetLapSeconds = 0.0;
+	Root->TryGetNumberField(TEXT("target_lap_s"), Readout.TargetLapSeconds);
+
+	const TSharedPtr<FJsonObject>* ScoresObj = nullptr;
+	if (Root->TryGetObjectField(TEXT("scores"), ScoresObj))
+	{
+		for (const auto& Pair : (*ScoresObj)->Values)
+		{
+			Scores.Add(Pair.Key, static_cast<int32>(Pair.Value->AsNumber()));
+		}
+	}
+
+	for (const TSharedPtr<FJsonValue>& V : Root->GetArrayField(TEXT("elements")))
+	{
+		const TSharedPtr<FJsonObject> O = V->AsObject();
+		const FString Type = O->GetStringField(TEXT("type"));
+		if (Type == TEXT("start_finish") || Type == TEXT("checkpoint"))
+		{
+			FLapLine L;
+			O->TryGetNumberField(TEXT("order"), L.Order);
+			O->TryGetStringField(TEXT("id"), L.Id);
+			O->TryGetStringField(TEXT("label"), L.Label);
+			O->TryGetNumberField(TEXT("x"), L.X);
+			O->TryGetNumberField(TEXT("y"), L.Y);
+			O->TryGetNumberField(TEXT("z"), L.Z);
+			O->TryGetNumberField(TEXT("heading_deg"), L.HeadingDeg);
+			O->TryGetNumberField(TEXT("half_width"), L.HalfWidth);
+			LapLines.Add(L);
+		}
+		else if (Type == TEXT("cone") || Type == TEXT("box"))
+		{
+			FLapObstacle Ob;
+			Ob.Kind = Type == TEXT("cone") ? EKind::Cone : EKind::Debris;
+			O->TryGetNumberField(TEXT("x"), Ob.X);
+			O->TryGetNumberField(TEXT("y"), Ob.Y);
+			O->TryGetNumberField(TEXT("z"), Ob.Z);
+			O->TryGetNumberField(TEXT("yaw_deg"), Ob.YawDeg);
+			O->TryGetBoolField(TEXT("draw"), Ob.bDraw);
+			const TArray<TSharedPtr<FJsonValue>>* Size = nullptr;
+			if (O->TryGetArrayField(TEXT("size_m"), Size) && Size->Num() == 3)
+			{
+				Ob.SizeM = FVector((*Size)[0]->AsNumber(), (*Size)[1]->AsNumber(), (*Size)[2]->AsNumber());
+			}
+			LapObstacles.Add(Ob);
+		}
+	}
+
+	LapLines.Sort([](const FLapLine& A, const FLapLine& B) { return A.Order < B.Order; });
+	UE_LOG(LogRideGame, Log, TEXT("RideCourseElements: laps layout, %d lines, %d obstacles, target %.1f s."),
+		LapLines.Num(), LapObstacles.Num(), Readout.TargetLapSeconds);
+	return LapLines.Num() > 0;
 }
 
 void ARideCourseElements::AddBox(const FVector& CentreWorld, const FVector& SizeM, const FLinearColor& Color, float YawDeg)
@@ -223,8 +299,42 @@ void ARideCourseElements::AddLabel(const FVector& World, const FString& Text, co
 	T->SetVerticalAlignment(EVRTA_TextCenter);
 }
 
+void ARideCourseElements::BuildLapVisuals()
+{
+	// Each line is a gate: two thin poles at +-half_width, a banner with the label, and a painted
+	// ground line at z (the start/finish is checkered). The gate runs along the lateral axis, which
+	// is perpendicular to the line's heading (direction of travel). Obstacles are NOT drawn here --
+	// the level draws them; the game only scores a hit.
+	const float OriginYaw = Board.IsValid() ? Board->GetWorldOriginYawDeg() : 0.f;
+	for (const FLapLine& L : LapLines)
+	{
+		const double H = FMath::DegreesToRadians(L.HeadingDeg);
+		// Lateral unit vector in MuJoCo xy (left of travel): (-sin h, cos h).
+		const double Lx = -FMath::Sin(H), Ly = FMath::Cos(H);
+		// A box with local X along heading and local Y along the lateral axis: UE yaw = origin - heading.
+		const float LineYaw = OriginYaw - static_cast<float>(L.HeadingDeg);
+		const bool bStart = L.Order == 0;
+		const FLinearColor LineColor = bStart ? kCheckerColor : kGateColor;
+
+		AddPole(ToWorldXY(L.X + L.HalfWidth * Lx, L.Y + L.HalfWidth * Ly, L.Z), 2.8, 0.08, kPoleColor);
+		AddPole(ToWorldXY(L.X - L.HalfWidth * Lx, L.Y - L.HalfWidth * Ly, L.Z), 2.8, 0.08, kPoleColor);
+		// The banner spans the gate at the top of the poles.
+		AddBox(ToWorldXY(L.X, L.Y, L.Z + 2.8), FVector(0.15, 2.0 * L.HalfWidth + 0.3, 0.5), LineColor, LineYaw);
+		AddLabel(ToWorldXY(L.X, L.Y, L.Z + 3.2), L.Label, FLinearColor::White, 34.f, LineYaw);
+		// The painted line on the ground.
+		AddBox(ToWorldXY(L.X, L.Y, L.Z + 0.01), FVector(0.3, 2.0 * L.HalfWidth, 0.02), LineColor, LineYaw);
+	}
+	bVisualsBuilt = true;
+	UE_LOG(LogRideGame, Log, TEXT("RideCourseElements: lap visuals built (%d gates)."), LapLines.Num());
+}
+
 void ARideCourseElements::BuildVisuals()
 {
+	if (bLapsMode)
+	{
+		BuildLapVisuals();
+		return;
+	}
 	// The rider travels toward MuJoCo -X; labels face the oncoming rider (+X).
 	const float FaceYaw = Board.IsValid() ? Board->GetWorldOriginYawDeg() : 0.f;
 	const double PostY = StreetHalfWidth - 0.6; // inside the kerb, outside the lane
@@ -365,6 +475,11 @@ void ARideCourseElements::Tick(float DeltaSeconds)
 	OverboardWire::FBoardState State;
 	if (!Board->GetLatestState(State))
 	{
+		return;
+	}
+	if (bLapsMode)
+	{
+		TickLaps(State, Board->IsPhysicsHandoff());
 		return;
 	}
 	if (!bLoggedFrame)
@@ -568,4 +683,152 @@ void ARideCourseElements::Tick(float DeltaSeconds)
 			break;
 		}
 	}
+}
+
+bool ARideCourseElements::LineCrossed(const FLapLine& L, double X0, double Y0, double X1, double Y1) const
+{
+	// The board crosses the line when its along-heading coordinate goes from < 0 to >= 0 within
+	// |lateral| <= half_width (headless_pilot.py Lines.cross).
+	const double H = FMath::DegreesToRadians(L.HeadingDeg);
+	const double Tx = FMath::Cos(H), Ty = FMath::Sin(H);
+	const double A0 = (X0 - L.X) * Tx + (Y0 - L.Y) * Ty;
+	const double A1 = (X1 - L.X) * Tx + (Y1 - L.Y) * Ty;
+	if (!(A0 < 0.0 && A1 >= 0.0))
+	{
+		return false;
+	}
+	const double Lat = -(X1 - L.X) * Ty + (Y1 - L.Y) * Tx;
+	return FMath::Abs(Lat) <= L.HalfWidth;
+}
+
+void ARideCourseElements::TickLaps(const OverboardWire::FBoardState& State, bool bDown)
+{
+	// The clock is the wire's sim time, not the game clock: in -nullrhi the game clock runs ~3.5x
+	// fast, and the lap time must be real seconds (the reference pilot times on st["t"] too).
+	const double Now = State.SimTimeS;
+	const double X = State.Pos[0];
+	const double Y = State.Pos[1];
+
+	Readout.bLaps = true;
+	Readout.bCruise = bCruiseMode;
+
+	// A reset (a teleport over 5 m in one sample) or a fall (the handoff) aborts the current lap.
+	const double Jump = bHavePrevPoint
+		? FMath::Sqrt(FMath::Square(X - PrevX) + FMath::Square(Y - PrevY)) : 0.0;
+	const bool bAbort = (bHavePrevPoint && Jump > kResetJumpM) || bDown;
+	if (bAbort && bLapActive)
+	{
+		bLapActive = false;
+		Event(TEXT("LAP ABORTED"));
+	}
+	if (bDown)
+	{
+		// The host freezes the pose during a handoff; do not score crossings, and do not advance
+		// the previous point, so the teleport back on reset reads as a reset next tick.
+		Readout.LapNumber = CompletedLaps;
+		return;
+	}
+
+	if (bHavePrevPoint && Jump <= kResetJumpM)
+	{
+		for (int32 i = 0; i < LapLines.Num(); ++i)
+		{
+			if (!LineCrossed(LapLines[i], PrevX, PrevY, X, Y))
+			{
+				continue;
+			}
+			if (i == 0)
+			{
+				if (bLapActive)
+				{
+					// Close the lap: any checkpoint not yet reached is missed.
+					TArray<FString> Missed = LapMissedIds;
+					for (int32 j = LapNext; j < LapLines.Num(); ++j)
+					{
+						Missed.Add(LapLines[j].Id);
+					}
+					const double LapTime = Now - LapStartSeconds;
+					const bool bClean = Missed.Num() == 0;
+					++CompletedLaps;
+					Readout.CompletedLaps = CompletedLaps;
+					Readout.LastLapSeconds = LapTime;
+					Readout.bLastLapClean = bClean;
+					Readout.LastLapMissed = FString::Join(Missed, TEXT(","));
+					Event(FString::Printf(TEXT("LAP %d  %s  %s"), CompletedLaps, *FormatLapTime(LapTime),
+						bClean ? TEXT("CLEAN") : TEXT("MISSED")));
+					if (bClean && (BestCleanSeconds <= 0.0 || LapTime < BestCleanSeconds))
+					{
+						BestCleanSeconds = LapTime;
+						Readout.BestCleanSeconds = BestCleanSeconds;
+						Event(TEXT("BEST LAP"));
+					}
+				}
+				bLapActive = true;
+				LapStartSeconds = Now;
+				LapNext = 1;
+				LapMissedIds.Reset();
+				// Each lap scores its own hits: a cone hit on lap 1 must score again on lap 2.
+				for (FLapObstacle& Ob : LapObstacles)
+				{
+					Ob.bDone = false;
+				}
+			}
+			else if (bLapActive && i >= LapNext)
+			{
+				for (int32 j = LapNext; j < i; ++j)
+				{
+					LapMissedIds.Add(LapLines[j].Id);
+					Event(FString::Printf(TEXT("MISSED %s"), *LapLines[j].Id.ToUpper()));
+				}
+				LapNext = i + 1;
+				Event(LapLines[i].Label);
+			}
+		}
+	}
+
+	// A hit scores obstacle_hit once; it does not abort the lap and does not make it un-CLEAN
+	// (only a missed checkpoint does). MuJoCo decides what the hit does to the board.
+	if (bLapActive)
+	{
+		for (FLapObstacle& Ob : LapObstacles)
+		{
+			if (Ob.bDone)
+			{
+				continue;
+			}
+			bool bHit = false;
+			if (Ob.Kind == EKind::Cone)
+			{
+				bHit = FMath::Abs(X - Ob.X) < kConeHitRadiusM && FMath::Abs(Y - Ob.Y) < kConeHitRadiusM;
+			}
+			else
+			{
+				const double Rad = FMath::DegreesToRadians(Ob.YawDeg);
+				const double Dx = X - Ob.X, Dy = Y - Ob.Y;
+				const double Lx = FMath::Cos(Rad) * Dx + FMath::Sin(Rad) * Dy;
+				const double Ly = -FMath::Sin(Rad) * Dx + FMath::Cos(Rad) * Dy;
+				bHit = FMath::Abs(Lx) < 0.5 * Ob.SizeM.X + kDebrisHitMarginM
+					&& FMath::Abs(Ly) < 0.5 * Ob.SizeM.Y + kDebrisHitMarginM;
+			}
+			if (bHit)
+			{
+				Ob.bDone = true;
+				Award(TEXT("obstacle_hit"), Ob.Kind == EKind::Cone ? TEXT("CONE HIT") : TEXT("OBSTACLE HIT"));
+			}
+		}
+	}
+
+	Readout.bRunActive = bLapActive;
+	Readout.LapNumber = bLapActive ? CompletedLaps + 1 : CompletedLaps;
+	Readout.LapTimeSeconds = bLapActive ? (Now - LapStartSeconds) : 0.0;
+	Readout.MissedList = FString::Join(LapMissedIds, TEXT(","));
+	if (LapLines.Num() > 0)
+	{
+		Readout.NextCheckpointLabel = (bLapActive && LapNext < LapLines.Num())
+			? LapLines[LapNext].Label : LapLines[0].Label;
+	}
+
+	PrevX = X;
+	PrevY = Y;
+	bHavePrevPoint = true;
 }

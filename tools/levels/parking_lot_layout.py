@@ -86,8 +86,11 @@ ELEMENTS = [
     dict(kind="ramp", seg=2, at=6.0, up_grade=0.05, up_len=10.0, deck_len=10.0,  # ramp A
          down_grade=0.10, half_width=2.5),          # rise 0.50 m, down 5.0 m; 30 deg side slopes + rail boxes
     dict(kind="checkpoint", seg=2, at=38.0, half_width=4.0),                     # CP2
-    dict(kind="cone_slalom", seg=6, at=10.0, count=4, spacing=10.0, weave=1.0, cone_offset=0.5),
-    # cones alternate at -/+0.5 m, the line weaves +/-1.0 m: 1.5 m clearance; curvature 0.10 1/m
+    dict(kind="cone_slalom", seg=6, at=10.0, count=4, spacing=10.0, weave=1.0, cone_offset=0.9),
+    # cones alternate at -/+0.9 m, the line weaves +/-1.0 m: 1.9 m clearance; curvature 0.10 1/m.
+    # cone_offset 0.9 (was 0.5): the demo follower's control phase drifts ~1 m off the line through
+    # the slalom, so the 1.5 m clearance clipped the last cone. Moving the cones out (not widening
+    # the weave, which would add curvature and lag) buys 0.4 m with the same path curvature.
     dict(kind="checkpoint", seg=6, at=44.0, half_width=3.0),                     # CP3
     dict(kind="plank", seg=8, at=18.0, length=12.0, width=0.60, height=0.12, entry_len=1.2),
     dict(kind="checkpoint", seg=8, at=42.0, half_width=3.0),                     # CP4

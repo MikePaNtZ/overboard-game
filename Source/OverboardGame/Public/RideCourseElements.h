@@ -17,6 +17,7 @@
 class ABoardActor;
 class UMaterialInterface;
 class UStaticMesh;
+namespace OverboardWire { struct FBoardState; }
 
 // What the HUD shows for the game layer.
 struct FRideGameReadout
@@ -28,6 +29,20 @@ struct FRideGameReadout
 	FString ZoneLabel;         // the zone the board is in now, or empty
 	FString Toast;             // the newest event ("FLAG +100", "TAIL STOP +500", ...)
 	double ToastAgeSeconds = 1e9;
+
+	// Laps mode (Level 1 parking-lot circuit). The lap timer and the ordered checkpoints.
+	bool bLaps = false;
+	bool bCruise = false;          // cruise mode (embarcadero): no score panel, no checkpoints
+	int32 LapNumber = 0;           // the lap in progress, 1-based; 0 before the first start
+	double LapTimeSeconds = 0.0;   // the time in the current lap
+	double LastLapSeconds = 0.0;   // the last completed lap time
+	bool bLastLapClean = false;
+	FString LastLapMissed;         // raw ids missed in the last lap, comma-joined; empty if clean
+	int32 CompletedLaps = 0;       // laps closed at the start/finish line
+	double BestCleanSeconds = 0.0; // the best CLEAN lap, 0 if none yet
+	double TargetLapSeconds = 0.0;
+	FString NextCheckpointLabel;   // the next line the rider must cross
+	FString MissedList;            // raw ids missed so far in the current lap, comma-joined
 };
 
 UCLASS()
@@ -72,6 +87,41 @@ private:
 	double StreetHalfWidth = 6.0;
 	TMap<FString, int32> Scores;
 
+	// --- Laps mode (parking_lot.json "mode": "laps") -----------------------------------------
+	// A line crossing and lap scorer in the raw MuJoCo x, y frame, ported from the reference pilot
+	// (tools/levels/headless_pilot.py, class Lines). The city_hill 1D path above is untouched.
+	bool bLapsMode = false;
+	bool bCruiseMode = false; // mode "cruise": only the start/finish line, no score panel
+
+	struct FLapLine
+	{
+		int32 Order = 0;
+		FString Id;
+		FString Label;
+		double X = 0.0, Y = 0.0, Z = 0.0, HeadingDeg = 0.0, HalfWidth = 0.0;
+	};
+	TArray<FLapLine> LapLines; // start_finish (order 0), then the checkpoints by order
+
+	struct FLapObstacle
+	{
+		EKind Kind = EKind::Cone; // Cone or Debris (a box)
+		double X = 0.0, Y = 0.0, Z = 0.0, YawDeg = 0.0;
+		FVector SizeM = FVector(0.3, 0.3, 0.45);
+		bool bDraw = false; // the level draws the mesh; the game only scores a hit
+		bool bDone = false;
+	};
+	TArray<FLapObstacle> LapObstacles;
+
+	// Lap run state (mirrors headless_pilot.py class Lines).
+	bool bLapActive = false;
+	double LapStartSeconds = 0.0;
+	int32 LapNext = 1;
+	TArray<FString> LapMissedIds;
+	int32 CompletedLaps = 0;
+	double BestCleanSeconds = 0.0;
+	bool bHavePrevPoint = false;
+	double PrevX = 0.0, PrevY = 0.0;
+
 	FRideGameReadout Readout;
 	double RunStartSeconds = 0.0;
 	double LastS = -1e9;
@@ -91,6 +141,11 @@ private:
 
 	double HeightAt(double S) const;
 	FVector ToWorld(double S, double Y, double UpM) const;
+	FVector ToWorldXY(double X, double Y, double Zm) const;
+	bool LoadLapsLayout(const TSharedPtr<class FJsonObject>& Root);
+	void TickLaps(const OverboardWire::FBoardState& State, bool bDown);
+	bool LineCrossed(const FLapLine& L, double X0, double Y0, double X1, double Y1) const;
+	void BuildLapVisuals();
 	void BuildVisuals();
 	void AddBox(const FVector& CentreWorld, const FVector& SizeM, const FLinearColor& Color, float YawDeg = 0.f);
 	void AddPole(const FVector& BaseWorld, double HeightM, double RadiusM, const FLinearColor& Color);
