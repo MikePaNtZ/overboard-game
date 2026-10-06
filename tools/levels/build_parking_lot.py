@@ -197,7 +197,7 @@ def spawn(cls, loc=(0, 0, 0), pitch=0.0, yaw=0.0, roll=0.0, label=None):
 
 # --- daylight look -------------------------------------------------------------------------------
 def build_look():
-    sun = spawn(unreal.DirectionalLight, (0, 0, 3000), pitch=-58.0, yaw=300.0, label="OB_Sun")
+    sun = spawn(unreal.DirectionalLight, (0, 0, 3000), pitch=-53.0, yaw=315.0, label="OB_Sun")
     sc = sun.light_component
     setp(sc, "mobility", unreal.ComponentMobility.MOVABLE)
     setp(sc, "intensity", 90000.0)
@@ -213,7 +213,7 @@ def build_look():
     kc = sky.light_component
     setp(kc, "mobility", unreal.ComponentMobility.MOVABLE)
     setp(kc, "real_time_capture", True)
-    setp(kc, "intensity", 1.6)
+    setp(kc, "intensity", 2.0)
 
     clouds = spawn(unreal.VolumetricCloud, (0, 0, 0), label="OB_Clouds")
     ccomp = clouds.get_component_by_class(unreal.VolumetricCloudComponent)
@@ -251,7 +251,7 @@ for d in (MESHES, MATS):
 log("cleaned")
 
 mats = dict(
-    Asphalt=textured_material("M_PL_Asphalt", "asphalt", 400.0, tint=(1.6, 1.6, 1.6), spec=0.2),
+    Asphalt=textured_material("M_PL_Asphalt", "asphalt", 400.0, tint=(0.42, 0.44, 0.48), spec=0.2),
     Concrete=textured_material("M_PL_Concrete", "concrete", 300.0, tint=(0.95, 0.93, 0.9), spec=0.25),
     Grass=flat_material("M_PL_Grass", (0.045, 0.11, 0.035), rough=0.95, spec=0.1, noise_amt=0.25),
     Canopy=flat_material("M_PL_Canopy", (0.06, 0.16, 0.05), rough=0.9, spec=0.1, noise_amt=0.35),
@@ -371,14 +371,16 @@ log("placed %d props" % len(props))
 
 
 # --- surrounding world: no black void; a city parking lot ----------------------------------------
-# Mid-rise and low hero buildings only, and only ones whose packed pivot sits at the base so they
-# stand on the ground in the -game render (the Triangle hero building floats, so it is left out;
-# the "Ref" towers at 80-140 m overhang a lot this small, so they are left out too).
-BUILDINGS = [
-    "/Game/Building/Library/Kit_Hero_Bldg/LevelInstance/BPP_Bldg_Hero_Mid_SFC_A01",
-    "/Game/Building/Library/Kit_Hero_Bldg/LevelInstance/BPP_Bldg_Hero_Mid_SFC_B01",
-    "/Game/Building/Library/Kit_Hero_Bldg/LevelInstance/BPP_Bldg_Hero_Low_SFD_Long_01",
-]
+# Hero buildings: (path, ground Z offset, height m). A packed level actor shows nothing in the
+# headless editor, so the base Z is measured from each building's referenced SUBLEVEL map (the
+# meshes live there): base +0 / +500 / +548 cm, so the spawn Z is the negative of that. SFC_A and
+# SFC_B are tall towers (138 / 170 m); SFD_Long is low (12 m). The near ring uses only the LOW
+# building, so it does not shadow the lot; the two towers stand far to the north as a skyline.
+BLD = dict(
+    SFD=("/Game/Building/Library/Kit_Hero_Bldg/LevelInstance/BPP_Bldg_Hero_Low_SFD_Long_01", -548.0),
+    SFC_A=("/Game/Building/Library/Kit_Hero_Bldg/LevelInstance/BPP_Bldg_Hero_Mid_SFC_A01", 0.0),
+    SFC_B=("/Game/Building/Library/Kit_Hero_Bldg/LevelInstance/BPP_Bldg_Hero_Mid_SFC_B01", -500.0),
+)
 
 
 def building_class(path):
@@ -412,28 +414,28 @@ def dressing():
     ground_box(0, -49.5, 220.0, 7.0, 0.01, 0.2, mats["Concrete"], "OB_PL_Pave_S")
     ground_box(71.5, 0.0, 7.0, 190.0, 0.01, 0.2, mats["Concrete"], "OB_PL_Pave_E")
 
-    # City Sample mid-rise buildings around the lot, ~55 m outside the verge (clear of the lot),
-    # with gaps. They render only in -game (packed level actors), where the MRQ still runs.
-    sides = []
+    # The low building rings the lot ~55 m outside the verge, with gaps, so it does not shadow the
+    # lot. Two tall towers stand far to the north as a skyline. All render only in the -game MRQ
+    # still (packed level actors). Each tuple: (key, x_m, y_m, yaw).
+    placements = []
     for x in (-66.0, -14.0, 34.0):                        # north row, facing south
-        sides.append((x, 104.0, 180.0))
+        placements.append(("SFD", x, 104.0, 180.0))
     for x in (-54.0, 10.0):                               # beyond the south street, facing north
-        sides.append((x, -104.0, 0.0))
+        placements.append(("SFD", x, -104.0, 0.0))
     for y in (-30.0, 34.0):                               # west row, facing east
-        sides.append((-118.0, y, 270.0))
+        placements.append(("SFD", -118.0, y, 270.0))
     for y in (-34.0, 30.0):                               # beyond the east street, facing west
-        sides.append((126.0, y, 90.0))
-    for i, (x, y, yaw) in enumerate(sides):
-        path = BUILDINGS[i % len(BUILDINGS)]
+        placements.append(("SFD", 126.0, y, 90.0))
+    placements.append(("SFC_A", -55.0, 230.0, 180.0))     # far-north skyline towers
+    placements.append(("SFC_B", 70.0, 250.0, 180.0))
+    for i, (key, x, y, yaw) in enumerate(placements):
+        path, zoff = BLD[key]
         cls = building_class(path)
         if cls is None:
             log("  building MISSING %s" % path)
             continue
         ux, uy = ue_xy(x, y)
-        # A packed level actor populates no geometry or bounds in the headless editor (measured:
-        # 16 cm default, 0 components), so the base cannot be snapped here; the kept building types
-        # stand at z = 0 in the -game render by their own base pivot.
-        spawn(cls, (ux, uy, 0.0), yaw=yaw, label="OB_PL_Bldg_%d" % i)
+        spawn(cls, (ux, uy, zoff), yaw=yaw, label="OB_PL_Bldg_%d" % i)
         n += 1
     log("buildings placed: %d" % n)
 
