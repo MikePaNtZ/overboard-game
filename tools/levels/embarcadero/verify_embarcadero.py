@@ -9,6 +9,7 @@ course_height.npy along the demo path (level.json). The mesh is read back from t
 files, so an exporter bug shows as a gap. PASS when the worst gap is under 10 mm.
 """
 import json
+import math
 import os
 import struct
 import sys
@@ -121,6 +122,46 @@ uncov = int((~inside).sum())
 out.write("block edges: %d posts, %d sampled, %.1f%% inside a drawn building; %d uncovered.\n"
           % (n_edge, len(pick), 100.0 * inside.mean() if len(pick) else 100.0, uncov))
 blocks_ok = (len(pick) == 0) or (inside.mean() >= 0.995)
-out.write("PASS\n" if gap_ok and blocks_ok else "FAIL\n")
+
+# --- box check: the drawn kerb/rail boxes must match obstacles.csv (centre, yaw, extents). Each
+# box is 24 verts in CSV order; recover its centre, yaw and sizes from the mesh and compare.
+def obm_boxes(path):
+    pos, _ = read_obm(os.path.join(DATA, path))     # UE cm
+    return pos.reshape(-1, 24, 3)
+
+
+csv_rows = []
+with open(os.path.join(cdir, "obstacles.csv")) as f:
+    for line in f:
+        if line.startswith("#") or not line.strip():
+            continue
+        csv_rows.append(line.strip().split(","))
+kerb_rows = [r for r in csv_rows if r[1].startswith("kerb")]
+rail_rows = [r for r in csv_rows if r[1].startswith("rail")]
+wc, wy, we = 0.0, 0.0, 0.0
+checked = 0
+for rows, mesh in ((kerb_rows, "kerbs.obm"), (rail_rows, "rails.obm")):
+    boxes = obm_boxes(mesh)
+    for r, vb in zip(rows, boxes):
+        cx, cy, clx, cly, clz = (float(r[2]), float(r[3]), float(r[4]), float(r[5]), float(r[6]))
+        cyaw = float(r[7])
+        zm = r[10].strip()
+        ccz = (float(zm) if zm else course_z(cx, cy)) + clz / 2.0
+        cen = vb.mean(0)
+        mj = np.array([cen[0] / 100.0, -cen[1] / 100.0, cen[2] / 100.0])
+        v01 = vb[17] - vb[16]
+        v12 = vb[18] - vb[17]
+        lx = np.hypot(v01[0], v01[1]) / 100.0
+        ly = np.hypot(v12[0], v12[1]) / 100.0
+        lz = (vb[:, 2].max() - vb[:, 2].min()) / 100.0
+        yaw = -math.degrees(math.atan2(v01[1], v01[0]))
+        dyaw = abs((yaw - cyaw + 90) % 180 - 90)         # boxes are symmetric mod 180 deg
+        wc = max(wc, abs(mj[0] - cx), abs(mj[1] - cy), abs(mj[2] - ccz))
+        wy = max(wy, dyaw)
+        we = max(we, abs(lx - clx), abs(ly - cly), abs(lz - clz))
+        checked += 1
+out.write("box check: %d boxes; worst centre %.4f m, yaw %.3f deg, extent %.4f m.\n" % (checked, wc, wy, we))
+boxes_ok = checked > 0 and wc <= 0.02 and wy <= 0.5 and we <= 0.02
+out.write("PASS\n" if gap_ok and blocks_ok and boxes_ok else "FAIL\n")
 out.close()
 print(open(OUT).read())

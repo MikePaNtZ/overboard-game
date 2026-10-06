@@ -152,6 +152,14 @@ def build_corridor(zfn, path, out, bgeom, prom_geom):
         section = "Pave" if prom_geom.contains(Point(*mid)) else "Road"
         m = obm.Mesh()
         gc.add_grid(m, X, Y, Z, section, X, Y)
+        # the ridden surface is near-flat; drop any triangle with a large vertical extent. These are
+        # the building-block lowering cliffs and the pinch spikes where the ribbon narrows -- not
+        # ground the rider ever touches (the demo path is checked by verify, and is not affected).
+        pp = m.parts[0]
+        zc = pp[0][:, 2]
+        tri = pp[5]
+        keep = (zc[tri].max(1) - zc[tri].min(1)) < 60.0     # cm
+        m.parts[0] = pp[:5] + (tri[keep], pp[6])
         gc.ue_winding(m).write(out("corridor_%d.obm" % ntile))
         ntile += 1
     log("corridor tiles:", ntile)
@@ -170,11 +178,11 @@ def build_boxes(zfn, rows, out):
         zm = r[10].strip()
         if bid.startswith("kerb"):
             cz = (float(zm) if zm else zfn(x, y)) + lz / 2.0   # z_m = box bottom
-            gc.box_mesh(kerbs, (x, y, cz), (lx, ly, lz), "Kerb", yaw_deg=yaw)
+            gc.box_mesh(kerbs, (x, y, cz), (lx, ly, lz), "Kerb", yaw_deg=-yaw)
             nk += 1
         else:  # rail
             cz = (float(zm) if zm else zfn(x, y)) + lz / 2.0
-            gc.box_mesh(rails, (x, y, cz), (lx, ly, lz), "Rail", yaw_deg=yaw)
+            gc.box_mesh(rails, (x, y, cz), (lx, ly, lz), "Rail", yaw_deg=-yaw)
             nr += 1
     gc.ue_winding(kerbs).write(out("kerbs.obm"))
     gc.ue_winding(rails).write(out("rails.obm"))
@@ -337,13 +345,28 @@ def build_marks(osm, zfn, lvl, out, hx, hy):
         segs = g.geoms if g.geom_type == "MultiLineString" else [g]
         return [list(s.coords) for s in segs if s.geom_type == "LineString" and s.length > 2]
 
-    # green SF bike lanes along Brannan, King and 2nd (offset to the kerb side)
+    # green SF bike lane: a clean 1.5 m ribbon centred on the demo line where it runs on a bike
+    # street (Brannan/King/2nd), with white edge lines. Clipped to the street carriageway, so no
+    # paint runs onto the sidewalk or over a kerb.
+    bike_parts = []
     for name in ("Brannan Street", "King Street", "2nd Street"):
         for t, line in street_lines(osm, name):
-            hw = osm_mod.road_half_width(t)
-            for off in offset_lines(line, hw - 1.0):
-                for s in clip(off):
-                    ribbon(marks, zfn, osm_mod.resample(s, 1.0), 1.6, "Bike")
+            bike_parts.append(LineString(line).buffer(osm_mod.road_half_width(t) - 0.6))
+    bike_geom = unary_union(bike_parts) if bike_parts else Polygon()
+    dp = [(p[0], p[1]) for p in lvl["demo_path"]]
+    run = []
+    for i, p in enumerate(dp + [None]):
+        on = p is not None and bike_geom.contains(Point(p))
+        if on:
+            run.append(p)
+        elif run:
+            if len(run) >= 3:
+                pts = osm_mod.resample(run, 1.0)
+                ribbon(marks, zfn, pts, 1.5, "Bike")
+                for d in (0.8, -0.8):                       # straight white edge lines
+                    for e in offset_lines(pts, d):
+                        ribbon(marks, zfn, e, 0.1, "White")
+            run = []
 
     # white edge + centre lines along every vehicle street in the grid
     for t, nd in osm.ways:

@@ -153,7 +153,7 @@ def build_boxes(zfn, rows, out):
             cone_mesh(cones, x, y, float(zfn(x, y)), lx, lz)
             nc += 1
             continue
-        gc.box_mesh(boxes, (x, y, cz), (lx, ly, lz), box_section(bid, typ), yaw_deg=yaw)
+        gc.box_mesh(boxes, (x, y, cz), (lx, ly, lz), box_section(bid, typ), yaw_deg=-yaw)
         nb += 1
     nv, nt = gc.ue_winding(boxes).write(out("boxes.obm"))
     log("boxes.obm %d boxes %d verts %d tris" % (nb, nv, nt))

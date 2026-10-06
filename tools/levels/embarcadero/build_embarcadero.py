@@ -105,20 +105,24 @@ def facade_material():
     mat = new_material("M_SF_Facade")
     uv = node(mat, unreal.MaterialExpressionTextureCoordinate, 0)
     u = node(mat, unreal.MaterialExpressionComponentMask, 1, r=True); mel.connect_material_expressions(uv, "", u, "")
-    v = node(mat, unreal.MaterialExpressionComponentMask, 2, g=True); mel.connect_material_expressions(uv, "", v, "")
+    wp = node(mat, unreal.MaterialExpressionWorldPosition, 13)
+    zc = node(mat, unreal.MaterialExpressionComponentMask, 14, b=True); mel.connect_material_expressions(wp, "", zc, "")
+    zm = node(mat, unreal.MaterialExpressionMultiply, 15)
+    mel.connect_material_expressions(zc, "", zm, "A")
+    mel.connect_material_expressions(node(mat, unreal.MaterialExpressionConstant, 16, r=0.01), "", zm, "B")   # cm -> m
     ci = unreal.CustomInput(); ci.set_editor_property("input_name", "U")
-    ci2 = unreal.CustomInput(); ci2.set_editor_property("input_name", "V")
+    ci2 = unreal.CustomInput(); ci2.set_editor_property("input_name", "Z")
+    # floors from world Z (3.5 m each), bays from the wall UV (2.8 m each); clear frames both ways
     cust = node(mat, unreal.MaterialExpressionCustom, 3,
-                code="float fu=frac(U/3.2); float fv=frac((V-0.2)/3.6);\n"
-                     "float win=step(0.26,fu)*step(fu,0.70)*step(0.34,fv)*step(fv,0.80);\n"
-                     "win*=step(3.0,V);\n"      # solid storefront below 3 m, clear mullions elsewhere
-                     "return saturate(win);",
+                code="float fu=frac(U/2.8); float fz=frac(Z/3.5);\n"
+                     "float win=step(0.16,fu)*step(fu,0.80)*step(0.22,fz)*step(fz,0.78);\n"
+                     "return saturate(win);",      # big dark panes, clear plaster frames between
                 output_type=unreal.CustomMaterialOutputType.CMOT_FLOAT1)
     cust.set_editor_property("inputs", [ci, ci2])
     mel.connect_material_expressions(u, "", cust, "U")
-    mel.connect_material_expressions(v, "", cust, "V")
+    mel.connect_material_expressions(zm, "", cust, "Z")
     wall = node(mat, unreal.MaterialExpressionVertexColor, 4)
-    glass = node(mat, unreal.MaterialExpressionConstant3Vector, 5, constant=unreal.LinearColor(0.05, 0.07, 0.10, 1))
+    glass = node(mat, unreal.MaterialExpressionConstant3Vector, 5, constant=unreal.LinearColor(0.015, 0.022, 0.035, 1))
     lerp = node(mat, unreal.MaterialExpressionLinearInterpolate, 6)
     mel.connect_material_expressions(wall, "", lerp, "A")
     mel.connect_material_expressions(glass, "", lerp, "B")
