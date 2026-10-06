@@ -18,13 +18,14 @@ Updated at the end of each work block. The plan is in `docs/levels-plan.md`.
 | Level 1 axes | Proved in MuJoCo | spawn yaw 180 = +X; the first hump acts at x = -22 m (row/col correct) |
 | Level 1 ridden headless | 2 clean laps, 174.4 s / 172.2 s; earlier 3/3 clean (Ramp B 3/3) | `tools/levels/pilot_lap.sh parking_lot --laps 2` (controls cd7962d) |
 | Launcher `--level` | Done | `tools/play/levels/<name>.env`; run_sim / play / make_demo_video |
-| Game rules 2D + laps, HUD, DemoRider 2D | PR #47 (in review) | in-game demo on OB_ParkingLot, 2 runs x 2 laps: 172.4/168.8 s and 172.3/168.8 s, all CLEAN (sim cd7962d) |
+| Game rules 2D + laps, HUD, DemoRider 2D | Merged (PR #47); gate labels face the rider, cruise toast "LOOP n m:ss" (this PR) | in-game demo on OB_ParkingLot, 2 runs x 2 laps: 172.4/168.8 s and 172.3/168.8 s, all CLEAN (sim cd7962d) |
 | OB_ParkingLot Unreal level | Merged (PR #43); rebuilt for the moved cones (this PR) | worst ground gap 2 mm, pole NE correct; city surround, clear markings, grey asphalt, sunlit lot |
 | Level 2 phase A data | Merged (PR #44) | 4601 x 8601 posts, 1302 kerb + 94 rail boxes, 2 kerb cuts, 2 crossings |
 | Level 2 ridden headless | 1 clean loop, 443.9 s (7.4 min: route B is longer than the brief's 3-5 min, by Mike's choice) | `LEVEL_DIR=... tools/levels/pilot_lap.sh embarcadero` |
 | Level 2 phase B (moving objects) | Works headless on c4's 7fc08dc (not pushed yet; c4 asks Mike) | 48 objects; the pilot gives way at both crossings; 1 clean loop 469.5 s |
-| OB_Embarcadero Unreal level | v1 in PR #46 | corridor gap 3.1 mm; 1396 boxes exact (yaw sign fixed: UE yaw = -MuJoCo yaw); every building block covered. Facades interim procedural; City Sample building pass asked of c5 |
-| Level 1 demo video | Next | after this map rebuild |
+| OB_Embarcadero Unreal level | Merged (PR #46); `--level embarcadero` merged (PR #51); game demo 1 loop 436.0 s CLEAN on PORT_BASE 19600 | corridor gap 3.1 mm; 1396 boxes exact (yaw sign fixed: UE yaw = -MuJoCo yaw); every building block covered. Facades interim procedural; City Sample building pass asked of c5 |
+| Level 1 demo video | Published | https://mikes-macbook-pro.tail2cbb82.ts.net:8448/game/levels/overboard-parking-lot-demo-2026-10-06.mp4 (1 lap 172.3 s CLEAN; NoGround game mode, PR #50; full-frame recorder, PR #49) |
+| Test ports | Agreed with overboard-14 (PR #49) | levels tests PORT_BASE=19600 (game -ObPortBase=19600); live play 9600; overboard-14 tests 29600 |
 
 ## Worktrees
 

@@ -756,9 +756,18 @@ void ARideCourseElements::TickLaps(const OverboardWire::FBoardState& State, bool
 					Readout.LastLapSeconds = LapTime;
 					Readout.bLastLapClean = bClean;
 					Readout.LastLapMissed = FString::Join(Missed, TEXT(","));
-					Event(FString::Printf(TEXT("LAP %d  %s  %s"), CompletedLaps, *FormatLapTime(LapTime),
-						bClean ? TEXT("CLEAN") : TEXT("MISSED")));
-					if (bClean && (BestCleanSeconds <= 0.0 || LapTime < BestCleanSeconds))
+					if (bCruiseMode)
+					{
+						// A cruise has no checkpoints and no score: name the loop, not a clean lap.
+						const int32 S = FMath::FloorToInt(FMath::Max(LapTime, 0.0));
+						Event(FString::Printf(TEXT("LOOP %d  %d:%02d"), CompletedLaps, S / 60, S % 60));
+					}
+					else
+					{
+						Event(FString::Printf(TEXT("LAP %d  %s  %s"), CompletedLaps, *FormatLapTime(LapTime),
+							bClean ? TEXT("CLEAN") : TEXT("MISSED")));
+					}
+					if (!bCruiseMode && bClean && (BestCleanSeconds <= 0.0 || LapTime < BestCleanSeconds))
 					{
 						BestCleanSeconds = LapTime;
 						Readout.BestCleanSeconds = BestCleanSeconds;
