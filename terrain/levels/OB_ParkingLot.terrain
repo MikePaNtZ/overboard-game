@@ -1,0 +1,10 @@
+level      Content/Maps/OB_ParkingLot.umap
+level_hash 52dc4066e2c3a4c9
+
+note The ground, every obstacle box and every marking are meshes sampled from the MuJoCo course height (parking_lot course, course_height.npy) by tools/levels/gen_parking_lot.py, so the DRAWN ground is the RIDDEN heightfield plus 4.0 mm. tools/levels/verify_parking_lot.py checks the drawn ground against course_height along the demo path (worst gap 2.0 mm). sim-host rides course_hfield.bin itself, so the terrain reaches the physics through the heightfield, not through this level. The 0.15 m kerbs and the ramps are real steps and slopes in that heightfield. Unreal computes no board physics (HARD RULE).
+
+surface parking_lot_ground
+  kind      external
+  status    unverified
+  reach_m   100.0
+  source    Generated meshes (SM_PL_Lot_*, SM_PL_Ramp, SM_PL_Boxes) built at level-build time from /tmp OBM files that are not in this repo, so this check cannot open them. To verify: commit the ground OBM (or an STL export) and declare it as kind mesh.
