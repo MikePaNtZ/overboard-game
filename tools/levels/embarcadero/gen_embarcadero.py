@@ -249,6 +249,96 @@ def build_buildings(osm, zfn, out, hx, hy):
     log("buildings:", n)
 
 
+# --- real City Sample facades along the route -----------------------------------------------------
+# A proven facade MODULE cut from the source level SFA_Ref_N1 (tools/levels/embarcadero notes): one
+# 3.25 m window bay, stacked as 5 kit wall pieces (ground -> cornice). The module shows real glazed
+# windows (see the Kit_Ref_Bldg Wall_01 column). We TILE whole modules along each building edge that
+# faces the route, fill the remainder with a blank wall, and ground each row with a plinth. The
+# procedural building body + roof stay behind (build_buildings), so the raised MuJoCo block stays
+# covered; the kit facade is a street-facing veneer only.
+FAC_BAY_M = 3.25                 # one window bay width
+FAC_MODULE_H_M = 29.89           # the natural module height (5 stacked kit pieces)
+FAC_DEPTH_M = 1.25               # the kit wall plane depth; place the glazed face proud of the edge
+FAC_PROUD_M = 0.30               # the street face sits this far proud of the OSM footprint edge
+FAC_NEAR_M = 40.0                # veneer edges within this distance of the demo path
+FAC_WINDOW_BAY = [               # (band mesh, dz m) -- the Wall_01 window column, ground -> cornice
+    ("/Game/Building/SF/A/Kit_Bldg_SFA_L2_A/Mesh/SM_BLDG_SFA_L2_A_Wall_01_N1", 0.0),
+    ("/Game/Building/SF/A/Kit_Bldg_SFA_L3_A/Mesh/SM_BLDG_SFA_L3_A_Wall_01_N1", 7.5),
+    ("/Game/Building/SF/A/Kit_Bldg_SFA_L7_A/Mesh/SM_BLDG_SFA_L7_A_Wall_01_N1", 18.75),
+    ("/Game/Building/SF/A/Kit_Bldg_SFA_L8_A/Mesh/SM_BLDG_SFA_L8_A_Wall_01_N1", 25.75),
+    ("/Game/Building/SF/A/Kit_Bldg_SFA_L9_A/Mesh/SM_BLDG_SFA_L9_A_Wall_01_N1", 27.75),
+]
+
+
+def build_facades(osm, zfn, lvl, out, hx, hy):
+    """Place real kit facade modules on the street-facing edges near the route. Writes facades.json
+    in MuJoCo metres; build_embarcadero.py converts to UE and instances the kit meshes."""
+    from shapely.geometry.polygon import orient
+    path = LineString([(p[0], p[1]) for p in lvl["demo_path"]])
+    grid = Polygon([(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)])
+    modules, blanks, plinths, corners = [], [], [], []
+    for t, nd in osm.ways:
+        if "building" not in t or nd[0] != nd[-1] or len(nd) < 4:
+            continue
+        try:
+            poly = Polygon(osm.line(nd))
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+            poly = poly.intersection(grid)
+        except Exception:
+            continue
+        if poly.is_empty or poly.area < 10.0:
+            continue
+        polys = poly.geoms if poly.geom_type == "MultiPolygon" else [poly]
+        for pg in polys:
+            if pg.area < 10.0 or pg.geom_type != "Polygon":
+                continue
+            if path.distance(pg) > FAC_NEAR_M:
+                continue
+            h_m = building_height(t)
+            zscale = min(1.15, max(0.45, h_m / FAC_MODULE_H_M))
+            ring = list(orient(pg, sign=1.0).exterior.coords)[:-1]     # CCW
+            for a, b in zip(ring, ring[1:] + ring[:1]):
+                dx, dy = b[0] - a[0], b[1] - a[1]
+                L = math.hypot(dx, dy)
+                if L < FAC_BAY_M:
+                    continue
+                mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+                tx, ty = dx / L, dy / L
+                nx, ny = dy / L, -dx / L                               # outward normal (CCW)
+                if path.distance(Point(mid[0] + nx * 2.0, mid[1] + ny * 2.0)) > FAC_NEAR_M:
+                    continue
+                yaw = math.degrees(math.atan2(-ny, -nx))               # kit local -X -> outward
+                # ground the row at the lowest street level just outside the edge (zfn is +3 m
+                # inside a footprint; sample 2 m out to read the true street height)
+                z0 = min(float(zfn(a[0] + nx * 2.0, a[1] + ny * 2.0)),
+                         float(zfn(b[0] + nx * 2.0, b[1] + ny * 2.0)),
+                         float(zfn(mid[0] + nx * 2.0, mid[1] + ny * 2.0))) - BUILDING_H
+                nbay = int(L / FAC_BAY_M)
+                ox, oy = nx * (FAC_PROUD_M - FAC_DEPTH_M), ny * (FAC_PROUD_M - FAC_DEPTH_M)
+                for k in range(nbay):
+                    s = k * FAC_BAY_M
+                    modules.append([round(a[0] + tx * s + ox, 3), round(a[1] + ty * s + oy, 3),
+                                    round(z0, 3), round(yaw, 2), round(zscale, 3)])
+                rem = L - nbay * FAC_BAY_M
+                if rem > 0.6:                                          # blank wall fills the end
+                    s = nbay * FAC_BAY_M + rem / 2
+                    px = a[0] + tx * s + nx * FAC_PROUD_M
+                    py = a[1] + ty * s + ny * FAC_PROUD_M
+                    blanks.append([round(px, 3), round(py, 3), round(z0, 3), round(yaw, 2),
+                                   round(rem, 3), round(h_m, 2)])
+                plinths.append([round(a[0] + ox, 3), round(a[1] + oy, 3),
+                                round(b[0] + ox, 3), round(b[1] + oy, 3), round(z0, 3)])
+                corners.append([round(a[0] + nx * FAC_PROUD_M, 3),
+                                round(a[1] + ny * FAC_PROUD_M, 3), round(z0, 3), round(h_m, 2)])
+    data = dict(bay_w_m=FAC_BAY_M, module_h_m=FAC_MODULE_H_M, depth_m=FAC_DEPTH_M,
+                window_bay=FAC_WINDOW_BAY, modules=modules, blanks=blanks,
+                plinths=plinths, corners=corners)
+    json.dump(data, open(out("facades.json"), "w"))
+    log("facades: %d modules, %d blanks, %d plinths, %d corners"
+        % (len(modules), len(blanks), len(plinths), len(corners)))
+
+
 def building_height(t):
     if t.get("height"):
         try:
@@ -513,6 +603,7 @@ def main():
     build_boxes(zfn, rows, out)
     build_water(h, g, out)
     build_buildings(osm, zfn, out, hx, hy)
+    build_facades(osm, zfn, lvl, out, hx, hy)
     build_marks(osm, zfn, lvl, out, hx, hy)
     build_dressing(osm, zfn, lvl, out, hx, hy)
     write_meta(out, meta, cdir, zfn, hx, hy)

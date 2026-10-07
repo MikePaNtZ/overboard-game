@@ -224,6 +224,7 @@ mats = dict(
     Bike=flat_material("M_SF_Bike", (0.03, 0.22, 0.06), rough=0.7, spec=0.2, emissive=(0.0, 0.12, 0.02)),
     Canopy=flat_material("M_SF_Canopy", (0.06, 0.16, 0.05), rough=0.9, spec=0.1, noise_amt=0.3),
     Bark=flat_material("M_SF_Bark", (0.14, 0.10, 0.06), rough=0.9, spec=0.2),
+    Plaster=flat_material("M_SF_Plaster", (0.56, 0.54, 0.50), rough=0.9, spec=0.2, noise_amt=0.1),
 )
 SLOT = {"Ground": "Ground", "Road": "Road", "Kerb": "Kerb", "Rail": "Rail", "Facade": "Facade",
         "Roof": "Roof", "White": "White", "Yellow": "Yellow", "Bike": "Bike"}
@@ -361,6 +362,63 @@ for x, y, z, yaw, sc in dress.get("tree", []):
 for x, y, z, yaw, sc in dress.get("palm", []):
     proxy("palm", x, y, z, 7.0, 1.6, 7.5); nt += 1   # a tall thin palm proxy
 log("placed %d tree/palm proxies" % nt)
+
+# --- real City Sample facades -------------------------------------------------------------------
+# gen_embarcadero.py chose where whole kit window modules tile each street-facing edge near the
+# route, plus blank-wall fills, plinths and corner boxes. The kit meshes are instanced (HISM), so
+# the licensed art stays referenced, not duplicated. The procedural buildings stay behind as the
+# body and roof, so the raised MuJoCo block stays covered.
+def box_xf(cx, cy, cz, yaw, sx, sy, sz):
+    return unreal.Transform(unreal.Vector(*ue(cx, cy, cz)), unreal.Rotator(0, 0, -yaw),
+                            unreal.Vector(sx, sy, sz))
+
+
+def box_hism(mesh, mat, xfs, label):
+    """Place box instances on their own holder, with the material override on the HISM component."""
+    if not xfs:
+        return 0
+    h = spawn(scatter_cls, label=label)
+    h.add_static_instances(mesh, xfs, 0.0, True, label)
+    for c in h.get_components_by_class(unreal.HierarchicalInstancedStaticMeshComponent):
+        c.set_material(0, mat)
+        c.set_collision_enabled(unreal.CollisionEnabled.NO_COLLISION)
+    return len(xfs)
+
+
+fac = json.load(open(os.path.join(DATA, "facades.json")))
+scatter_cls = unreal.load_class(None, "/Script/OverboardGame.TrailScatterActor")
+nf = 0
+holder = spawn(scatter_cls, label="OB_SF_Facade")
+for mi, (mesh_path, dz) in enumerate(fac["window_bay"]):
+    mesh = unreal.load_asset(mesh_path)
+    if not mesh:
+        log("  facade band MISSING %s" % mesh_path)
+        continue
+    xf = []
+    for x, y, z, yaw, zs in fac["modules"]:
+        xf.append(unreal.Transform(unreal.Vector(*ue(x, y, z + dz * zs)),
+                                   unreal.Rotator(0, 0, -yaw), unreal.Vector(1.0, 1.0, zs)))
+    if xf:
+        nf += holder.add_static_instances(mesh, xf, 0.0, True, "HISM_band%d" % mi)
+log("placed %d facade kit instances (%d modules)" % (nf, len(fac["modules"])))
+
+cube = unreal.load_asset("/Engine/BasicShapes/Cube")
+# blank-wall fill: a plaster panel (depth, remainder width, building height)
+blank_xf = [box_xf(x, y, z + h / 2, yaw, fac["depth_m"], w, h)
+            for x, y, z, yaw, w, h in fac["blanks"]]
+box_hism(cube, mats["Plaster"], blank_xf, "OB_SF_FacadeBlank")
+# corner boxes: a slim plaster pier at each street-facing vertex
+corner_xf = [box_xf(x, y, z + h / 2, 0.0, 0.6, 0.6, h) for x, y, z, h in fac["corners"]]
+box_hism(cube, mats["Plaster"], corner_xf, "OB_SF_FacadeCorner")
+# plinths: a low stone base under each veneered edge
+plinth_xf = []
+for ax, ay, bx, by, z in fac["plinths"]:
+    L = math.hypot(bx - ax, by - ay)
+    yaw = math.degrees(math.atan2(by - ay, bx - ax))
+    plinth_xf.append(box_xf((ax + bx) / 2, (ay + by) / 2, z - 0.25, yaw, 0.6, L, 0.5))
+box_hism(cube, mats["Kerb"], plinth_xf, "OB_SF_FacadePlinth")
+log("placed %d blanks, %d corners, %d plinths"
+    % (len(blank_xf), len(corner_xf), len(plinth_xf)))
 
 build_look()
 # NoGround: no motion-reference markers or placeholder ground on a real level.

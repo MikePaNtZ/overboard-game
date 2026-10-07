@@ -26,6 +26,7 @@ namespace OverboardTerrainVerification
 		{ "OB_City", false },
 		{ "OB_CityHill", false },
 		{ "OB_Embarcadero", false },
+		{ "OB_FacadeTest", false },
 		{ "OB_Main", true },
 		{ "OB_ParkingLot", false },
 		{ "OB_Trail", false },
