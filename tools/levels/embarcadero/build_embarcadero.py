@@ -99,45 +99,38 @@ def flat_material(name, color, rough=0.85, spec=0.3, noise_amt=0.0, emissive=Non
 
 
 def facade_material():
-    """A plaster/brick facade whose windows read as windows: a grid from UV0 (u = metres along the
-    wall, v = metres above the street), with mullions. The wall colour is the per-building vertex
-    colour; the ground floor (v < 3 m) is a solid storefront band. Windows are dark glass."""
+    """A PLAIN plaster facade (no window stripes): the per-building vertex colour with subtle
+    world-space noise, matte. Real kit facades cover every street-facing face; this material only
+    dresses the procedural body behind them and the hidden back and side faces, so no striped
+    pattern shows anywhere."""
     mat = new_material("M_SF_Facade")
-    uv = node(mat, unreal.MaterialExpressionTextureCoordinate, 0)
-    u = node(mat, unreal.MaterialExpressionComponentMask, 1, r=True); mel.connect_material_expressions(uv, "", u, "")
-    wp = node(mat, unreal.MaterialExpressionWorldPosition, 13)
-    zc = node(mat, unreal.MaterialExpressionComponentMask, 14, b=True); mel.connect_material_expressions(wp, "", zc, "")
-    zm = node(mat, unreal.MaterialExpressionMultiply, 15)
-    mel.connect_material_expressions(zc, "", zm, "A")
-    mel.connect_material_expressions(node(mat, unreal.MaterialExpressionConstant, 16, r=0.01), "", zm, "B")   # cm -> m
-    ci = unreal.CustomInput(); ci.set_editor_property("input_name", "U")
-    ci2 = unreal.CustomInput(); ci2.set_editor_property("input_name", "Z")
-    # floors from world Z (3.5 m each), bays from the wall UV (2.8 m each); clear frames both ways
-    cust = node(mat, unreal.MaterialExpressionCustom, 3,
-                code="float fu=frac(U/2.8); float fz=frac(Z/3.5);\n"
-                     "float win=step(0.16,fu)*step(fu,0.80)*step(0.22,fz)*step(fz,0.78);\n"
-                     "return saturate(win);",      # big dark panes, clear plaster frames between
-                output_type=unreal.CustomMaterialOutputType.CMOT_FLOAT1)
-    cust.set_editor_property("inputs", [ci, ci2])
-    mel.connect_material_expressions(u, "", cust, "U")
-    mel.connect_material_expressions(zm, "", cust, "Z")
-    wall = node(mat, unreal.MaterialExpressionVertexColor, 4)
-    glass = node(mat, unreal.MaterialExpressionConstant3Vector, 5, constant=unreal.LinearColor(0.015, 0.022, 0.035, 1))
-    lerp = node(mat, unreal.MaterialExpressionLinearInterpolate, 6)
-    mel.connect_material_expressions(wall, "", lerp, "A")
-    mel.connect_material_expressions(glass, "", lerp, "B")
-    mel.connect_material_expressions(cust, "", lerp, "Alpha")
-    mel.connect_material_property(lerp, "", MP.MP_BASE_COLOR)
-    # windows are smoother (glass) than the wall; a faint emissive so they read at distance
-    rgh = node(mat, unreal.MaterialExpressionLinearInterpolate, 7)
-    mel.connect_material_expressions(node(mat, unreal.MaterialExpressionConstant, 8, r=0.75), "", rgh, "A")
-    mel.connect_material_expressions(node(mat, unreal.MaterialExpressionConstant, 9, r=0.2), "", rgh, "B")
-    mel.connect_material_expressions(cust, "", rgh, "Alpha")
-    mel.connect_material_property(rgh, "", MP.MP_ROUGHNESS)
-    mel.connect_material_property(node(mat, unreal.MaterialExpressionConstant, 10, r=0.35), "", MP.MP_SPECULAR)
-    em = node(mat, unreal.MaterialExpressionMultiply, 11)
-    mel.connect_material_expressions(cust, "", em, "A")
-    mel.connect_material_expressions(node(mat, unreal.MaterialExpressionConstant3Vector, 12, constant=unreal.LinearColor(0.04, 0.05, 0.06, 1)), "", em, "B")
+    wall = node(mat, unreal.MaterialExpressionVertexColor, 0)
+    wp = node(mat, unreal.MaterialExpressionWorldPosition, 1)
+    ns = node(mat, unreal.MaterialExpressionNoise, 2, scale=0.04, levels=3,
+              output_min=0.82, output_max=1.08, quality=1, turbulence=False)
+    mel.connect_material_expressions(wp, "", ns, "Position")
+    mul = node(mat, unreal.MaterialExpressionMultiply, 3)
+    mel.connect_material_expressions(wall, "", mul, "A")
+    mel.connect_material_expressions(ns, "", mul, "B")
+    mel.connect_material_property(mul, "", MP.MP_BASE_COLOR)
+    mel.connect_material_property(node(mat, unreal.MaterialExpressionConstant, 4, r=0.9), "", MP.MP_ROUGHNESS)
+    mel.connect_material_property(node(mat, unreal.MaterialExpressionConstant, 5, r=0.2), "", MP.MP_SPECULAR)
+    finish(mat)
+    return mat
+
+
+def kit_glass_material():
+    """A tinted semi-gloss glass for the kit window slots, so the panes read as blue glass (not
+    black holes) at grazing angles. Non-metallic with moderate roughness, so a large pane reads as
+    glass, not a mirror; a faint emissive keeps it from going black in shadow."""
+    mat = new_material("M_SF_KitGlass")
+    base = node(mat, unreal.MaterialExpressionConstant3Vector, 0,
+                constant=unreal.LinearColor(0.05, 0.09, 0.14, 1))
+    mel.connect_material_property(base, "", MP.MP_BASE_COLOR)
+    mel.connect_material_property(node(mat, unreal.MaterialExpressionConstant, 2, r=0.35), "", MP.MP_ROUGHNESS)
+    mel.connect_material_property(node(mat, unreal.MaterialExpressionConstant, 3, r=0.6), "", MP.MP_SPECULAR)
+    em = node(mat, unreal.MaterialExpressionConstant3Vector, 4,
+              constant=unreal.LinearColor(0.03, 0.05, 0.07, 1))
     mel.connect_material_property(em, "", MP.MP_EMISSIVE_COLOR)
     finish(mat)
     return mat
@@ -228,6 +221,7 @@ mats = dict(
 )
 SLOT = {"Ground": "Ground", "Road": "Road", "Kerb": "Kerb", "Rail": "Rail", "Facade": "Facade",
         "Roof": "Roof", "White": "White", "Yellow": "Yellow", "Bike": "Bike"}
+kitglass = kit_glass_material()
 
 
 def make_mesh(obm, name, nanite=True):
@@ -385,37 +379,56 @@ def box_hism(mesh, mat, xfs, label):
     return len(xfs)
 
 
+def glass_slot(mesh):
+    """The material slot whose parent is M_Window (the kit glass), or -1 if the mesh has none."""
+    for i, sm in enumerate(mesh.get_editor_property("static_materials")):
+        mi = sm.material_interface
+        try:
+            if mi and mi.get_base_material().get_name() == "M_Window":
+                return i
+        except Exception:
+            pass
+    return -1
+
+
 fac = json.load(open(os.path.join(DATA, "facades.json")))
 scatter_cls = unreal.load_class(None, "/Script/OverboardGame.TrailScatterActor")
+# group the kit piece instances by mesh; one HISM per mesh, with the glass slot brightened
+by_mesh = {}
+for mesh_idx, x, y, z, yaw in fac["pieces"]:
+    by_mesh.setdefault(mesh_idx, []).append(
+        unreal.Transform(unreal.Vector(*ue(x, y, z)), unreal.Rotator(0, 0, -yaw), unreal.Vector(1, 1, 1)))
 nf = 0
-holder = spawn(scatter_cls, label="OB_SF_Facade")
-for mi, (mesh_path, dz) in enumerate(fac["window_bay"]):
+for mesh_idx, mesh_path in enumerate(fac["meshes"]):
     mesh = unreal.load_asset(mesh_path)
     if not mesh:
-        log("  facade band MISSING %s" % mesh_path)
+        log("  facade mesh MISSING %s" % mesh_path)
         continue
-    xf = []
-    for x, y, z, yaw, zs in fac["modules"]:
-        xf.append(unreal.Transform(unreal.Vector(*ue(x, y, z + dz * zs)),
-                                   unreal.Rotator(0, 0, -yaw), unreal.Vector(1.0, 1.0, zs)))
-    if xf:
-        nf += holder.add_static_instances(mesh, xf, 0.0, True, "HISM_band%d" % mi)
-log("placed %d facade kit instances (%d modules)" % (nf, len(fac["modules"])))
+    xf = by_mesh.get(mesh_idx, [])
+    if not xf:
+        continue
+    holder = spawn(scatter_cls, label="OB_SF_Facade_%d" % mesh_idx)
+    holder.add_static_instances(mesh, xf, 0.0, True, "HISM")
+    gs = glass_slot(mesh)
+    if gs >= 0:
+        for c in holder.get_components_by_class(unreal.HierarchicalInstancedStaticMeshComponent):
+            c.set_material(gs, kitglass)
+    nf += len(xf)
+log("placed %d facade kit instances (%d meshes)" % (nf, len(fac["meshes"])))
 
 cube = unreal.load_asset("/Engine/BasicShapes/Cube")
-# blank-wall fill: a plaster panel (depth, remainder width, building height)
-blank_xf = [box_xf(x, y, z + h / 2, yaw, fac["depth_m"], w, h)
-            for x, y, z, yaw, w, h in fac["blanks"]]
+# blank-wall fill: a plaster panel (depth, remainder width, module height)
+blank_xf = [box_xf(x, y, z + h / 2, yaw, 0.6, w, h) for x, y, z, yaw, w, h in fac["blanks"]]
 box_hism(cube, mats["Plaster"], blank_xf, "OB_SF_FacadeBlank")
 # corner boxes: a slim plaster pier at each street-facing vertex
-corner_xf = [box_xf(x, y, z + h / 2, 0.0, 0.6, 0.6, h) for x, y, z, h in fac["corners"]]
+corner_xf = [box_xf(x, y, z + h / 2, 0.0, 0.4, 0.4, h) for x, y, z, h in fac["corners"]]
 box_hism(cube, mats["Plaster"], corner_xf, "OB_SF_FacadeCorner")
 # plinths: a low stone base under each veneered edge
 plinth_xf = []
 for ax, ay, bx, by, z in fac["plinths"]:
     L = math.hypot(bx - ax, by - ay)
     yaw = math.degrees(math.atan2(by - ay, bx - ax))
-    plinth_xf.append(box_xf((ax + bx) / 2, (ay + by) / 2, z - 0.25, yaw, 0.6, L, 0.5))
+    plinth_xf.append(box_xf((ax + bx) / 2, (ay + by) / 2, z - 0.15, yaw, 0.4, L, 0.3))
 box_hism(cube, mats["Kerb"], plinth_xf, "OB_SF_FacadePlinth")
 log("placed %d blanks, %d corners, %d plinths"
     % (len(blank_xf), len(corner_xf), len(plinth_xf)))
