@@ -29,4 +29,5 @@ exec "$BIN/sim-host" \
   --plant x7 --authority-margin warn --max-current 90 --rider-mass 95 --rider-reach 0.10 --rider-reach-back 0.20 --rider-lean-lag 0.25 \
   --obstacles "$OBSTACLES" \
   --state-out-addr "$STATE_OUT" --input-in-addr "$INPUT_IN" --hud-out-addr "$HUD_OUT" \
+  ${OBJECTS_ARGS:-} \
   "$@"

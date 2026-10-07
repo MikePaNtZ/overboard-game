@@ -14,6 +14,7 @@
 
 #include "CoreMinimal.h"
 #include "OverboardWire.h"
+#include "MovingObjectsClient.h"
 
 struct FRideGameReadout;
 
@@ -32,9 +33,11 @@ class OVERBOARDGAME_API FDemoRider
 {
 public:
 	FDemoRider();
-	// Seconds = time since the demo started. bDown = fallen or in a handoff.
+	// Seconds = time since the demo started. bDown = fallen or in a handoff. Objects = the newest
+	// OBJS frame (cars, pedestrians, cyclists), or null; the laps rider uses it to give way at the
+	// course crossings, exactly like tools/levels/headless_pilot.py.
 	FDemoPadOutput Update(double Seconds, float DeltaSeconds, bool bHaveState, const OverboardWire::FBoardState& State,
-		bool bDown, const FRideGameReadout* Readout);
+		bool bDown, const FRideGameReadout* Readout, const TArray<FMovingObjectSample>* Objects = nullptr);
 
 	// Loads tools/play/elements/<CourseName>.json. If it has a "demo_path", the demo runs the 2D
 	// lap follower; else it keeps the city_hill ride. Called once, before the first Update.
@@ -78,7 +81,22 @@ private:
 	bool bLoggedFall = false;
 
 	FDemoPadOutput UpdateLaps(double Seconds, float DeltaSeconds, const OverboardWire::FBoardState& State,
-		bool bDown, const FRideGameReadout* Readout);
+		bool bDown, const FRideGameReadout* Readout, const TArray<FMovingObjectSample>* Objects);
+
+	// --- Give way at crossings (embarcadero cruise) --------------------------------------------
+	// A crossing: a stop line a known number of path points ahead (stop_idx), and the road segment
+	// a-b it protects. The rider holds at the stop line while any car or cyclist is within clear_m
+	// of the segment, then 2 s more. Ported from headless_pilot.py. The table comes from the
+	// course elements json ("crossings"), the same file the path comes from.
+	struct FCrossing
+	{
+		int32 StopIdx = 0;
+		double Ax = 0, Ay = 0, Bx = 0, By = 0;
+		double ClearM = 10.0;
+		double ClearSince = -1.0; // Seconds the segment last became clear; < 0 = busy now
+		bool bLoggedHold = false; // log the first hold at this crossing once
+	};
+	TArray<FCrossing> Crossings;
 
 	void Enter(EPhase Next, double Seconds);
 	static double TargetY(double S);

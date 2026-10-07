@@ -4,6 +4,7 @@
 #include "HudPacketClient.h"
 #include "OverboardPlayerController.h"
 #include "RideCourseElements.h"
+#include "MovingObjectsActor.h"
 #include "OverboardWire.h"
 #include "HAL/PlatformTime.h"
 #include "TerrainVerification.g.h"
@@ -64,6 +65,9 @@ namespace
 	const FLinearColor kColOverLimit = HudColour(0xFF, 0x5A, 0x4A, 1.0f);
 	const FLinearColor kColWarn = HudColour(0xFF, 0xB2, 0x3F, 1.0f);
 	const FLinearColor kColWarnText = HudColour(0x0E, 0x14, 0x1B, 1.0f);
+
+	// How long the "CONTACT" toast stays up after an object touching-bit rise (Level 2 phase B).
+	constexpr double kContactToastSeconds = 2.0;
 	const FLinearColor kColOverboard = HudColour(0xFF, 0x5A, 0x4A, 1.0f);
 	const FLinearColor kColBatteryOk = HudColour(0xE8, 0xEE, 0xF2, 1.0f);
 	const FLinearColor kColBatteryLow = HudColour(0xFF, 0xB2, 0x3F, 1.0f);
@@ -218,6 +222,23 @@ void AOverboardHUD::DrawHUD()
 
 	DrawRiderCues(*Board);
 	DrawGamePanel(*Board);
+
+	// Level 2 phase B: a short "CONTACT" toast when an object's touching bit rises (flags bit 0).
+	// The rise edge is detected on the socket thread (FMovingObjectsClient); the HUD only reads
+	// the timestamp and holds the toast for a fixed time.
+	for (TActorIterator<AMovingObjectsActor> It(GetWorld()); It; ++It)
+	{
+		const double RiseSeconds = It->GetLastContactRiseSeconds();
+		if (RiseSeconds > 0.0 && FPlatformTime::Seconds() - RiseSeconds < kContactToastSeconds)
+		{
+			const float K = Canvas->ClipY / 1080.f;
+			const FHudTextFont Font = MakeFont(EHudFont::Value, 34.f * K);
+			const FString Text = TEXT("CONTACT");
+			const float TW = MeasureTextWidth(Text, Font);
+			DrawHudText(Text, Font, (Canvas->ClipX - TW) * 0.5f, Canvas->ClipY * 0.18f, kColOverLimit);
+		}
+		break;
+	}
 
 	const bool bWarningNow = Board->IsAuthorityWarning();
 	const double Now = FPlatformTime::Seconds();

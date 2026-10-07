@@ -17,7 +17,10 @@
 #include "BoardActor.h"
 #include "OverboardCameraPawn.h"
 #include "RideCourseElements.h"
+#include "MovingObjectsActor.h"
 #include "EngineUtils.h"
+#include "Misc/Paths.h"
+#include "HAL/PlatformMisc.h"
 #include "HAL/PlatformTime.h"
 #include "UnrealClient.h"
 #include <stdio.h>
@@ -113,8 +116,18 @@ void AOverboardPlayerController::UpdateDemo(const ABoardActor* Board, float Delt
 		Game = *It;
 		break;
 	}
+
+	// The newest OBJS frame, so the demo rider can give way at the crossings.
+	FMovingObjectsFrame ObjFrame;
+	bool bHaveObjects = false;
+	for (TActorIterator<AMovingObjectsActor> It(GetWorld()); It; ++It)
+	{
+		bHaveObjects = It->GetLatestFrame(ObjFrame);
+		break;
+	}
+
 	const FDemoPadOutput Pad = Demo->Update(FPlatformTime::Seconds() - DemoStartSeconds, DeltaTime, bHave, State, bDown,
-		Game ? &Game->GetReadout() : nullptr);
+		Game ? &Game->GetReadout() : nullptr, bHaveObjects ? &ObjFrame.Objects : nullptr);
 
 	// The demo outputs the value that goes on the wire (it is its own "shaping"), so it
 	// overrides the shaped pad path instead of feeding the dead zone and curve.
@@ -165,6 +178,38 @@ void AOverboardPlayerController::SpawnCourseElements()
 	{
 		Elements->Destroy();
 	}
+
+	// Level 2 phase B traffic: spawn the moving-objects actor if the course has an objects file.
+	const FString ObjectsFile = ResolveObjectsFile(Course);
+	if (!ObjectsFile.IsEmpty() && FPaths::FileExists(ObjectsFile))
+	{
+		AMovingObjectsActor* Objects = GetWorld()->SpawnActor<AMovingObjectsActor>();
+		if (Objects && !Objects->LoadObjects(ObjectsFile))
+		{
+			Objects->Destroy();
+		}
+	}
+}
+
+FString AOverboardPlayerController::ResolveObjectsFile(const FString& Course) const
+{
+	// -ObObjects=<path> wins. Else derive from the course data directory: the same objects.json
+	// sim-host reads. The default course dir matches tools/play/levels/embarcadero.env's COURSE.
+	FString Path;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ObObjects="), Path))
+	{
+		return Path;
+	}
+	if (Course.IsEmpty() || Course == TEXT("none"))
+	{
+		return FString();
+	}
+	const FString Home = FPlatformMisc::GetEnvironmentVariable(TEXT("HOME"));
+	if (Home.IsEmpty())
+	{
+		return FString();
+	}
+	return FPaths::Combine(Home, TEXT("projects/overboard-viz/out/carve-lab/data/courses"), Course, TEXT("objects.json"));
 }
 
 void AOverboardPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
