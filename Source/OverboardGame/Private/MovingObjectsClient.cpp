@@ -217,6 +217,7 @@ bool FMovingObjectsClient::GetObjectVelocities(TArray<FMovingObjectVel>& OutObje
 	// the demo rider treats the object as unknown and errs toward holding.
 	constexpr double kMaxVelDtSeconds = 0.1;   // two OBJS frames at 50 Hz are 0.02 s apart
 	constexpr double kMaxVelStepMetres = 1.5;  // 1.5 m in 0.1 s is 15 m/s, above any street car
+	constexpr double kMaxObjsSpeedMps = 15.0;  // a faster estimate is a bad sample: treat as unknown
 
 	FScopeLock Lock(&HistoryLock);
 	if (History.Num() == 0)
@@ -225,7 +226,10 @@ bool FMovingObjectsClient::GetObjectVelocities(TArray<FMovingObjectVel>& OutObje
 	}
 	const FMovingObjectsFrame& Newest = History.Last();
 	const FMovingObjectsFrame* Prev = History.Num() >= 2 ? &History[History.Num() - 2] : nullptr;
-	const double Dt = Prev ? (Newest.ArrivalTimeSeconds - Prev->ArrivalTimeSeconds) : 0.0;
+	// Use the SIM time in the packets, not the wall-clock arrival time: when the game thread stalls,
+	// the receive loop drains queued packets microseconds apart, and a wall-clock Dt would make the
+	// speed hundreds of m/s and extrapolate a car past the path (a false "go"; overboard-14, #59).
+	const double Dt = Prev ? (Newest.SimTime - Prev->SimTime) : 0.0;
 
 	OutObjects.Reset();
 	OutObjects.Reserve(Newest.Objects.Num());
@@ -244,7 +248,8 @@ bool FMovingObjectsClient::GetObjectVelocities(TArray<FMovingObjectVel>& OutObje
 				if (P.Id != S.Id) { continue; }
 				const double Dx = static_cast<double>(S.Pos[0]) - P.Pos[0];
 				const double Dy = static_cast<double>(S.Pos[1]) - P.Pos[1];
-				if (FMath::Sqrt(Dx * Dx + Dy * Dy) <= kMaxVelStepMetres)
+				const double Step = FMath::Sqrt(Dx * Dx + Dy * Dy);
+				if (Step <= kMaxVelStepMetres && Step / Dt <= kMaxObjsSpeedMps)
 				{
 					V.Vx = Dx / Dt;
 					V.Vy = Dy / Dt;
