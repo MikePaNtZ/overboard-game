@@ -244,6 +244,11 @@ bool AMovingObjectsActor::GetLatestFrame(FMovingObjectsFrame& OutFrame) const
 	return Client.IsValid() && Client->GetLatestFrame(OutFrame);
 }
 
+bool AMovingObjectsActor::GetObjectVelocities(TArray<FMovingObjectVel>& OutObjects) const
+{
+	return Client.IsValid() && Client->GetObjectVelocities(OutObjects);
+}
+
 double AMovingObjectsActor::GetLastContactRiseSeconds() const
 {
 	return Client.IsValid() ? Client->GetLastContactRiseSeconds() : 0.0;

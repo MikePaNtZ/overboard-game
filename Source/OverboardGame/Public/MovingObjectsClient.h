@@ -39,6 +39,22 @@ struct FMovingObjectsFrame
 	TArray<FMovingObjectSample> Objects;
 };
 
+// One object's current MuJoCo-frame position and an estimated world velocity, for the demo
+// rider's predictive give-way. Vel comes from the two newest OBJS frames. bVelValid is false
+// when the two samples are too far apart in time or in distance (a path wrap or a respawn), so
+// the rider never reads a bogus velocity as a reason to go.
+struct FMovingObjectVel
+{
+	uint16 Id = 0;
+	uint8 Kind = 0;      // 0 car, 1 pedestrian, 2 cyclist
+	double X = 0.0;      // MuJoCo world x, metres
+	double Y = 0.0;      // MuJoCo world y, metres
+	double Vx = 0.0;     // metres/second
+	double Vy = 0.0;
+	double Yaw = 0.0;    // MuJoCo heading, radians (the +X body axis points along travel)
+	bool bVelValid = false;
+};
+
 class OVERBOARDGAME_API FMovingObjectsClient : public FRunnable
 {
 public:
@@ -57,6 +73,11 @@ public:
 	// Copies out the newest frame only. False before any valid packet has arrived. For the demo
 	// rider's give-way (it needs the current positions, not a render-delayed pose).
 	bool GetLatestFrame(FMovingObjectsFrame& OutFrame) const;
+
+	// Fills OutObjects with every object in the newest frame, each with a velocity estimated from
+	// the previous frame. bVelValid follows the robust-velocity rule (see FMovingObjectVel). False
+	// before any frame has arrived. For the demo rider's predictive give-way.
+	bool GetObjectVelocities(TArray<FMovingObjectVel>& OutObjects) const;
 
 	// FPlatformTime::Seconds() at which an object's touching bit last went 0 -> 1 (any object),
 	// and the running count of such rises. 0 / 0 before any contact. For the HUD "CONTACT" toast

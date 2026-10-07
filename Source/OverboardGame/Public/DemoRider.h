@@ -37,7 +37,7 @@ public:
 	// OBJS frame (cars, pedestrians, cyclists), or null; the laps rider uses it to give way at the
 	// course crossings, exactly like tools/levels/headless_pilot.py.
 	FDemoPadOutput Update(double Seconds, float DeltaSeconds, bool bHaveState, const OverboardWire::FBoardState& State,
-		bool bDown, const FRideGameReadout* Readout, const TArray<FMovingObjectSample>* Objects = nullptr);
+		bool bDown, const FRideGameReadout* Readout, const TArray<FMovingObjectVel>* Objects = nullptr);
 
 	// Loads tools/play/elements/<CourseName>.json. If it has a "demo_path", the demo runs the 2D
 	// lap follower; else it keeps the city_hill ride. Called once, before the first Update.
@@ -81,22 +81,38 @@ private:
 	bool bLoggedFall = false;
 
 	FDemoPadOutput UpdateLaps(double Seconds, float DeltaSeconds, const OverboardWire::FBoardState& State,
-		bool bDown, const FRideGameReadout* Readout, const TArray<FMovingObjectSample>* Objects);
+		bool bDown, const FRideGameReadout* Readout, const TArray<FMovingObjectVel>* Objects);
 
-	// --- Give way at crossings (embarcadero cruise) --------------------------------------------
-	// A crossing: a stop line a known number of path points ahead (stop_idx), and the road segment
-	// a-b it protects. The rider holds at the stop line while any car or cyclist is within clear_m
-	// of the segment, then 2 s more. Ported from headless_pilot.py. The table comes from the
-	// course elements json ("crossings"), the same file the path comes from.
+	// --- Predictive give way at crossings (embarcadero cruise) ---------------------------------
+	// A crossing: a stop line a known number of path points ahead (stop_idx) on the demo path.
+	//
+	// DEVIATION from the "4 m of the segment a-b" rule, with data: at crossing 1 the board DRIVES
+	// ALONG the 52 m segment a-b (it is the board's own lane, not a perpendicular cross-street), so
+	// "a car within clear_m of the segment" is true for most of a lap and no clear window of the
+	// board's transit time ever opens -- a segment-proximity rule either lets a car through or
+	// never lets the board go. A car that PAUSES near the crossing (id 10 pauses 8 s, 19 m away,
+	// pointing at the board's lane) also has a valid zero velocity, so a straight-line check never
+	// sees it approach, then it resumes and strikes the board (the reported failure).
+	//
+	// So the rider instead holds while any car or cyclist would come within a margin of the BOARD's
+	// OWN future path over its transit: a moving object is extrapolated in a straight line
+	// (time-matched to where the board will be); a stopped or slow object is a threat if its
+	// forward heading ray could reach the board's path at ANY resume time (its pause length is
+	// unknown). Then 2 s clear, as before. The same rule lives in tools/levels/headless_pilot.py.
 	struct FCrossing
 	{
 		int32 StopIdx = 0;
-		double Ax = 0, Ay = 0, Bx = 0, By = 0;
+		double Ax = 0, Ay = 0, Bx = 0, By = 0; // the segment a-b (kept for the log/data only)
 		double ClearM = 10.0;
-		double ClearSince = -1.0; // Seconds the segment last became clear; < 0 = busy now
+		double CrossLenM = 0.0;   // demo-path length from stop_idx to 10 m past the segment far end
+		double ClearSince = -1.0; // Seconds the crossing last became clear; < 0 = busy now
 		bool bLoggedHold = false; // log the first hold at this crossing once
 	};
 	TArray<FCrossing> Crossings;
+
+	// Fills Crossings[i].CrossLenM from the demo path. Call once, after the path and the crossings
+	// are loaded.
+	void ComputeCrossingClearTimes();
 
 	void Enter(EPhase Next, double Seconds);
 	static double TargetY(double S);

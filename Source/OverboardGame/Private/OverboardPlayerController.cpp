@@ -117,17 +117,17 @@ void AOverboardPlayerController::UpdateDemo(const ABoardActor* Board, float Delt
 		break;
 	}
 
-	// The newest OBJS frame, so the demo rider can give way at the crossings.
-	FMovingObjectsFrame ObjFrame;
+	// The newest objects with velocities, so the demo rider can predict the crossings' traffic.
+	TArray<FMovingObjectVel> ObjVels;
 	bool bHaveObjects = false;
 	for (TActorIterator<AMovingObjectsActor> It(GetWorld()); It; ++It)
 	{
-		bHaveObjects = It->GetLatestFrame(ObjFrame);
+		bHaveObjects = It->GetObjectVelocities(ObjVels);
 		break;
 	}
 
 	const FDemoPadOutput Pad = Demo->Update(FPlatformTime::Seconds() - DemoStartSeconds, DeltaTime, bHave, State, bDown,
-		Game ? &Game->GetReadout() : nullptr, bHaveObjects ? &ObjFrame.Objects : nullptr);
+		Game ? &Game->GetReadout() : nullptr, bHaveObjects ? &ObjVels : nullptr);
 
 	// The demo outputs the value that goes on the wire (it is its own "shaping"), so it
 	// overrides the shaped pad path instead of feeding the dead zone and curve.

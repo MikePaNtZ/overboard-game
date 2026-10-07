@@ -149,12 +149,14 @@ void FDemoRider::LoadCourse(const FString& CourseName)
 		}
 	}
 
+	ComputeCrossingClearTimes();
+
 	bLapsMode = true;
 	UE_LOG(LogDemoRider, Log, TEXT("DemoRider: laps mode, %d path points, %d lap(s), %d crossing(s)."), N, DemoLaps, Crossings.Num());
 }
 
 FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHaveState, const OverboardWire::FBoardState& State,
-	bool bDown, const FRideGameReadout* Readout, const TArray<FMovingObjectSample>* Objects)
+	bool bDown, const FRideGameReadout* Readout, const TArray<FMovingObjectVel>* Objects)
 {
 	FDemoPadOutput Out;
 	if (!bHaveState)
@@ -330,8 +332,11 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 	return Out;
 }
 
+// File-specific helper names (DemoRider*): a plain SegDist here would collide with another
+// translation unit's SegDist in a unity build (overboard-game#57 was exactly that class of bug).
+
 // Distance from (X, Y) to the segment A-B. Mirrors headless_pilot.py seg_dist.
-static double SegDist(double X, double Y, double Ax, double Ay, double Bx, double By)
+static double DemoRiderSegDist(double X, double Y, double Ax, double Ay, double Bx, double By)
 {
 	const double Dx = Bx - Ax;
 	const double Dy = By - Ay;
@@ -339,8 +344,49 @@ static double SegDist(double X, double Y, double Ax, double Ay, double Bx, doubl
 	return FMath::Sqrt(FMath::Square(X - Ax - T * Dx) + FMath::Square(Y - Ay - T * Dy));
 }
 
+// Give-way tuning. The board's assumed cruise while crossing (its real average, not the 2.5 m/s
+// worst case), the straight-line speed assumed for a stopped car that may resume, the speed below
+// which an object counts as "stopped", and the centre-distance margin that counts as a hit (a car
+// is 4.6 x 1.9 m and the board ~1 m, so 3 m centre-to-centre is a near miss).
+namespace
+{
+	constexpr double kDemoPathSpeedFrac = 0.9;  // the demo runs a little under the path target speed
+	constexpr double kDemoLaunchAccel = 0.6;    // board launch ramp, m/s^2 (matches the speed loop)
+	constexpr double kDemoResumeMps = 10.0;
+	constexpr double kDemoSlowMps = 1.5;
+	constexpr double kDemoHitMarginM = 3.0;
+	constexpr double kDemoPredictStepS = 0.5;
+}
+
+void FDemoRider::ComputeCrossingClearTimes()
+{
+	const int32 N = PathX.Num();
+	if (N == 0)
+	{
+		return;
+	}
+	for (FCrossing& C : Crossings)
+	{
+		// The nearest path index to the segment's far end b.
+		double BestD = TNumericLimits<double>::Max();
+		int32 Bi = C.StopIdx;
+		for (int32 k = 0; k < N; ++k)
+		{
+			const double D = FMath::Square(PathX[k] - C.Bx) + FMath::Square(PathY[k] - C.By);
+			if (D < BestD) { BestD = D; Bi = k; }
+		}
+		// The path is 1 m apart, so the forward index count is a distance in metres. The board
+		// clears the crossing 10 m past b. The transit TIME is computed per tick from the path
+		// speeds (see the give-way loop), not here, because it depends on where the board is now.
+		const int32 Forward = ((Bi - C.StopIdx) % N + N) % N;
+		C.CrossLenM = Forward + 10.0;
+		UE_LOG(LogDemoRider, Log, TEXT("DemoRider: crossing stop_idx %d cross_len %.0f m"),
+			C.StopIdx, C.CrossLenM);
+	}
+}
+
 FDemoPadOutput FDemoRider::UpdateLaps(double Seconds, float DeltaSeconds, const OverboardWire::FBoardState& State,
-	bool bDown, const FRideGameReadout* Readout, const TArray<FMovingObjectSample>* Objects)
+	bool bDown, const FRideGameReadout* Readout, const TArray<FMovingObjectVel>* Objects)
 {
 	// A direct port of headless_pilot.py DemoRider: forward-only nearest-index search on the closed
 	// demo path, pure pursuit plus a curvature feedforward, and a PI speed loop on the lean. The
@@ -449,20 +495,72 @@ FDemoPadOutput FDemoRider::UpdateLaps(double Seconds, float DeltaSeconds, const 
 		// Speed loop: ramp the target up at 0.6 m/s^2 (down at once), filter the speed, lean P + I.
 		double Vt = PathV[Wrap(PathIdx + 2)];
 
-		// Give way at the crossings: hold at the stop line while a car or a cyclist is inside the
-		// crossing zone, then 2 s more. A direct port of headless_pilot.py's crossing loop. Uses
-		// the wall-clock Seconds for the 2 s clear timer (the state packet has no sim time here).
+		// Board-trajectory give way (see FCrossing's comment for why this is not a segment rule).
+		// Hold while any car or cyclist would come within kDemoHitMarginM of the BOARD's own future
+		// path over its transit, then 2 s clear. A moving object is extrapolated in a straight line
+		// and time-matched to the board; a stopped or slow object threatens the whole forward
+		// heading ray (its resume time is unknown). The 2 s timer uses the wall-clock Seconds.
 		for (FCrossing& C : Crossings)
 		{
 			const int32 ToStop = Wrap(C.StopIdx - PathIdx);
 			if (ToStop > 25) { continue; }
+
+			// Build the board's own future trajectory from HERE: integrate the path target speed
+			// (PathV) with a launch ramp, so the slow crawl through a tight turn (crossing 2) is
+			// modelled honestly rather than a flat cruise. Each entry is (time since now, path
+			// point). The horizon Hs is how long the board takes to clear the crossing.
+			TArray<double> BTau;
+			TArray<int32> BK;
+			double Hs = 0.0;
+			{
+				double ArcM = 0.0, BoardV = 0.0;
+				const double Dt = kDemoPredictStepS;
+				double Tau = 0.0;
+				while (ArcM < C.CrossLenM && Tau < 40.0)
+				{
+					const int32 K = Wrap(PathIdx + FMath::RoundToInt(ArcM));
+					const double TargetV = PathV[K] * kDemoPathSpeedFrac;
+					BoardV = TargetV >= BoardV ? FMath::Min(TargetV, BoardV + kDemoLaunchAccel * Dt) : TargetV;
+					BoardV = FMath::Max(BoardV, 0.4); // never model the board as fully stopped mid-transit
+					BTau.Add(Tau);
+					BK.Add(K);
+					ArcM += BoardV * Dt;
+					Tau += Dt;
+				}
+				Hs = Tau;
+			}
+
 			bool bBusy = false;
+			int32 BlockId = -1;
 			if (Objects)
 			{
-				for (const FMovingObjectSample& O : *Objects)
+				for (const FMovingObjectVel& O : *Objects)
 				{
 					if (O.Kind != 0 && O.Kind != 2) { continue; } // only cars and cyclists block
-					if (SegDist(O.Pos[0], O.Pos[1], C.Ax, C.Ay, C.Bx, C.By) < C.ClearM) { bBusy = true; break; }
+					const double ObjSpd = FMath::Sqrt(O.Vx * O.Vx + O.Vy * O.Vy);
+					bool bThreat = false;
+					if (O.bVelValid && ObjSpd >= kDemoSlowMps)
+					{
+						// Moving: time-matched straight line against where the board will be.
+						for (int32 i = 0; i < BTau.Num() && !bThreat; ++i)
+						{
+							const double Dx = O.X + O.Vx * BTau[i] - PathX[BK[i]];
+							const double Dy = O.Y + O.Vy * BTau[i] - PathY[BK[i]];
+							if (FMath::Sqrt(Dx * Dx + Dy * Dy) < kDemoHitMarginM) { bThreat = true; }
+						}
+					}
+					else
+					{
+						// Stopped or slow: the forward heading ray, for any resume time. Block if it
+						// passes within the margin of any board path point over the transit.
+						const double Ex = O.X + FMath::Cos(O.Yaw) * kDemoResumeMps * Hs;
+						const double Ey = O.Y + FMath::Sin(O.Yaw) * kDemoResumeMps * Hs;
+						for (int32 i = 0; i < BK.Num() && !bThreat; ++i)
+						{
+							if (DemoRiderSegDist(PathX[BK[i]], PathY[BK[i]], O.X, O.Y, Ex, Ey) < kDemoHitMarginM) { bThreat = true; }
+						}
+					}
+					if (bThreat) { bBusy = true; if (BlockId < 0) { BlockId = O.Id; } }
 				}
 			}
 			if (bBusy) { C.ClearSince = -1.0; }
@@ -470,10 +568,12 @@ FDemoPadOutput FDemoRider::UpdateLaps(double Seconds, float DeltaSeconds, const 
 			if (bBusy || Seconds - C.ClearSince < 2.0)
 			{
 				Vt = FMath::Min(Vt, ToStop <= 3 ? 0.0 : 0.25 * ToStop);
-				if (!C.bLoggedHold)
+				if (!C.bLoggedHold && bBusy)
 				{
 					C.bLoggedHold = true;
-					UE_LOG(LogDemoRider, Log, TEXT("OBWAIT crossing stop_idx %d at t %.1f x %+.1f y %+.1f"), C.StopIdx, Seconds, X, Y);
+					UE_LOG(LogDemoRider, Log,
+						TEXT("OBWAIT crossing stop_idx %d at t %.1f x %+.1f y %+.1f block obj %d (transit %.1f s)"),
+						C.StopIdx, Seconds, X, Y, BlockId, Hs);
 				}
 			}
 		}
