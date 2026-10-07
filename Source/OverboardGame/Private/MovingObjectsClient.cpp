@@ -210,6 +210,59 @@ bool FMovingObjectsClient::GetLatestFrame(FMovingObjectsFrame& OutFrame) const
 	return true;
 }
 
+bool FMovingObjectsClient::GetObjectVelocities(TArray<FMovingObjectVel>& OutObjects) const
+{
+	// Robust velocity: trust a two-sample estimate only when the samples are close in time and in
+	// distance. A larger gap means a dropped-packet burst, a path wrap, or a respawn; in that case
+	// the demo rider treats the object as unknown and errs toward holding.
+	constexpr double kMaxVelDtSeconds = 0.1;   // two OBJS frames at 50 Hz are 0.02 s apart
+	constexpr double kMaxVelStepMetres = 1.5;  // 1.5 m in 0.1 s is 15 m/s, above any street car
+	constexpr double kMaxObjsSpeedMps = 15.0;  // a faster estimate is a bad sample: treat as unknown
+
+	FScopeLock Lock(&HistoryLock);
+	if (History.Num() == 0)
+	{
+		return false;
+	}
+	const FMovingObjectsFrame& Newest = History.Last();
+	const FMovingObjectsFrame* Prev = History.Num() >= 2 ? &History[History.Num() - 2] : nullptr;
+	// Use the SIM time in the packets, not the wall-clock arrival time: when the game thread stalls,
+	// the receive loop drains queued packets microseconds apart, and a wall-clock Dt would make the
+	// speed hundreds of m/s and extrapolate a car past the path (a false "go"; overboard-14, #59).
+	const double Dt = Prev ? (Newest.SimTime - Prev->SimTime) : 0.0;
+
+	OutObjects.Reset();
+	OutObjects.Reserve(Newest.Objects.Num());
+	for (const FMovingObjectSample& S : Newest.Objects)
+	{
+		FMovingObjectVel V;
+		V.Id = S.Id;
+		V.Kind = S.Kind;
+		V.X = S.Pos[0];
+		V.Y = S.Pos[1];
+		V.Yaw = S.Yaw;
+		if (Prev && Dt > 0.0 && Dt <= kMaxVelDtSeconds)
+		{
+			for (const FMovingObjectSample& P : Prev->Objects)
+			{
+				if (P.Id != S.Id) { continue; }
+				const double Dx = static_cast<double>(S.Pos[0]) - P.Pos[0];
+				const double Dy = static_cast<double>(S.Pos[1]) - P.Pos[1];
+				const double Step = FMath::Sqrt(Dx * Dx + Dy * Dy);
+				if (Step <= kMaxVelStepMetres && Step / Dt <= kMaxObjsSpeedMps)
+				{
+					V.Vx = Dx / Dt;
+					V.Vy = Dy / Dt;
+					V.bVelValid = true;
+				}
+				break;
+			}
+		}
+		OutObjects.Add(V);
+	}
+	return true;
+}
+
 double FMovingObjectsClient::GetLastContactRiseSeconds() const
 {
 	FScopeLock Lock(&HistoryLock);

@@ -40,6 +40,9 @@ public:
 	// rider's give-way, which needs the current positions, not the render-delayed draw pose.
 	bool GetLatestFrame(FMovingObjectsFrame& OutFrame) const;
 
+	// The newest objects with estimated velocities, for the demo rider's predictive give-way.
+	bool GetObjectVelocities(TArray<FMovingObjectVel>& OutObjects) const;
+
 	// FPlatformTime::Seconds() of the last object touching-bit 0 -> 1 rise (any object), and the
 	// running count. For the HUD "CONTACT" toast and the self-test's contact count.
 	double GetLastContactRiseSeconds() const;

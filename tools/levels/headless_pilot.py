@@ -120,10 +120,27 @@ def main():
     # Phase B: give way at the crossings. Read the OBJS stream (sim-host --objects-out-addr) and
     # hold at the stop line while any object is inside the crossing zone (plus 2 s clear).
     crossings = doc.get("crossings", [])
+    # Board-trajectory give way (see DemoRider.h for why this is not a segment-proximity rule): the
+    # board holds while a car/cyclist would come within HIT_MARGIN of the board's OWN future path
+    # over its transit. cross_len is the demo-path length from stop_idx to 10 m past the segment's
+    # far end b (1 m apart, so a forward index count is a distance in metres); the transit time uses
+    # the board's real cruise.
+    PATH_SPEED_FRAC, LAUNCH_ACCEL, RESUME_MPS, SLOW_MPS, HIT_MARGIN, PRED_STEP = 0.9, 0.6, 10.0, 1.5, 3.0, 0.5
+    for c in crossings:
+        bi = min(range(n), key=lambda k: (path[k][0] - c["b"][0]) ** 2 + (path[k][1] - c["b"][1]) ** 2)
+        cross_len = ((bi - c["stop_idx"]) % n) + 10.0
+        c["cross_len_m"] = cross_len
+        print(f"  crossing stop_idx {c['stop_idx']}: cross_len {cross_len:.0f} m", flush=True)
     ox = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     ox.bind(("127.0.0.1", a.objects_port))
     ox.setblocking(False)
-    objs, clear_since, holding = {}, {}, False
+    # objs: id -> (x, y, yaw); obj_vel: id -> (x, y, vx, vy, yaw, valid). A velocity is trusted only
+    # when the two samples are close in time (<= 0.1 s) and in distance (<= 1.5 m, i.e. < 15 m/s);
+    # else the object is treated as stopped (its forward heading ray is the threat). prev_objs/
+    # prev_ot hold the previous packet. logged_hold marks each crossing's first hold so it logs once.
+    objs, prev_objs, obj_vel, prev_ot = {}, {}, {}, None
+    logged_hold = set()
+    clear_since, holding = {}, False
     seq, idx = 0, 0
     st, prev = None, None
     fv, fv_prev, integ, steer_out, ramped = 0.0, 0.0, 0.0, 0.0, 0.0
@@ -145,10 +162,29 @@ def main():
                 b = ox.recv(4096)
                 if len(b) >= 24 and struct.unpack_from("<I", b, 0)[0] == 0x314F424F:
                     cnt = struct.unpack_from("<H", b, 6)[0]
+                    ot = struct.unpack_from("<d", b, 16)[0]
                     # Only cars (kind 0) and cyclists (2) block a road crossing.
-                    objs = {struct.unpack_from("<H", b, 24 + 20 * i)[0]:
-                            struct.unpack_from("<3f", b, 28 + 20 * i) for i in range(cnt)
-                            if b[26 + 20 * i] in (0, 2)}
+                    prev_objs = objs
+                    new_objs = {}
+                    for i in range(cnt):
+                        if b[26 + 20 * i] not in (0, 2):
+                            continue
+                        oid = struct.unpack_from("<H", b, 24 + 20 * i)[0]
+                        px, py, _ = struct.unpack_from("<3f", b, 28 + 20 * i)
+                        yaw = struct.unpack_from("<f", b, 40 + 20 * i)[0]
+                        new_objs[oid] = (px, py, yaw)
+                    # Robust velocity from the previous packet.
+                    dt = (ot - prev_ot) if prev_ot is not None else 0.0
+                    obj_vel = {}
+                    for oid, (px, py, yaw) in new_objs.items():
+                        vx = vy = 0.0
+                        valid = False
+                        if prev_ot is not None and 0.0 < dt <= 0.1 and oid in prev_objs:
+                            ddx, ddy = px - prev_objs[oid][0], py - prev_objs[oid][1]
+                            if math.hypot(ddx, ddy) <= 1.5:
+                                vx, vy, valid = ddx / dt, ddy / dt, True
+                        obj_vel[oid] = (px, py, vx, vy, yaw, valid)
+                    objs, prev_ot = new_objs, ot
         except BlockingIOError:
             pass
         lean, steer, flags = 0.0, 0.0, ARM
@@ -190,7 +226,40 @@ def main():
             for ci, c in enumerate(crossings):
                 to_stop = (c["stop_idx"] - idx) % n
                 if to_stop <= 25:
-                    busy = any(seg_dist(p[0], p[1], c["a"], c["b"]) < c["clear_m"] for p in objs.values())
+                    # Board-trajectory give way (see DemoRider.h): hold while any car/cyclist would
+                    # come within HIT_MARGIN of the board's OWN future path over its transit. The
+                    # board trajectory integrates the path target speed (PathV) with a launch ramp,
+                    # so a slow crawl through a tight turn is modelled honestly. A moving object is
+                    # extrapolated straight and time-matched; a stopped/slow object threatens its
+                    # whole forward heading ray (its pause length is unknown).
+                    btau, bpts = [], []
+                    s, v, tau = 0.0, 0.0, 0.0
+                    while s < c["cross_len_m"] and tau < 40:
+                        k = (idx + int(round(s))) % n
+                        vt = path[k][2] * PATH_SPEED_FRAC
+                        v = min(vt, v + LAUNCH_ACCEL * PRED_STEP) if vt >= v else vt
+                        v = max(v, 0.4)
+                        btau.append(tau); bpts.append(path[k])
+                        s += v * PRED_STEP; tau += PRED_STEP
+                    H = tau
+                    busy, block_id = False, -1
+                    for oid, (px, py, vx, vy, yaw, valid) in obj_vel.items():
+                        threat = False
+                        if valid and math.hypot(vx, vy) >= SLOW_MPS:
+                            for i, bp in enumerate(bpts):
+                                if math.hypot(px + vx * btau[i] - bp[0], py + vy * btau[i] - bp[1]) < HIT_MARGIN:
+                                    threat = True
+                                    break
+                        else:
+                            ex, ey = px + math.cos(yaw) * RESUME_MPS * H, py + math.sin(yaw) * RESUME_MPS * H
+                            for bp in bpts:
+                                if seg_dist(bp[0], bp[1], (px, py), (ex, ey)) < HIT_MARGIN:
+                                    threat = True
+                                    break
+                        if threat:
+                            busy = True
+                            if block_id < 0:
+                                block_id = oid
                     if busy:
                         clear_since[ci] = None
                     elif clear_since.get(ci) is None:
@@ -198,6 +267,11 @@ def main():
                     if busy or st["t"] - clear_since[ci] < 2.0:
                         vt = min(vt, 0.0 if to_stop <= 3 else 0.25 * to_stop)
                         holding = True
+                        if busy and ci not in logged_hold:
+                            logged_hold.add(ci)
+                            print(f"  HOLD crossing stop_idx {c['stop_idx']} at t={st['t']:.1f} s "
+                                  f"({st['x']:.1f}, {st['y']:.1f}) block obj {block_id} "
+                                  f"(transit {H:.1f} s)", flush=True)
             now = time.time()
             dt = min(now - t_last, 0.05)
             t_last = now
