@@ -183,6 +183,9 @@ private:
 	void SpawnCourseElements();
 	// The course name from -ObCourse=<name>, or city_hill on the OB_CityHill map, else empty.
 	FString ResolveCourseName() const;
+	// The course objects.json path: -ObObjects=<path>, else derived from the course data dir.
+	// Empty if the course has none. (Level 2 phase B traffic; see AMovingObjectsActor.)
+	FString ResolveObjectsFile(const FString& Course) const;
 	void CheckForAutoResetOnFall(const ABoardActor* Board);
 	void UpdateRumble(const ABoardActor* Board);
 	void ProbeWipeout(const ABoardActor* Board);

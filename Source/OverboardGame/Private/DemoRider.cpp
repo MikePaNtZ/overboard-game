@@ -130,12 +130,31 @@ void FDemoRider::LoadCourse(const FString& CourseName)
 		const double D1 = FMath::Sqrt(FMath::Square(PathX[Next] - PathX[i]) + FMath::Square(PathY[Next] - PathY[i]));
 		PathKappa[i] = Dh / FMath::Max(0.5 * (D0 + D1), 1e-3);
 	}
+	// Crossings (embarcadero cruise): the stop line and the road segment it protects.
+	const TArray<TSharedPtr<FJsonValue>>* CrossingsJson = nullptr;
+	if (Root->TryGetArrayField(TEXT("crossings"), CrossingsJson))
+	{
+		for (const TSharedPtr<FJsonValue>& V : *CrossingsJson)
+		{
+			const TSharedPtr<FJsonObject> O = V->AsObject();
+			if (!O.IsValid()) { continue; }
+			FCrossing C;
+			C.StopIdx = static_cast<int32>(O->GetIntegerField(TEXT("stop_idx")));
+			O->TryGetNumberField(TEXT("clear_m"), C.ClearM);
+			const TArray<TSharedPtr<FJsonValue>>* A = nullptr;
+			const TArray<TSharedPtr<FJsonValue>>* B = nullptr;
+			if (O->TryGetArrayField(TEXT("a"), A) && A->Num() == 2) { C.Ax = (*A)[0]->AsNumber(); C.Ay = (*A)[1]->AsNumber(); }
+			if (O->TryGetArrayField(TEXT("b"), B) && B->Num() == 2) { C.Bx = (*B)[0]->AsNumber(); C.By = (*B)[1]->AsNumber(); }
+			Crossings.Add(C);
+		}
+	}
+
 	bLapsMode = true;
-	UE_LOG(LogDemoRider, Log, TEXT("DemoRider: laps mode, %d path points, %d lap(s)."), N, DemoLaps);
+	UE_LOG(LogDemoRider, Log, TEXT("DemoRider: laps mode, %d path points, %d lap(s), %d crossing(s)."), N, DemoLaps, Crossings.Num());
 }
 
 FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHaveState, const OverboardWire::FBoardState& State,
-	bool bDown, const FRideGameReadout* Readout)
+	bool bDown, const FRideGameReadout* Readout, const TArray<FMovingObjectSample>* Objects)
 {
 	FDemoPadOutput Out;
 	if (!bHaveState)
@@ -149,7 +168,7 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 	LastUpdateSeconds = Seconds;
 	if (bLapsMode)
 	{
-		return UpdateLaps(Seconds, DeltaSeconds, State, bDown, Readout);
+		return UpdateLaps(Seconds, DeltaSeconds, State, bDown, Readout, Objects);
 	}
 	const double S = kStartX - State.Pos[0];
 	const double Y = State.Pos[1];
@@ -311,8 +330,17 @@ FDemoPadOutput FDemoRider::Update(double Seconds, float DeltaSeconds, bool bHave
 	return Out;
 }
 
+// Distance from (X, Y) to the segment A-B. Mirrors headless_pilot.py seg_dist.
+static double SegDist(double X, double Y, double Ax, double Ay, double Bx, double By)
+{
+	const double Dx = Bx - Ax;
+	const double Dy = By - Ay;
+	const double T = FMath::Clamp(((X - Ax) * Dx + (Y - Ay) * Dy) / FMath::Max(Dx * Dx + Dy * Dy, 1e-9), 0.0, 1.0);
+	return FMath::Sqrt(FMath::Square(X - Ax - T * Dx) + FMath::Square(Y - Ay - T * Dy));
+}
+
 FDemoPadOutput FDemoRider::UpdateLaps(double Seconds, float DeltaSeconds, const OverboardWire::FBoardState& State,
-	bool bDown, const FRideGameReadout* Readout)
+	bool bDown, const FRideGameReadout* Readout, const TArray<FMovingObjectSample>* Objects)
 {
 	// A direct port of headless_pilot.py DemoRider: forward-only nearest-index search on the closed
 	// demo path, pure pursuit plus a curvature feedforward, and a PI speed loop on the lean. The
@@ -419,7 +447,36 @@ FDemoPadOutput FDemoRider::UpdateLaps(double Seconds, float DeltaSeconds, const 
 		Out.Steer = static_cast<float>(SteerOut);
 
 		// Speed loop: ramp the target up at 0.6 m/s^2 (down at once), filter the speed, lean P + I.
-		const double Vt = PathV[Wrap(PathIdx + 2)];
+		double Vt = PathV[Wrap(PathIdx + 2)];
+
+		// Give way at the crossings: hold at the stop line while a car or a cyclist is inside the
+		// crossing zone, then 2 s more. A direct port of headless_pilot.py's crossing loop. Uses
+		// the wall-clock Seconds for the 2 s clear timer (the state packet has no sim time here).
+		for (FCrossing& C : Crossings)
+		{
+			const int32 ToStop = Wrap(C.StopIdx - PathIdx);
+			if (ToStop > 25) { continue; }
+			bool bBusy = false;
+			if (Objects)
+			{
+				for (const FMovingObjectSample& O : *Objects)
+				{
+					if (O.Kind != 0 && O.Kind != 2) { continue; } // only cars and cyclists block
+					if (SegDist(O.Pos[0], O.Pos[1], C.Ax, C.Ay, C.Bx, C.By) < C.ClearM) { bBusy = true; break; }
+				}
+			}
+			if (bBusy) { C.ClearSince = -1.0; }
+			else if (C.ClearSince < 0.0) { C.ClearSince = Seconds; }
+			if (bBusy || Seconds - C.ClearSince < 2.0)
+			{
+				Vt = FMath::Min(Vt, ToStop <= 3 ? 0.0 : 0.25 * ToStop);
+				if (!C.bLoggedHold)
+				{
+					C.bLoggedHold = true;
+					UE_LOG(LogDemoRider, Log, TEXT("OBWAIT crossing stop_idx %d at t %.1f x %+.1f y %+.1f"), C.StopIdx, Seconds, X, Y);
+				}
+			}
+		}
 		RampedTargetV = Vt >= RampedTargetV ? FMath::Min(Vt, RampedTargetV + 0.6 * DeltaSeconds) : Vt;
 		const double Af = 1.0 - FMath::Exp(-DeltaSeconds / 0.25);
 		FilteredV += Af * (V - FilteredV);
