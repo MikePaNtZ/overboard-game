@@ -13,7 +13,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogOverboardObjects, Log, All);
 namespace
 {
 	// The host SENDS here, so we BIND/LISTEN: OverboardPorts::Objects() (-ObPortBase + 4).
-	constexpr int32 kRecvBufferBytes = 2048; // 24 + 64 * 20 = 1304 bytes max; generous headroom
+	constexpr int32 kObjsRecvBufferBytes = 2048; // 24 + 64 * 20 = 1304 bytes max; generous headroom
 
 	// Mirrors the OBJS wire: magic 'OBO1' read little-endian, version 1, 24-byte header, 20 bytes
 	// per object. See the task contract and crates/sim-host object output.
@@ -104,7 +104,7 @@ void FMovingObjectsClient::Stop()
 uint32 FMovingObjectsClient::Run()
 {
 	TArray<uint8> Buf;
-	Buf.SetNumUninitialized(kRecvBufferBytes);
+	Buf.SetNumUninitialized(kObjsRecvBufferBytes);
 
 	while (!bRequestStop)
 	{
