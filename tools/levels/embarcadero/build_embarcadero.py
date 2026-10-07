@@ -417,8 +417,8 @@ for mesh_idx, mesh_path in enumerate(fac["meshes"]):
 log("placed %d facade kit instances (%d meshes)" % (nf, len(fac["meshes"])))
 
 cube = unreal.load_asset("/Engine/BasicShapes/Cube")
-# blank-wall fill: a plaster panel (depth, remainder width, module height)
-blank_xf = [box_xf(x, y, z + h / 2, yaw, 0.6, w, h) for x, y, z, yaw, w, h in fac["blanks"]]
+# blank-wall fill: a plaster panel (0.4 m deep, remainder width, module height)
+blank_xf = [box_xf(x, y, z + h / 2, yaw, 0.4, w, h) for x, y, z, yaw, w, h in fac["blanks"]]
 box_hism(cube, mats["Plaster"], blank_xf, "OB_SF_FacadeBlank")
 # corner boxes: a slim plaster pier at each street-facing vertex
 corner_xf = [box_xf(x, y, z + h / 2, 0.0, 0.4, 0.4, h) for x, y, z, h in fac["corners"]]

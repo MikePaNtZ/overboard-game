@@ -162,6 +162,48 @@ for rows, mesh in ((kerb_rows, "kerbs.obm"), (rail_rows, "rails.obm")):
         checked += 1
 out.write("box check: %d boxes; worst centre %.4f m, yaw %.3f deg, extent %.4f m.\n" % (checked, wc, wy, we))
 boxes_ok = checked > 0 and wc <= 0.02 and wy <= 0.5 and we <= 0.02
-out.write("PASS\n" if gap_ok and blocks_ok and boxes_ok else "FAIL\n")
+
+# --- facade-clearance check: no drawn facade geometry (kit piece, blank panel, plinth, corner) may
+# come within 1.5 m of the demo path, or overlap the carriageway. Unreal computes no physics, so
+# nothing drawn may stand on or beside the ridden line where MuJoCo has nothing. Reads facades.json
+# (MuJoCo-frame instances) and carriageway.json (the vehicle-street union).
+from shapely.geometry import Polygon as _Poly, LineString as _LS  # noqa: E402
+from shapely.ops import unary_union as _uu                        # noqa: E402
+
+fac = json.load(open(os.path.join(DATA, "facades.json")))
+carrj = json.load(open(os.path.join(DATA, "carriageway.json")))
+carr = (_uu([_Poly(p["ext"], p["holes"]) for p in carrj["polys"] if len(p["ext"]) >= 4])
+        if carrj["polys"] else _Poly())
+demo = _LS([(p[0], p[1]) for p in lvl["demo_path"]])
+
+
+def _rect(cx, cy, yaw, x0, x1, y0, y1):
+    c, s = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+    return _Poly([(cx + lx * c - ly * s, cy + lx * s + ly * c)
+                  for lx, ly in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))])
+
+
+rects = []
+mb = fac["meshes_bounds"]
+for mi, x, y, z, yaw in fac["pieces"]:
+    rects.append(_rect(x, y, yaw, *mb[mi]))
+for x, y, z, yaw, w, h in fac["blanks"]:
+    rects.append(_rect(x, y, yaw, -0.2, 0.2, -w / 2, w / 2))
+for x, y, z, h in fac["corners"]:
+    rects.append(_rect(x, y, 0.0, -0.2, 0.2, -0.2, 0.2))
+for ax, ay, bx, by, z in fac["plinths"]:
+    dx, dy = bx - ax, by - ay
+    pl = math.hypot(dx, dy) or 1.0
+    px, py = -dy / pl * 0.2, dx / pl * 0.2
+    rects.append(_Poly([(ax + px, ay + py), (bx + px, by + py), (bx - px, by - py), (ax - px, ay - py)]))
+
+near = sum(1 for r in rects if r.distance(demo) < 1.5)
+over = sum(1 for r in rects if not carr.is_empty and r.intersects(carr))
+worst_clear = min((r.distance(demo) for r in rects), default=99.0)
+out.write("facade clearance: %d instances; nearest %.2f m to demo path (<1.5 fails: %d); %d overlap "
+          "the carriageway.\n" % (len(rects), worst_clear, near, over))
+facades_ok = near == 0 and over == 0
+
+out.write("PASS\n" if gap_ok and blocks_ok and boxes_ok and facades_ok else "FAIL\n")
 out.close()
 print(open(OUT).read())

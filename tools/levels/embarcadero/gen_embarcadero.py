@@ -237,7 +237,8 @@ def build_buildings(osm, zfn, out, hx, hy):
             gz = float(zfn(cx, cy))
             base = gz - 7.0           # bury the foot so no sawtooth shows
             top = gz - 3.0 + ht       # roof `ht` above the street (gz minus the 3 m block raise)
-            pe = pg.buffer(1.2, join_style=2, mitre_limit=3.0)   # 1.2 m proud, hides the block edge
+            pe = pg.buffer(0.5, join_style=2, mitre_limit=3.0)   # 0.5 m proud: hides the block edge,
+            #                                                      stays behind the 1.0 m kit veneer
             if pe.geom_type != "Polygon":
                 pe = pg
             col = FACADE_COLS[(wi * 7 + int(abs(cx) + abs(cy))) % len(FACADE_COLS)]
@@ -256,9 +257,12 @@ def build_buildings(osm, zfn, out, hx, hy):
 # vertical stretch, so the windows keep true proportions. Three styles vary by building. The
 # procedural building body + roof stay behind (build_buildings), so the raised MuJoCo block stays
 # covered; a plain plaster material (no stripes) dresses the body and the hidden back/side faces.
-FAC_PROUD_M = 1.60               # the street face sits proud of the OSM edge AND of the procedural
-                                 # body wall (build_buildings buffers it 1.2 m out), so the kit
-                                 # veneer is never occluded by the plain plaster body behind it
+FAC_PROUD_M = 1.00               # the kit street face sits this far proud of the OSM edge. RULE: no
+                                 # building geometry past footprint + 1.2 m, so the veneer face is at
+                                 # 1.0 m and the procedural body buffer (0.5 m) stays behind it, not
+                                 # occluding it. Nothing sits within 1.5 m of the demo path.
+FAC_BOX_OFF = 0.80               # blank/corner/plinth boxes are 0.4 m deep; offset their centre so
+                                 # the outer face lands at FAC_PROUD_M (0.8 + 0.2 = 1.0 m proud)
 _A = "/Game/Building/SF/A/Kit_Bldg_SFA_%s_A/Mesh/SM_BLDG_SFA_%s_A_Wall_01_N1"
 _B = "/Game/Building/SF/B/Kit_Bldg_SFB_%s_A/Mesh/SM_BLDG_SFB_%s_A_Wall_03_N1"
 _C = "/Game/Building/SF/C/Kit_Bldg_SFC_%s_A/Mesh/SM_BLDG_SFC_%s_A1_Wall_0%d_N1"
@@ -360,16 +364,23 @@ def build_facades(osm, zfn, out, hx, hy, bgeom):
                         pieces.append([mesh_id(mp), round(ax, 3), round(ay, 3),
                                        round(z0 + dz, 3), round(yaw, 2)])
                 rem = L - nbay * bay
+                bx, by = nx * FAC_BOX_OFF, ny * FAC_BOX_OFF
                 if rem > 0.6:                                          # blank wall fills the end
                     s = nbay * bay + rem / 2
-                    blanks.append([round(a[0] + tx * s + nx * FAC_PROUD_M, 3),
-                                   round(a[1] + ty * s + ny * FAC_PROUD_M, 3),
+                    blanks.append([round(a[0] + tx * s + bx, 3), round(a[1] + ty * s + by, 3),
                                    round(z0, 3), round(yaw, 2), round(rem, 3), round(total_h, 2)])
-                plinths.append([round(a[0] + ox, 3), round(a[1] + oy, 3),
-                                round(b[0] + ox, 3), round(b[1] + oy, 3), round(z0, 3)])
-                corners.append([round(a[0] + nx * FAC_PROUD_M, 3),
-                                round(a[1] + ny * FAC_PROUD_M, 3), round(z0, 3), round(total_h, 2)])
-    data = dict(meshes=meshes, pieces=pieces, blanks=blanks, plinths=plinths, corners=corners)
+                plinths.append([round(a[0] + bx, 3), round(a[1] + by, 3),
+                                round(b[0] + bx, 3), round(b[1] + by, 3), round(z0, 3)])
+                corners.append([round(a[0] + bx, 3), round(a[1] + by, 3),
+                                round(z0, 3), round(total_h, 2)])
+    # per-mesh local XY bounds (m) for the verify rectangle check: local X [-depth,0], Y [-bay,0]
+    kitb = {}
+    for sk, sv in FAC_STYLES.items():
+        for mp, _ in [sv["ground"], sv["cornice"]] + sv["floors"]:
+            kitb[mp] = (-sv["depth"], 0.0, -sv["bay"], 0.0)
+    mbnd = [list(kitb.get(m, (-1.5, 0.0, -4.5, 0.0))) for m in meshes]
+    data = dict(meshes=meshes, meshes_bounds=mbnd, pieces=pieces, blanks=blanks,
+                plinths=plinths, corners=corners)
     json.dump(data, open(out("facades.json"), "w"))
     log("facades: %d kit instances (%d meshes), %d blanks, %d plinths, %d corners"
         % (len(pieces), len(meshes), len(blanks), len(plinths), len(corners)))
@@ -462,7 +473,7 @@ def street_lines(osm, name):
     return out
 
 
-def build_marks(osm, zfn, lvl, out, hx, hy):
+def build_marks(osm, zfn, lvl, out, hx, hy, bgeom):
     marks = obm.Mesh()
     grid = Polygon([(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)])
 
@@ -513,27 +524,57 @@ def build_marks(osm, zfn, lvl, out, hx, hy):
                     for off in offset_lines(rs, d):
                         ribbon(marks, zfn, off, 0.1, "Yellow")
 
-    # zebra crosswalks: the two route crossings, and OSM crossings within 60 m of the route. One
-    # clean zebra per crossing; dedupe so nearby crossings do not stack bars into a tangle.
+    # carriageways: carr_full is kerb-to-kerb (used to clip the route crossings); carr_drive is the
+    # DRIVABLE travel lanes (kerb-to-kerb minus the ~2 m parking/gutter band), written for
+    # verify_embarcadero.py -- a facade on the sidewalk must not count as over the road.
+    full_parts, drive_parts = [], []
+    for t, nd in osm.ways:
+        if t.get("highway") in osm_mod.VEHICLE:
+            ls = LineString(osm.line(nd))
+            hw = osm_mod.road_half_width(t)
+            full_parts.append(ls.buffer(hw))
+            drive_parts.append(ls.buffer(max(2.5, hw - 2.0)))
+    carr = unary_union(full_parts).intersection(grid) if full_parts else Polygon()
+    # the open drivable road = the travel lanes MINUS the footprints grown by the 1.2 m veneer
+    # allowance (OSM street centrelines run close to buildings, so the raw buffer overlaps them). A
+    # facade overlaps this only if it protrudes MORE than 1.2 m past its footprint into the open
+    # road -- exactly the rule the verify check must enforce.
+    carr_drive = (unary_union(drive_parts).difference(bgeom.buffer(1.2)).intersection(grid)
+                  if drive_parts else Polygon())
+    dpolys = (carr_drive.geoms if carr_drive.geom_type == "MultiPolygon"
+              else ([carr_drive] if not carr_drive.is_empty else []))
+
+    def ring(r):
+        return [[round(x, 2), round(y, 2)] for x, y in r.coords]
+
+    json.dump({"polys": [{"ext": ring(g.exterior), "holes": [ring(h) for h in g.interiors]}
+                         for g in dpolys]}, open(out("carriageway.json"), "w"))
+
+    # zebra crosswalks: the two route crossings, plus one clean zebra per CLUSTER of OSM crossings
+    # (SF junctions hold many crossing nodes; cluster them within 8 m so the bars do not tangle).
     route = LineString([(p[0], p[1]) for p in lvl["demo_path"]])
     drawn = []
     for c in lvl["crossings"]:
-        zebra(marks, zfn, c["a"], c["b"])
+        zebra(marks, zfn, c["a"], c["b"], clip_geom=carr)
         drawn.append(((c["a"][0] + c["b"][0]) / 2, (c["a"][1] + c["b"][1]) / 2))
+    cross_pts = []
     for nid, tg in osm.ntags.items():
         if tg.get("highway") == "crossing" or tg.get("crossing"):
             p = osm.xy(nid)
-            if not (grid.contains(Point(p)) and route.distance(Point(p)) <= 60.0):
-                continue
-            if any((p[0] - dx) ** 2 + (p[1] - dy) ** 2 < 36.0 for dx, dy in drawn):
-                continue
-            if zebra_at(marks, zfn, p, osm):
-                drawn.append((p[0], p[1]))
+            if grid.contains(Point(p)) and route.distance(Point(p)) <= 60.0:
+                cross_pts.append(p)
+    for p in cross_pts:
+        if any((p[0] - dx) ** 2 + (p[1] - dy) ** 2 < 64.0 for dx, dy in drawn):   # 8 m cluster
+            continue
+        if zebra_at(marks, zfn, p, osm):
+            drawn.append((p[0], p[1]))
     gc.ue_winding(marks).write(out("marks.obm"))
     log("marks written")
 
 
-def zebra(mesh, zfn, a, b, bars=7):
+def zebra(mesh, zfn, a, b, clip_geom=None, bars=7, half=1.8):
+    """A zebra from a to b (across the street): bars run perpendicular to a->b (along the street),
+    each clipped to clip_geom so no bar spills past the carriageway into the intersection."""
     a, b = np.array(a, float), np.array(b, float)
     d = b - a
     L = np.linalg.norm(d)
@@ -544,13 +585,20 @@ def zebra(mesh, zfn, a, b, bars=7):
     for i in range(bars):
         t = (i + 0.5) / bars
         c = a + d * t
-        seg = [c - nrm * 2.0, c + nrm * 2.0]
-        ribbon(mesh, zfn, [tuple(seg[0]), tuple(seg[1])], 0.45, "White")
+        seg = LineString([tuple(c - nrm * half), tuple(c + nrm * half)])
+        if clip_geom is not None:
+            seg = seg.intersection(clip_geom)
+        parts = seg.geoms if seg.geom_type == "MultiLineString" else [seg]
+        for sp in parts:
+            if sp.geom_type == "LineString" and sp.length > 0.25:
+                cs = list(sp.coords)
+                ribbon(mesh, zfn, [cs[0], cs[-1]], 0.45, "White")
 
 
 def zebra_at(mesh, zfn, p, osm):
     """One clean zebra across the nearest vehicle street at p: the bars span the carriageway and run
-    along the street (perpendicular to the crossing direction). Returns True if a zebra is drawn."""
+    along the street (perpendicular to the crossing direction), clipped to that street's own width so
+    perpendicular crossings at a junction do not overlap. Returns True if a zebra is drawn."""
     pp = Point(p)
     best = None
     for t, nd in osm.ways:
@@ -573,7 +621,7 @@ def zebra_at(mesh, zfn, p, osm):
     c = ls.interpolate(s)
     a = (c.x - nx * hw * 0.95, c.y - ny * hw * 0.95)
     b = (c.x + nx * hw * 0.95, c.y + ny * hw * 0.95)
-    zebra(mesh, zfn, a, b, bars=max(4, int(round(2 * hw / 0.8))))
+    zebra(mesh, zfn, a, b, clip_geom=ls.buffer(hw * 0.98), bars=max(4, int(round(2 * hw / 0.8))))
     return True
 
 
@@ -669,7 +717,7 @@ def main():
     build_water(h, g, out)
     build_buildings(osm, zfn, out, hx, hy)
     build_facades(osm, zfn, out, hx, hy, bgeom)
-    build_marks(osm, zfn, lvl, out, hx, hy)
+    build_marks(osm, zfn, lvl, out, hx, hy, bgeom)
     build_dressing(osm, zfn, lvl, out, hx, hy)
     write_meta(out, meta, cdir, zfn, hx, hy)
     log("done ->", odir)
