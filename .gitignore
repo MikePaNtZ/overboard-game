@@ -109,6 +109,11 @@ Content/MSPresets/
 Content/Building/
 Content/Environment/
 Content/Vehicle/
+# The City Sample car bodies for Level 2 traffic (AMovingObjectsActor) and the vehicle
+# effect/lookdev content their dependency closure pulls in. Copied with
+# tools/metahuman/copy_vault_closure.py; licensed to Mike's Epic account, not redistributable.
+Content/Effect/
+Content/Lookdev/
 
 # The X7 concept board skin: imported from overboard-viz-kit (proxy geometry, not committed there yet)
 Content/ThirdParty/X7/
