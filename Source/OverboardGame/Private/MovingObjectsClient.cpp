@@ -28,7 +28,9 @@ namespace
 	// little-endian, so a plain copy is correct; the explicit offsets keep the layout in step
 	// with the wire contract.
 	template <typename T>
-	T ReadLe(const uint8* Data, int32 Offset)
+	// Named ReadObjsLe, not ReadLe: in a unity build this file can share a translation unit with
+	// HudPacketClient.cpp, which has its own ReadLe (a redefinition error on some machines).
+	T ReadObjsLe(const uint8* Data, int32 Offset)
 	{
 		T Value;
 		FMemory::Memcpy(&Value, Data + Offset, sizeof(T));
@@ -127,12 +129,12 @@ uint32 FMovingObjectsClient::Run()
 		}
 
 		const uint8* Data = Buf.GetData();
-		if (BytesRead < kHeaderBytes || ReadLe<uint32>(Data, 0) != kObjectsMagic || ReadLe<uint16>(Data, 4) != kObjectsVersion)
+		if (BytesRead < kHeaderBytes || ReadObjsLe<uint32>(Data, 0) != kObjectsMagic || ReadObjsLe<uint16>(Data, 4) != kObjectsVersion)
 		{
 			continue; // drop a short or wrong packet, keep the newest valid frame
 		}
 
-		const int32 Count = FMath::Min(static_cast<int32>(ReadLe<uint16>(Data, 6)), kMaxObjects);
+		const int32 Count = FMath::Min(static_cast<int32>(ReadObjsLe<uint16>(Data, 6)), kMaxObjects);
 		if (BytesRead < kHeaderBytes + Count * kObjectBytes)
 		{
 			UE_LOG(LogOverboardObjects, Warning, TEXT("MovingObjectsClient: short OBJS packet (%d bytes, %d objects); dropping"), BytesRead, Count);
@@ -141,20 +143,20 @@ uint32 FMovingObjectsClient::Run()
 
 		FMovingObjectsFrame Frame;
 		Frame.ArrivalTimeSeconds = FPlatformTime::Seconds();
-		Frame.Seq = ReadLe<uint64>(Data, 8);
-		Frame.SimTime = ReadLe<double>(Data, 16);
+		Frame.Seq = ReadObjsLe<uint64>(Data, 8);
+		Frame.SimTime = ReadObjsLe<double>(Data, 16);
 		Frame.Objects.Reserve(Count);
 		for (int32 i = 0; i < Count; ++i)
 		{
 			const int32 Off = kHeaderBytes + i * kObjectBytes;
 			FMovingObjectSample S;
-			S.Id = ReadLe<uint16>(Data, Off + 0);
+			S.Id = ReadObjsLe<uint16>(Data, Off + 0);
 			S.Kind = Data[Off + 2];
 			S.Flags = Data[Off + 3];
-			S.Pos[0] = ReadLe<float>(Data, Off + 4);
-			S.Pos[1] = ReadLe<float>(Data, Off + 8);
-			S.Pos[2] = ReadLe<float>(Data, Off + 12);
-			S.Yaw = ReadLe<float>(Data, Off + 16);
+			S.Pos[0] = ReadObjsLe<float>(Data, Off + 4);
+			S.Pos[1] = ReadObjsLe<float>(Data, Off + 8);
+			S.Pos[2] = ReadObjsLe<float>(Data, Off + 12);
+			S.Yaw = ReadObjsLe<float>(Data, Off + 16);
 			Frame.Objects.Add(S);
 		}
 
