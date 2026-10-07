@@ -2,7 +2,8 @@
 # Start sim-host for live play. LEVEL picks tools/play/levels/<LEVEL>.env (default city_hill).
 # sim-host owns all board physics. Unreal only sends inputs and draws the state.
 # Flags confirmed with the controls track (c4), 2026-10-05. sim-host is built from
-# overboard master, PINNED at cd7962d (controls PR #298: lean lag, carving model with camber thrust): stiff balance gains (Kp 420) with the tail drag
+# overboard master, PINNED at fa19c50 (controls PR #299: moving scripted objects for Level 2, opt-in
+# with --objects; without it the same sim as cd7962d: lean lag, carving model with camber thrust): stiff balance gains (Kp 420) with the tail drag
 # back under a full lean (--rider-reach-back 0.20), pad-mode pull-away, and fixed obstacles from
 # elements/city_hill_obstacles.csv (regenerate with <overboard-carve>/sim/carve/obstacles.py after
 # changing elements/city_hill.json). See docs/playable-status.md.
